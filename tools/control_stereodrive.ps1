@@ -11,6 +11,7 @@ param(
         "use-target",
         "get-reference-status",
         "open-reference-panel",
+        "dump-tools-menu",
         "set-reference-other",
         "set-reference-bregma",
         "set-reference-lambda",
@@ -332,6 +333,31 @@ function Find-MenuItem {
     return $null
 }
 
+function Get-MenuItems {
+    param([IntPtr]$MenuHandle)
+
+    $count = [StereoDriveWin32]::GetMenuItemCount($MenuHandle)
+    if ($count -lt 0) {
+        return @()
+    }
+
+    $items = @()
+    for ($i = 0; $i -lt $count; $i++) {
+        $buffer = New-Object System.Text.StringBuilder 256
+        [void][StereoDriveWin32]::GetMenuString($MenuHandle, [uint32]$i, $buffer, $buffer.Capacity, [StereoDriveWin32]::MF_BYPOSITION)
+        $label = $buffer.ToString()
+        $items += [pscustomobject]@{
+            Position = $i
+            Label = $label
+            NormalizedLabel = Normalize-MenuLabel -Text $label
+            Id = [int][StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
+            HasSubMenu = ([StereoDriveWin32]::GetSubMenu($MenuHandle, $i) -ne [IntPtr]::Zero)
+        }
+    }
+
+    return $items
+}
+
 function Get-PopupMenuWindow {
     param(
         [int]$ProcessId
@@ -485,6 +511,18 @@ if ($Action -eq "read-coords") {
 if ($Action -eq "open-reference-panel") {
     Open-ReferencePanel -MainWindowHandle $mainHandle -ProcessId $mainProcessId
     Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
+    return
+}
+
+if ($Action -eq "dump-tools-menu") {
+    Invoke-ButtonClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $mainHandle -ClickMode $ClickMode
+    Start-Sleep -Milliseconds 250
+    $popup = Get-PopupMenuWindow -ProcessId $mainProcessId
+    if (-not $popup) {
+        throw "Tools popup window was not found."
+    }
+    $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
+    Get-MenuItems -MenuHandle $menu
     return
 }
 
