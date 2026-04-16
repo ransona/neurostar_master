@@ -326,7 +326,7 @@ function Find-MenuItem {
             return [pscustomobject]@{
                 Position = $i
                 Label = $label
-                Id = if ($rawId -eq 0xFFFFFFFF) { $null } else { [int]$rawId }
+                Id = if ($rawId -eq [uint32]::MaxValue) { $null } else { $rawId }
                 RawId = ('0x{0:X8}' -f $rawId)
                 SubMenu = [StereoDriveWin32]::GetSubMenu($MenuHandle, $i)
             }
@@ -354,7 +354,7 @@ function Get-MenuItems {
             Position = $i
             Label = $label
             NormalizedLabel = Normalize-MenuLabel -Text $label
-            Id = if ($rawId -eq 0xFFFFFFFF) { $null } else { [int]$rawId }
+            Id = if ($rawId -eq [uint32]::MaxValue) { $null } else { $rawId }
             RawId = ('0x{0:X8}' -f $rawId)
             HasSubMenu = ([StereoDriveWin32]::GetSubMenu($MenuHandle, $i) -ne [IntPtr]::Zero)
         }
@@ -405,7 +405,7 @@ function Invoke-PopupMenuItem {
         throw "Popup menu item '$Label' was not found."
     }
 
-    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr][int]$match.Id, [IntPtr]::Zero)
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new([int64]$match.Id), [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300
 }
 
