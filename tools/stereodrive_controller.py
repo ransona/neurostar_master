@@ -9,6 +9,13 @@ WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 WM_SETTEXT = 0x000C
 BM_CLICK = 0x00F5
+CB_GETCOUNT = 0x0146
+CB_GETCURSEL = 0x0147
+CB_GETLBTEXT = 0x0148
+CB_GETLBTEXTLEN = 0x0149
+CB_SETCURSEL = 0x014E
+CB_FINDSTRINGEXACT = 0x0158
+CBN_SELCHANGE = 1
 
 TARGET_AP_ID = 1147
 TARGET_ML_ID = 1148
@@ -113,6 +120,33 @@ class StereoDriveController:
         text_buffer = ctypes.create_unicode_buffer(text)
         user32.SendMessageW(hwnd, WM_SETTEXT, 0, ctypes.cast(text_buffer, ctypes.c_void_p))
 
+    def _notify_command(self, control_id: int, notify_code: int, hwnd: int) -> None:
+        wparam = (notify_code << 16) | (control_id & 0xFFFF)
+        user32.SendMessageW(self.main_hwnd, WM_COMMAND, wparam, hwnd)
+
+    def _combo_select_exact(self, control_id: int, text: str) -> None:
+        hwnd = self._control_handle(control_id)
+        text_buffer = ctypes.create_unicode_buffer(text)
+        match_index = int(user32.SendMessageW(hwnd, CB_FINDSTRINGEXACT, -1, ctypes.cast(text_buffer, ctypes.c_void_p)))
+        if match_index < 0:
+            raise StereoDriveError(f"Could not find combo entry '{text}' in control {control_id}.")
+        selected_index = int(user32.SendMessageW(hwnd, CB_SETCURSEL, match_index, 0))
+        if selected_index < 0:
+            raise StereoDriveError(f"Failed to select combo entry '{text}' in control {control_id}.")
+        self._notify_command(control_id, CBN_SELCHANGE, hwnd)
+
+    def _combo_selected_text(self, control_id: int) -> str:
+        hwnd = self._control_handle(control_id)
+        selected_index = int(user32.SendMessageW(hwnd, CB_GETCURSEL, 0, 0))
+        if selected_index < 0:
+            return self._get_text(hwnd)
+        text_length = int(user32.SendMessageW(hwnd, CB_GETLBTEXTLEN, selected_index, 0))
+        if text_length < 0:
+            return self._get_text(hwnd)
+        buffer = ctypes.create_unicode_buffer(text_length + 1)
+        user32.SendMessageW(hwnd, CB_GETLBTEXT, selected_index, ctypes.cast(buffer, ctypes.c_void_p))
+        return buffer.value.strip()
+
     def _click(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
         user32.SendMessageW(hwnd, BM_CLICK, 0, 0)
@@ -166,10 +200,11 @@ class StereoDriveController:
 
     def set_nudge_step(self, axis: str, step_mm: float) -> None:
         _current_id, step_id, _positive_id = self._axis_ids(axis)
-        self._set_text(self._control_handle(step_id), f"{step_mm:.3f} mm")
-        actual = self._get_text(self._control_handle(step_id))
-        if f"{step_mm:.3f}" not in actual:
-            raise StereoDriveError(f"Failed to set {axis.upper()} nudge step to {step_mm:.3f} mm.")
+        label = f"{step_mm:.3f} mm"
+        self._combo_select_exact(step_id, label)
+        actual = self._combo_selected_text(step_id)
+        if actual != label:
+            raise StereoDriveError(f"Failed to set {axis.upper()} nudge step to {label}. Got '{actual}'.")
 
     def nudge_axis(self, axis: str, positive: bool) -> None:
         negative_button_id, positive_button_id = self._axis_button_ids(axis)
