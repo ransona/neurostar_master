@@ -2,7 +2,7 @@ import math
 import sys
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,6 +43,7 @@ class ProjectionWidget(QWidget):
         self.invert_y = invert_y
         self.trajectory: list[tuple[float, float, float]] = []
         self.seed_points: list[tuple[float, float, bool]] = []
+        self.current_point: tuple[float, float] | None = None
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -52,9 +53,15 @@ class ProjectionWidget(QWidget):
     def heightForWidth(self, width: int) -> int:  # noqa: N802
         return width
 
-    def set_data(self, trajectory: list[tuple[float, float, float]], seed_points: list[tuple[float, float, bool]]) -> None:
+    def set_data(
+        self,
+        trajectory: list[tuple[float, float, float]],
+        seed_points: list[tuple[float, float, bool]],
+        current_point: tuple[float, float] | None = None,
+    ) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
+        self.current_point = current_point
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -63,7 +70,14 @@ class ProjectionWidget(QWidget):
         painter.fillRect(self.rect(), QColor("#fbfcfa"))
 
         pad = 24
-        draw_rect = self.rect().adjusted(pad, pad + 20, -pad, -pad)
+        available_rect = self.rect().adjusted(pad, pad + 20, -pad, -pad)
+        side = min(available_rect.width(), available_rect.height())
+        draw_rect = QRectF(
+            available_rect.left() + (available_rect.width() - side) / 2.0,
+            available_rect.top() + (available_rect.height() - side) / 2.0,
+            side,
+            side,
+        )
 
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
@@ -79,6 +93,9 @@ class ProjectionWidget(QWidget):
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
+        if self.current_point is not None:
+            xs.append(self.current_point[0])
+            ys.append(self.current_point[1])
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
         if math.isclose(min_x, max_x):
@@ -124,6 +141,13 @@ class ProjectionWidget(QWidget):
             painter.drawEllipse(pt, 6, 6)
             painter.setPen(color)
             painter.drawText(pt + QPointF(8, -8), f"{idx} [{x:.2f}, {y:.2f}]")
+
+        if self.current_point is not None:
+            pt = map_point(self.current_point[0], self.current_point[1])
+            marker_pen = QPen(QColor("#1f2937"), 4)
+            painter.setPen(marker_pen)
+            painter.drawLine(pt + QPointF(-10, -10), pt + QPointF(10, 10))
+            painter.drawLine(pt + QPointF(-10, 10), pt + QPointF(10, -10))
 
 
 class CraniotomyWindow(QMainWindow):
@@ -315,6 +339,8 @@ class CraniotomyWindow(QMainWindow):
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
+            if self.seeds:
+                self.redraw_views(current_point=(ap, ml))
         except Exception as exc:
             self.set_status(str(exc))
 
@@ -472,10 +498,16 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
-    def redraw_views(self) -> None:
+    def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
         top_points = [(ap, ml, 0.0) for ap, ml, _ in self.trajectory]
         top_seeds = [(seed.ap, seed.ml, seed.dv is not None) for seed in self.seeds]
-        self.top_view.set_data(top_points, top_seeds)
+        if current_point is None and self.seeds:
+            try:
+                current_ap, current_ml, _current_dv = self.controller.get_current_position()
+                current_point = (current_ap, current_ml)
+            except Exception:
+                current_point = None
+        self.top_view.set_data(top_points, top_seeds, current_point=current_point if self.seeds else None)
         self.update_seed_selector_label()
 
 
