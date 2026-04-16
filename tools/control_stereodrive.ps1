@@ -171,11 +171,11 @@ function Get-TopLevelWindows {
     $callback = [StereoDriveWin32+EnumChildProc]{
         param([IntPtr]$hwnd, [IntPtr]$lParam)
 
-        $pid = [uint32]0
-        [void][StereoDriveWin32]::GetWindowThreadProcessId($hwnd, [ref]$pid)
+        $windowPid = [uint32]0
+        [void][StereoDriveWin32]::GetWindowThreadProcessId($hwnd, [ref]$windowPid)
         $rows.Add([pscustomobject]@{
             Handle = $hwnd
-            ProcessId = [int]$pid
+            ProcessId = [int]$windowPid
             ClassName = Get-ClassName -Handle $hwnd
             Caption = Get-WindowCaption -Handle $hwnd
         }) | Out-Null
