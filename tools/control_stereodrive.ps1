@@ -47,6 +47,7 @@ using System.Text;
 public static class StereoDriveWin32
 {
     public const uint MF_BYPOSITION = 0x00000400;
+    public const uint MN_GETHMENU = 0x01E1;
     public const uint WM_COMMAND = 0x0111;
     public const uint WM_GETTEXT = 0x000D;
     public const uint WM_GETTEXTLENGTH = 0x000E;
@@ -63,6 +64,9 @@ public static class StereoDriveWin32
     public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool EnumWindows(EnumChildProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetMenu(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -76,6 +80,9 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetDlgCtrlID(IntPtr hWnd);
@@ -156,6 +163,26 @@ function Get-ChildControls {
     }
 
     [void][StereoDriveWin32]::EnumChildWindows($ParentHandle, $callback, [IntPtr]::Zero)
+    return $rows
+}
+
+function Get-TopLevelWindows {
+    $rows = New-Object System.Collections.Generic.List[object]
+    $callback = [StereoDriveWin32+EnumChildProc]{
+        param([IntPtr]$hwnd, [IntPtr]$lParam)
+
+        $pid = [uint32]0
+        [void][StereoDriveWin32]::GetWindowThreadProcessId($hwnd, [ref]$pid)
+        $rows.Add([pscustomobject]@{
+            Handle = $hwnd
+            ProcessId = [int]$pid
+            ClassName = Get-ClassName -Handle $hwnd
+            Caption = Get-WindowCaption -Handle $hwnd
+        }) | Out-Null
+        return $true
+    }
+
+    [void][StereoDriveWin32]::EnumWindows($callback, [IntPtr]::Zero)
     return $rows
 }
 
@@ -305,29 +332,46 @@ function Find-MenuItem {
     return $null
 }
 
-function Invoke-MenuPath {
+function Get-PopupMenuWindow {
     param(
-        [IntPtr]$MainWindowHandle,
-        [string[]]$Labels
+        [int]$ProcessId
     )
 
-    $menu = [StereoDriveWin32]::GetMenu($MainWindowHandle)
+    return Get-TopLevelWindows |
+        Where-Object { $_.ProcessId -eq $ProcessId -and $_.ClassName -eq "#32768" } |
+        Select-Object -First 1
+}
+
+function Get-PopupMenuHandle {
+    param([IntPtr]$PopupWindowHandle)
+
+    $menu = [StereoDriveWin32]::SendMessage($PopupWindowHandle, [StereoDriveWin32]::MN_GETHMENU, [IntPtr]::Zero, [IntPtr]::Zero)
     if ($menu -eq [IntPtr]::Zero) {
-        throw "Main window does not expose a standard menu."
+        throw "Could not retrieve HMENU from popup menu window."
     }
 
-    $currentMenu = $menu
-    $match = $null
-    foreach ($label in $Labels) {
-        $match = Find-MenuItem -MenuHandle $currentMenu -WantedLabel $label
-        if (-not $match) {
-            throw "Menu item '$label' was not found."
-        }
-        $currentMenu = $match.SubMenu
+    return $menu
+}
+
+function Invoke-PopupMenuItem {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
+        [string]$Label
+    )
+
+    Invoke-ButtonClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    Start-Sleep -Milliseconds 250
+
+    $popup = Get-PopupMenuWindow -ProcessId $ProcessId
+    if (-not $popup) {
+        throw "Tools popup window was not found."
     }
 
-    if ($null -eq $match -or $match.Id -eq 0xFFFFFFFF) {
-        throw "The menu path '$($Labels -join " -> ")' did not resolve to an invokable command."
+    $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
+    $match = Find-MenuItem -MenuHandle $menu -WantedLabel $Label
+    if (-not $match -or $match.Id -eq 0xFFFFFFFF) {
+        throw "Popup menu item '$Label' was not found."
     }
 
     [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr][int]$match.Id, [IntPtr]::Zero)
@@ -335,19 +379,23 @@ function Invoke-MenuPath {
 }
 
 function Open-ReferencePanel {
-    param([IntPtr]$MainWindowHandle)
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId
+    )
 
-    Invoke-MenuPath -MainWindowHandle $MainWindowHandle -Labels @("Tools", "Synchronize Drill and Syringe")
+    Invoke-PopupMenuItem -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId -Label "Synchronize Drill and Syringe"
 }
 
 function Ensure-ReferencePanel {
     param(
         [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
         [hashtable]$ControlMap
     )
 
     if (-not $ControlMap.ContainsKey("1095")) {
-        Open-ReferencePanel -MainWindowHandle $MainWindowHandle
+        Open-ReferencePanel -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId
         return (Get-ControlMap -MainWindowHandle $MainWindowHandle)
     }
 
@@ -357,10 +405,11 @@ function Ensure-ReferencePanel {
 function Get-ReferenceStatus {
     param(
         [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
         [hashtable]$ControlMap
     )
 
-    $ControlMap = Ensure-ReferencePanel -MainWindowHandle $MainWindowHandle -ControlMap $ControlMap
+    $ControlMap = Ensure-ReferencePanel -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId -ControlMap $ControlMap
 
     $status = ""
     if ($ControlMap.ContainsKey("1097")) {
@@ -373,7 +422,16 @@ function Get-ReferenceStatus {
     }
 }
 
-$mainHandle = Get-MainWindowHandle -ProcessName $ProcessName
+$proc = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 } |
+    Select-Object -First 1
+
+if (-not $proc) {
+    throw "No running process named '$ProcessName' with a main window was found."
+}
+
+$mainHandle = $proc.MainWindowHandle
+$mainProcessId = $proc.Id
 $controlMap = Get-ControlMap -MainWindowHandle $mainHandle
 
 $buttonIds = @{
@@ -425,13 +483,13 @@ if ($Action -eq "read-coords") {
 }
 
 if ($Action -eq "open-reference-panel") {
-    Open-ReferencePanel -MainWindowHandle $mainHandle
-    Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
+    Open-ReferencePanel -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
     return
 }
 
 if ($Action -eq "get-reference-status") {
-    Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap $controlMap
+    Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $controlMap
     return
 }
 
@@ -446,12 +504,12 @@ if ($comboIds.ContainsKey($Action)) {
 
 if ($buttonIds.ContainsKey($Action)) {
     if ($Action -like "set-reference-*" -or $Action -like "set-*-to-bregma" -or $Action -eq "close-reference-panel") {
-        $controlMap = Ensure-ReferencePanel -MainWindowHandle $mainHandle -ControlMap $controlMap
+        $controlMap = Ensure-ReferencePanel -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $controlMap
     }
     Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle -ClickMode $ClickMode
     [pscustomobject]@{
         Coords = Get-Coords -ControlMap $controlMap
-        Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
+        Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
     }
     return
 }
