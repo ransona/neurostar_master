@@ -567,14 +567,17 @@ class CraniotomyWindow(QMainWindow):
                     break
                 self.status_signal.emit(f"Moving to {int(index / max(1, len(point_targets)) * 100)}%")
                 started_at = time.monotonic()
-                self.controller.move_to_position_nudged(
-                    ap,
-                    ml,
-                    dv,
-                    step_mm=0.005,
-                    stop_requested=self.drill_stop_requested.is_set,
-                    status_callback=None,
-                )
+                if index == 0:
+                    self.controller.goto_position(ap, ml, dv, delay_seconds=0.5)
+                else:
+                    self.controller.move_to_position_nudged(
+                        ap,
+                        ml,
+                        dv,
+                        step_mm=0.005,
+                        stop_requested=self.drill_stop_requested.is_set,
+                        status_callback=None,
+                    )
                 self.drill_progress_signal.emit(index + 1)
                 remaining = per_point_budget - (time.monotonic() - started_at)
                 while remaining > 0 and not self.drill_stop_requested.is_set():
