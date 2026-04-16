@@ -4,6 +4,7 @@ param(
     [string]$WindowTitleRegex = ".*",
     [int]$MaxDepth = 5,
     [int]$MaxChildrenPerNode = 200,
+    [int]$DelaySeconds = 0,
     [string]$OutFile
 )
 
@@ -137,6 +138,11 @@ function Get-TargetWindows {
 }
 
 $rows = New-Object 'System.Collections.Generic.List[object]'
+
+if ($DelaySeconds -gt 0) {
+    Start-Sleep -Seconds $DelaySeconds
+}
+
 $targets = Get-TargetWindows -ProcessName $ProcessName -WindowTitleRegex $WindowTitleRegex
 
 foreach ($target in $targets) {
