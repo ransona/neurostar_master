@@ -386,7 +386,7 @@ class CraniotomyWindow(QMainWindow):
         try:
             seed = self.seeds[self.current_seed_index]
             current_ap, current_ml, current_dv = self.controller.get_current_position()
-            raised_dv = current_dv + self.raise_amount_dv
+            raised_dv = current_dv - self.raise_amount_dv
             self.controller.goto_position(current_ap, current_ml, raised_dv)
             self.controller.goto_position(seed.ap, seed.ml, raised_dv)
             self.set_status(
