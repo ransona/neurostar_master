@@ -337,7 +337,7 @@ function Invoke-MenuPath {
 function Open-ReferencePanel {
     param([IntPtr]$MainWindowHandle)
 
-    Invoke-MenuPath -MainWindowHandle $MainWindowHandle -Labels @("Tools", "Synchonrise tdrill and syringe")
+    Invoke-MenuPath -MainWindowHandle $MainWindowHandle -Labels @("Tools", "Synchronize Drill and Syringe")
 }
 
 function Ensure-ReferencePanel {
