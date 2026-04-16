@@ -148,7 +148,7 @@ class StereoDriveController:
 
     def goto_position(self, ap: float, ml: float, dv: float) -> None:
         self.set_target_position(ap, ml, dv)
-        time.sleep(0.1)
+        time.sleep(3.0)
         self._click(GOTO_ID)
 
     def stop(self) -> None:
