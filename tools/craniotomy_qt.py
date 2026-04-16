@@ -205,20 +205,16 @@ class CraniotomyWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        content = QHBoxLayout()
+        content = QVBoxLayout()
         content.setSpacing(12)
         layout.addLayout(content, 1)
-
-        left_column = QVBoxLayout()
-        left_column.setSpacing(12)
-        content.addLayout(left_column, 1)
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
         setup_layout.setContentsMargins(14, 14, 14, 14)
         setup_layout.setHorizontalSpacing(10)
         setup_layout.setVerticalSpacing(8)
-        left_column.addWidget(setup_box)
+        content.addWidget(setup_box)
 
         midpoint_btn = QPushButton("Use Current AP/ML As Midpoint")
         midpoint_btn.setProperty("variant", "primary")
@@ -289,19 +285,10 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(self.move_seed_btn, 5, 0, 1, 3)
         setup_layout.addWidget(self.capture_surface_btn, 5, 3, 1, 3)
 
-        self.status_label = QLabel("Ready.")
-        self.status_label.setWordWrap(True)
-        self.status_label.setProperty("role", "muted")
-        left_column.addWidget(self.status_label)
-
-        right_column = QVBoxLayout()
-        right_column.setSpacing(12)
-        content.addLayout(right_column, 1)
-
         views_box = QGroupBox("Trajectory View")
         views_layout = QGridLayout(views_box)
         views_layout.setContentsMargins(14, 14, 14, 14)
-        right_column.addWidget(views_box, 1)
+        content.addWidget(views_box, 1)
 
         self.top_view = ProjectionWidget("Top View", "AP", "ML")
         self.top_view.setMinimumSize(420, 420)
@@ -322,7 +309,7 @@ class CraniotomyWindow(QMainWindow):
         return widget
 
     def set_status(self, message: str) -> None:
-        self.status_label.setText(message)
+        return
 
     def refresh_live_position(self) -> None:
         try:
