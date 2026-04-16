@@ -23,6 +23,8 @@ param(
     )]
     [string]$Action,
     [string]$Value,
+    [ValidateSet("both", "bmclick", "wmcommand")]
+    [string]$ClickMode = "both",
     [string]$ProcessName = "StereoDrive"
 )
 
@@ -150,7 +152,8 @@ function Invoke-ButtonClick {
     param(
         [hashtable]$ControlMap,
         [int]$ControlId,
-        [IntPtr]$MainWindowHandle
+        [IntPtr]$MainWindowHandle,
+        [string]$ClickMode
     )
 
     $control = $ControlMap[[string]$ControlId]
@@ -158,9 +161,15 @@ function Invoke-ButtonClick {
         throw "Control ID $ControlId was not found."
     }
 
-    [void][StereoDriveWin32]::SendMessage($control.Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-    $wParam = [IntPtr]$ControlId
-    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, $wParam, $control.Handle)
+    if ($ClickMode -eq "bmclick" -or $ClickMode -eq "both") {
+        [void][StereoDriveWin32]::SendMessage($control.Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+
+    if ($ClickMode -eq "wmcommand" -or $ClickMode -eq "both") {
+        $wParam = [IntPtr]$ControlId
+        [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, $wParam, $control.Handle)
+    }
+
     Start-Sleep -Milliseconds 150
 }
 
@@ -284,7 +293,7 @@ if ($comboIds.ContainsKey($Action)) {
 }
 
 if ($buttonIds.ContainsKey($Action)) {
-    Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle
+    Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle -ClickMode $ClickMode
     Get-Coords -ControlMap $controlMap
     return
 }
