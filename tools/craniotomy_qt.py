@@ -2,12 +2,11 @@ import math
 import sys
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,8 +16,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -44,12 +41,12 @@ class ProjectionWidget(QWidget):
         self.x_label = x_label
         self.y_label = y_label
         self.invert_y = invert_y
-        self.trajectory: list[tuple[float, float]] = []
+        self.trajectory: list[tuple[float, float, float]] = []
         self.seed_points: list[tuple[float, float, bool]] = []
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-    def set_data(self, trajectory: list[tuple[float, float]], seed_points: list[tuple[float, float, bool]]) -> None:
+    def set_data(self, trajectory: list[tuple[float, float, float]], seed_points: list[tuple[float, float, bool]]) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
         self.update()
@@ -85,6 +82,16 @@ class ProjectionWidget(QWidget):
             min_y -= 1.0
             max_y += 1.0
 
+        span_x = max_x - min_x
+        span_y = max_y - min_y
+        uniform_span = max(span_x, span_y)
+        cx = (min_x + max_x) / 2.0
+        cy = (min_y + max_y) / 2.0
+        min_x = cx - uniform_span / 2.0
+        max_x = cx + uniform_span / 2.0
+        min_y = cy - uniform_span / 2.0
+        max_y = cy + uniform_span / 2.0
+
         def map_point(x: float, y: float) -> QPointF:
             px = draw_rect.left() + (x - min_x) / (max_x - min_x) * draw_rect.width()
             normalized_y = (y - min_y) / (max_y - min_y)
@@ -95,21 +102,22 @@ class ProjectionWidget(QWidget):
             return QPointF(px, py)
 
         if len(self.trajectory) > 1:
-            path = QPainterPath()
-            path.moveTo(map_point(*self.trajectory[0]))
-            for point in self.trajectory[1:]:
-                path.lineTo(map_point(*point))
-            painter.setPen(QPen(QColor("#0d8a63"), 3))
-            painter.drawPath(path)
+            for start, end in zip(self.trajectory[:-1], self.trajectory[1:]):
+                progress = max(0.0, min(1.0, (start[2] + end[2]) / 2.0))
+                red = int(130 + progress * 90)
+                green = int(170 - progress * 70)
+                blue = int(150 - progress * 50)
+                painter.setPen(QPen(QColor(red, green, blue), 6))
+                painter.drawLine(map_point(start[0], start[1]), map_point(end[0], end[1]))
 
         for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
             pt = map_point(x, y)
             color = QColor("#0d8a63" if sampled else "#dd6e42")
             painter.setPen(Qt.NoPen)
             painter.setBrush(color)
-            painter.drawEllipse(pt, 4.5, 4.5)
+            painter.drawEllipse(pt, 6, 6)
             painter.setPen(color)
-            painter.drawText(pt + QPointF(8, -8), str(idx))
+            painter.drawText(pt + QPointF(8, -8), f"{idx} [{x:.2f}, {y:.2f}]")
 
 
 class CraniotomyWindow(QMainWindow):
@@ -119,11 +127,15 @@ class CraniotomyWindow(QMainWindow):
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
         self.current_seed_index: int | None = None
+        self.raise_amount_dv = 1.5
 
         self.setWindowTitle("Craniotomy Planner")
-        self.resize(1360, 900)
+        self.resize(1120, 760)
         self._build_ui()
         self.refresh_live_position()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_live_position)
+        self.refresh_timer.start(250)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -134,25 +146,25 @@ class CraniotomyWindow(QMainWindow):
                 background: #eef3ea;
                 color: #173122;
                 font-family: 'Segoe UI';
-                font-size: 13px;
+                font-size: 12px;
             }
             QGroupBox {
                 border: 1px solid #d4ded3;
-                border-radius: 18px;
-                margin-top: 14px;
+                border-radius: 14px;
+                margin-top: 10px;
                 background: rgba(255,255,255,0.92);
                 font-weight: 600;
-                padding-top: 12px;
+                padding-top: 10px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 16px;
+                left: 12px;
                 padding: 0 6px;
             }
             QPushButton {
                 border: none;
-                border-radius: 18px;
-                padding: 10px 16px;
+                border-radius: 14px;
+                padding: 8px 12px;
                 background: #dceae0;
             }
             QPushButton:hover {
@@ -175,87 +187,31 @@ class CraniotomyWindow(QMainWindow):
             }
             QDoubleSpinBox, QSpinBox {
                 border: 1px solid #cfdbcf;
-                border-radius: 12px;
-                padding: 8px;
+                border-radius: 10px;
+                padding: 6px;
                 background: white;
-                min-height: 20px;
-            }
-            QTableWidget {
-                border: 1px solid #d4ded3;
-                border-radius: 14px;
-                background: white;
-                gridline-color: #edf2ec;
-            }
-            QHeaderView::section {
-                background: #f6f8f4;
-                border: none;
-                border-bottom: 1px solid #edf2ec;
-                padding: 8px;
-                font-weight: 600;
+                min-height: 18px;
             }
             """
         )
 
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
-
-        hero = QFrame()
-        hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(0, 0, 0, 0)
-        hero_layout.setSpacing(18)
-        layout.addWidget(hero)
-
-        hero_text = QGroupBox()
-        hero_text_layout = QVBoxLayout(hero_text)
-        hero_text_layout.setContentsMargins(22, 22, 22, 22)
-        title = QLabel("Craniotomy Planner")
-        title.setProperty("role", "hero")
-        subtitle = QLabel(
-            "Capture the midpoint from the live frame, sample skull surface depth around the rim, "
-            "and interpolate a circular trajectory that follows the skull contour."
-        )
-        subtitle.setWordWrap(True)
-        subtitle.setProperty("role", "muted")
-        hero_text_layout.addWidget(title)
-        hero_text_layout.addWidget(subtitle)
-        hero_layout.addWidget(hero_text, 3)
-
-        live_box = QGroupBox("StereoDrive")
-        live_layout = QGridLayout(live_box)
-        live_layout.setContentsMargins(18, 18, 18, 18)
-        live_layout.setHorizontalSpacing(16)
-        live_layout.setVerticalSpacing(8)
-        self.reference_label = QLabel("-")
-        self.ap_label = QLabel("-")
-        self.ml_label = QLabel("-")
-        self.dv_label = QLabel("-")
-        refresh_btn = QPushButton("Refresh Live Position")
-        refresh_btn.clicked.connect(self.refresh_live_position)
-        live_layout.addWidget(QLabel("Reference"), 0, 0)
-        live_layout.addWidget(self.reference_label, 0, 1)
-        live_layout.addWidget(refresh_btn, 0, 2, 1, 2)
-        live_layout.addWidget(QLabel("AP"), 1, 0)
-        live_layout.addWidget(self.ap_label, 1, 1)
-        live_layout.addWidget(QLabel("ML"), 1, 2)
-        live_layout.addWidget(self.ml_label, 1, 3)
-        live_layout.addWidget(QLabel("DV"), 1, 4)
-        live_layout.addWidget(self.dv_label, 1, 5)
-        hero_layout.addWidget(live_box, 2)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         content = QHBoxLayout()
-        content.setSpacing(18)
+        content.setSpacing(12)
         layout.addLayout(content, 1)
 
         left_column = QVBoxLayout()
-        left_column.setSpacing(18)
+        left_column.setSpacing(12)
         content.addLayout(left_column, 1)
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
-        setup_layout.setContentsMargins(18, 18, 18, 18)
-        setup_layout.setHorizontalSpacing(14)
-        setup_layout.setVerticalSpacing(12)
+        setup_layout.setContentsMargins(14, 14, 14, 14)
+        setup_layout.setHorizontalSpacing(10)
+        setup_layout.setVerticalSpacing(8)
         left_column.addWidget(setup_box)
 
         midpoint_btn = QPushButton("Use Current AP/ML As Midpoint")
@@ -266,45 +222,63 @@ class CraniotomyWindow(QMainWindow):
 
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
-        self.travel_dv = self._double_spinbox()
+        self.current_ap_label = QLabel("-")
+        self.current_ml_label = QLabel("-")
+        self.current_dv_label = QLabel("-")
         self.diameter = self._double_spinbox(value=3.0, minimum=0.1, maximum=20.0)
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
+        self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
+        self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
+        self.current_seed_coords = QLabel("Seed: -")
+        self.current_seed_coords.setWordWrap(True)
+        self.current_seed_coords.setProperty("role", "muted")
 
-        setup_layout.addWidget(midpoint_btn, 0, 0, 1, 2)
-        setup_layout.addWidget(QLabel("Mid AP (mm)"), 0, 2)
-        setup_layout.addWidget(self.mid_ap, 0, 3)
-        setup_layout.addWidget(QLabel("Mid ML (mm)"), 0, 4)
-        setup_layout.addWidget(self.mid_ml, 0, 5)
+        setup_layout.addWidget(QLabel("Current AP"), 0, 0)
+        setup_layout.addWidget(self.current_ap_label, 0, 1)
+        setup_layout.addWidget(QLabel("Current ML"), 0, 2)
+        setup_layout.addWidget(self.current_ml_label, 0, 3)
+        setup_layout.addWidget(QLabel("Current DV"), 0, 4)
+        setup_layout.addWidget(self.current_dv_label, 0, 5)
 
-        setup_layout.addWidget(QLabel("Travel DV"), 1, 0)
-        setup_layout.addWidget(self.travel_dv, 1, 1)
-        setup_layout.addWidget(QLabel("Diameter (mm)"), 1, 2)
-        setup_layout.addWidget(self.diameter, 1, 3)
-        setup_layout.addWidget(QLabel("Seed Points"), 1, 4)
-        setup_layout.addWidget(self.seed_count, 1, 5)
+        setup_layout.addWidget(midpoint_btn, 1, 0, 1, 2)
+        setup_layout.addWidget(QLabel("Mid AP"), 1, 2)
+        setup_layout.addWidget(self.mid_ap, 1, 3)
+        setup_layout.addWidget(QLabel("Mid ML"), 1, 4)
+        setup_layout.addWidget(self.mid_ml, 1, 5)
 
-        setup_layout.addWidget(QLabel("Trajectory Points"), 2, 0)
-        setup_layout.addWidget(self.trajectory_points, 2, 1)
-        setup_layout.addWidget(QLabel("Cut Offset DV"), 2, 2)
-        setup_layout.addWidget(self.cut_offset, 2, 3)
+        setup_layout.addWidget(QLabel("Diameter (mm)"), 2, 0)
+        setup_layout.addWidget(self.diameter, 2, 1)
+        setup_layout.addWidget(QLabel("Seed Points"), 2, 2)
+        setup_layout.addWidget(self.seed_count, 2, 3)
+        setup_layout.addWidget(QLabel("Trajectory Points"), 2, 4)
+        setup_layout.addWidget(self.trajectory_points, 2, 5)
 
-        generate_btn = QPushButton("Generate Seed Points")
+        setup_layout.addWidget(QLabel("Cut Offset DV"), 3, 0)
+        setup_layout.addWidget(self.cut_offset, 3, 1)
+        setup_layout.addWidget(QLabel("Current Seed"), 3, 2)
+        setup_layout.addWidget(self.current_seed_spin, 3, 3)
+        setup_layout.addWidget(self.current_seed_coords, 3, 4, 1, 2)
+
+        generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
         stop_btn = QPushButton("Stop Motion")
         stop_btn.setProperty("variant", "danger")
         stop_btn.style().unpolish(stop_btn)
         stop_btn.style().polish(stop_btn)
         stop_btn.clicked.connect(self.stop_motion)
-        setup_layout.addWidget(generate_btn, 2, 4)
-        setup_layout.addWidget(stop_btn, 2, 5)
+        clear_btn = QPushButton("Clear Surface Measurements")
+        clear_btn.clicked.connect(self.clear_surface_measurements)
+        setup_layout.addWidget(generate_btn, 4, 0, 1, 2)
+        setup_layout.addWidget(clear_btn, 4, 2, 1, 2)
+        setup_layout.addWidget(stop_btn, 4, 4, 1, 2)
 
         workflow_box = QGroupBox("Workflow")
         workflow_layout = QVBoxLayout(workflow_box)
-        workflow_layout.setContentsMargins(18, 18, 18, 18)
-        workflow_layout.setSpacing(12)
-        left_column.addWidget(workflow_box, 1)
+        workflow_layout.setContentsMargins(14, 14, 14, 14)
+        workflow_layout.setSpacing(10)
+        left_column.addWidget(workflow_box)
 
         button_row = QHBoxLayout()
         self.move_seed_btn = QPushButton("Move To Current Seed")
@@ -318,35 +292,22 @@ class CraniotomyWindow(QMainWindow):
         button_row.addWidget(self.capture_surface_btn)
         workflow_layout.addLayout(button_row)
 
-        self.seed_table = QTableWidget(0, 6)
-        self.seed_table.setHorizontalHeaderLabels(["#", "Angle", "AP", "ML", "DV", "State"])
-        self.seed_table.verticalHeader().setVisible(False)
-        self.seed_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.seed_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.seed_table.cellClicked.connect(self.on_seed_selected)
-        workflow_layout.addWidget(self.seed_table, 1)
-
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
         self.status_label.setProperty("role", "muted")
         workflow_layout.addWidget(self.status_label)
 
         right_column = QVBoxLayout()
-        right_column.setSpacing(18)
+        right_column.setSpacing(12)
         content.addLayout(right_column, 1)
 
         views_box = QGroupBox("Trajectory Views")
         views_layout = QGridLayout(views_box)
-        views_layout.setContentsMargins(18, 18, 18, 18)
-        views_layout.setSpacing(14)
+        views_layout.setContentsMargins(14, 14, 14, 14)
         right_column.addWidget(views_box, 1)
 
         self.top_view = ProjectionWidget("Top View", "AP", "ML")
-        self.back_view = ProjectionWidget("Back View", "ML", "DV", invert_y=True)
-        self.side_view = ProjectionWidget("Side View", "AP", "DV", invert_y=True)
         views_layout.addWidget(self.top_view, 0, 0)
-        views_layout.addWidget(self.back_view, 0, 1)
-        views_layout.addWidget(self.side_view, 1, 0, 1, 2)
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
@@ -367,23 +328,17 @@ class CraniotomyWindow(QMainWindow):
     def refresh_live_position(self) -> None:
         try:
             ap, ml, dv = self.controller.get_current_position()
-            self.reference_label.setText(self.controller.get_reference_selector() or "Unknown")
-            self.ap_label.setText(f"{ap:.2f}")
-            self.ml_label.setText(f"{ml:.2f}")
-            self.dv_label.setText(f"{dv:.2f}")
-            if self.travel_dv.value() == 0.0:
-                self.travel_dv.setValue(dv)
-            self.set_status("StereoDrive position refreshed.")
+            self.current_ap_label.setText(f"{ap:.2f}")
+            self.current_ml_label.setText(f"{ml:.2f}")
+            self.current_dv_label.setText(f"{dv:.2f}")
         except Exception as exc:
             self.set_status(str(exc))
 
     def capture_midpoint(self) -> None:
         try:
-            ap, ml, dv = self.controller.get_current_position()
+            ap, ml, _dv = self.controller.get_current_position()
             self.mid_ap.setValue(ap)
             self.mid_ml.setValue(ml)
-            self.travel_dv.setValue(dv)
-            self.refresh_live_position()
             self.set_status("Captured current AP/ML as the craniotomy midpoint.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -410,36 +365,33 @@ class CraniotomyWindow(QMainWindow):
                 )
             self.current_seed_index = 0
             self.trajectory = []
-            self.refresh_seed_table()
+            self.current_seed_spin.blockSignals(True)
+            self.current_seed_spin.setRange(1, len(self.seeds))
+            self.current_seed_spin.setValue(1)
+            self.current_seed_spin.blockSignals(False)
+            self.update_seed_selector_label()
             self.redraw_views()
             self.set_status(f"Generated {seed_count} seed points.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
-    def refresh_seed_table(self) -> None:
-        self.seed_table.setRowCount(len(self.seeds))
-        for seed in self.seeds:
-            state = "Captured" if seed.dv is not None else "Pending"
-            values = [
-                str(seed.index + 1),
-                f"{seed.angle_deg:.1f}°",
-                f"{seed.ap:.2f}",
-                f"{seed.ml:.2f}",
-                "" if seed.dv is None else f"{seed.dv:.2f}",
-                state,
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setTextAlignment(Qt.AlignCenter)
-                if seed.index == self.current_seed_index:
-                    item.setBackground(QColor("#dff0e5"))
-                self.seed_table.setItem(seed.index, column, item)
-        if self.current_seed_index is not None and self.current_seed_index < len(self.seeds):
-            self.seed_table.selectRow(self.current_seed_index)
+    def update_seed_selector_label(self) -> None:
+        if self.current_seed_index is None or not self.seeds:
+            self.current_seed_coords.setText("Seed: -")
+            return
+        seed = self.seeds[self.current_seed_index]
+        state = "surface set" if seed.dv is not None else "surface pending"
+        self.current_seed_coords.setText(
+            f"Seed {seed.index + 1} [{seed.ap:.2f}, {seed.ml:.2f}] {state}"
+        )
 
-    def on_seed_selected(self, row: int, _column: int) -> None:
-        self.current_seed_index = row
-        self.refresh_seed_table()
+    def on_seed_spin_changed(self, value: int) -> None:
+        if not self.seeds:
+            self.current_seed_index = None
+            self.update_seed_selector_label()
+            return
+        self.current_seed_index = max(0, min(len(self.seeds) - 1, value - 1))
+        self.update_seed_selector_label()
 
     def move_to_current_seed(self) -> None:
         if self.current_seed_index is None or not self.seeds:
@@ -447,10 +399,12 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             seed = self.seeds[self.current_seed_index]
-            self.controller.goto_position(seed.ap, seed.ml, self.travel_dv.value())
-            self.refresh_live_position()
+            current_ap, current_ml, current_dv = self.controller.get_current_position()
+            raised_dv = current_dv - self.raise_amount_dv
+            self.controller.goto_position(current_ap, current_ml, raised_dv)
+            self.controller.goto_position(seed.ap, seed.ml, raised_dv)
             self.set_status(
-                f"Moved to seed {seed.index + 1}. Lower manually to the skull surface, then click 'At Surface / Capture DV'."
+                f"Moved above seed {seed.index + 1} at DV {raised_dv:.2f}. Lower manually to the skull surface, then click 'At Surface / Capture DV'."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -468,13 +422,33 @@ class CraniotomyWindow(QMainWindow):
             self.compute_trajectory()
             next_pending = next((s.index for s in self.seeds if s.dv is None), None)
             self.current_seed_index = next_pending
-            self.refresh_seed_table()
+            if next_pending is not None:
+                self.current_seed_spin.blockSignals(True)
+                self.current_seed_spin.setValue(next_pending + 1)
+                self.current_seed_spin.blockSignals(False)
+            self.update_seed_selector_label()
+            self.redraw_views()
             if next_pending is None:
                 self.set_status("Captured all seed points and updated the trajectory.")
             else:
-                self.set_status(f"Captured seed {seed.index + 1}. Next pending seed: {next_pending + 1}.")
+                self.move_to_current_seed()
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def clear_surface_measurements(self) -> None:
+        for seed in self.seeds:
+            seed.dv = None
+            seed.sampled_ap = None
+            seed.sampled_ml = None
+        self.trajectory = []
+        self.current_seed_index = 0 if self.seeds else None
+        if self.seeds:
+            self.current_seed_spin.blockSignals(True)
+            self.current_seed_spin.setValue(1)
+            self.current_seed_spin.blockSignals(False)
+        self.update_seed_selector_label()
+        self.redraw_views()
+        self.set_status("Cleared all captured surface measurements.")
 
     def compute_trajectory(self) -> None:
         captured = [seed for seed in self.seeds if seed.dv is not None]
@@ -518,16 +492,10 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def redraw_views(self) -> None:
-        top_points = [(ap, ml) for ap, ml, _ in self.trajectory]
-        back_points = [(ml, dv) for _, ml, dv in self.trajectory]
-        side_points = [(ap, dv) for ap, _, dv in self.trajectory]
-        fallback_dv = self.travel_dv.value()
+        top_points = [(ap, ml, 0.0) for ap, ml, _ in self.trajectory]
         top_seeds = [(seed.ap, seed.ml, seed.dv is not None) for seed in self.seeds]
-        back_seeds = [(seed.ml, seed.dv if seed.dv is not None else fallback_dv, seed.dv is not None) for seed in self.seeds]
-        side_seeds = [(seed.ap, seed.dv if seed.dv is not None else fallback_dv, seed.dv is not None) for seed in self.seeds]
         self.top_view.set_data(top_points, top_seeds)
-        self.back_view.set_data(back_points, back_seeds)
-        self.side_view.set_data(side_points, side_seeds)
+        self.update_seed_selector_label()
 
 
 def main() -> None:
