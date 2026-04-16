@@ -34,6 +34,7 @@ param(
     [string]$Value,
     [ValidateSet("both", "bmclick", "wmcommand")]
     [string]$ClickMode = "both",
+    [int]$DelaySeconds = 0,
     [string]$ProcessName = "StereoDrive"
 )
 
@@ -519,8 +520,12 @@ if ($Action -eq "open-reference-panel") {
 }
 
 if ($Action -eq "dump-tools-menu") {
-    Invoke-ButtonClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $mainHandle -ClickMode $ClickMode
-    Start-Sleep -Milliseconds 250
+    if ($DelaySeconds -gt 0) {
+        Start-Sleep -Seconds $DelaySeconds
+    } else {
+        Invoke-ButtonClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $mainHandle -ClickMode $ClickMode
+        Start-Sleep -Milliseconds 250
+    }
     $popup = Get-PopupMenuWindow -ProcessId $mainProcessId
     if (-not $popup) {
         throw "Tools popup window was not found."
