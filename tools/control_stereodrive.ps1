@@ -34,8 +34,9 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class StereoDriveWin32
-{
+ public static class StereoDriveWin32
+ {
+    public const uint WM_COMMAND = 0x0111;
     public const uint WM_GETTEXT = 0x000D;
     public const uint WM_GETTEXTLENGTH = 0x000E;
     public const uint WM_SETTEXT = 0x000C;
@@ -148,7 +149,8 @@ function Get-ControlMap {
 function Invoke-ButtonClick {
     param(
         [hashtable]$ControlMap,
-        [int]$ControlId
+        [int]$ControlId,
+        [IntPtr]$MainWindowHandle
     )
 
     $control = $ControlMap[[string]$ControlId]
@@ -157,6 +159,8 @@ function Invoke-ButtonClick {
     }
 
     [void][StereoDriveWin32]::SendMessage($control.Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+    $wParam = [IntPtr]$ControlId
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, $wParam, $control.Handle)
     Start-Sleep -Milliseconds 150
 }
 
@@ -280,7 +284,7 @@ if ($comboIds.ContainsKey($Action)) {
 }
 
 if ($buttonIds.ContainsKey($Action)) {
-    Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action]
+    Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle
     Get-Coords -ControlMap $controlMap
     return
 }
