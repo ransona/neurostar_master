@@ -65,13 +65,14 @@ function Get-ElementRecord {
 }
 
 function Add-ElementTree {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Windows.Automation.AutomationElement]$Root,
-        [Parameter(Mandatory = $true)]
-        [System.Collections.Generic.List[object]]$Rows,
-        [Parameter(Mandatory = $true)]
-        [int]$MaxDepth,
+     param(
+         [Parameter(Mandatory = $true)]
+         [System.Windows.Automation.AutomationElement]$Root,
+         [AllowEmptyCollection()]
+         [Parameter(Mandatory = $true)]
+         [System.Collections.Generic.List[object]]$Rows,
+         [Parameter(Mandatory = $true)]
+         [int]$MaxDepth,
         [Parameter(Mandatory = $true)]
         [int]$MaxChildrenPerNode,
         [int]$Depth = 0,
