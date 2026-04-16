@@ -425,7 +425,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
             if self.seeds:
-                self.redraw_views(current_point=(ap, ml))
+                self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
             self.set_status(str(exc))
 
