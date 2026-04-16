@@ -132,6 +132,18 @@ class StereoDriveController:
         self._set_text(self._control_handle(TARGET_AP_ID), f"{ap:.2f}")
         self._set_text(self._control_handle(TARGET_ML_ID), f"{ml:.2f}")
         self._set_text(self._control_handle(TARGET_DV_ID), f"{dv:.2f}")
+        self._verify_target_position(ap, ml, dv)
+
+    def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
+        actual_ap = self._parse_float(TARGET_AP_ID)
+        actual_ml = self._parse_float(TARGET_ML_ID)
+        actual_dv = self._parse_float(TARGET_DV_ID)
+        if round(actual_ap, 2) != round(ap, 2):
+            raise StereoDriveError(f"Failed to set Bregma AP target box to {ap:.2f}.")
+        if round(actual_ml, 2) != round(ml, 2):
+            raise StereoDriveError(f"Failed to set Bregma ML target box to {ml:.2f}.")
+        if round(actual_dv, 2) != round(dv, 2):
+            raise StereoDriveError(f"Failed to set Bregma DV target box to {dv:.2f}.")
 
     def goto_position(self, ap: float, ml: float, dv: float) -> None:
         self.set_target_position(ap, ml, dv)
