@@ -352,7 +352,7 @@ class CraniotomyWindow(QMainWindow):
         views_layout.setContentsMargins(14, 14, 14, 14)
         content.addWidget(views_box, 1)
 
-        self.top_view = ProjectionWidget(self.current_action, "AP", "ML")
+        self.top_view = ProjectionWidget(self.current_action, "ML", "AP")
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
@@ -656,12 +656,12 @@ class CraniotomyWindow(QMainWindow):
         top_points: list[tuple[float, float, float]] = []
         for index, (ap, ml, _dv) in enumerate(self.trajectory):
             progress = 1.0 if index < self.drill_completed_points else 0.0
-            top_points.append((ap, ml, progress))
-        top_seeds = [(seed.ap, seed.ml, seed.dv is not None) for seed in self.seeds]
+            top_points.append((ml, ap, progress))
+        top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
         if current_point is None and self.seeds:
             try:
                 current_ap, current_ml, _current_dv = self.controller.get_current_position()
-                current_point = (current_ap, current_ml)
+                current_point = (current_ml, current_ap)
             except Exception:
                 current_point = None
         self.top_view.set_data(top_points, top_seeds, current_point=current_point if self.seeds else None)
