@@ -12,6 +12,8 @@ param(
         "get-reference-status",
         "open-reference-panel",
         "dump-tools-menu",
+        "test-hidden-reference-bregma",
+        "test-hidden-drill-to-bregma",
         "set-reference-other",
         "set-reference-bregma",
         "set-reference-lambda",
@@ -226,6 +228,16 @@ function Invoke-ButtonClick {
     Start-Sleep -Milliseconds 150
 }
 
+function Invoke-DirectCommand {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$CommandId
+    )
+
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new([int64]$CommandId), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+}
+
 function Set-EditText {
     param(
         [hashtable]$ControlMap,
@@ -438,10 +450,13 @@ function Get-ReferenceStatus {
     param(
         [IntPtr]$MainWindowHandle,
         [int]$ProcessId,
-        [hashtable]$ControlMap
+        [hashtable]$ControlMap,
+        [bool]$EnsureVisible = $true
     )
 
-    $ControlMap = Ensure-ReferencePanel -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId -ControlMap $ControlMap
+    if ($EnsureVisible) {
+        $ControlMap = Ensure-ReferencePanel -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId -ControlMap $ControlMap
+    }
 
     $status = ""
     if ($ControlMap.ContainsKey("1097")) {
@@ -451,6 +466,7 @@ function Get-ReferenceStatus {
     return [pscustomobject]@{
         ReferenceSelector = if ($ControlMap.ContainsKey("1387")) { Get-ControlText -Handle $ControlMap["1387"].Handle } else { "" }
         ReferenceStatus = $status
+        ReferencePanelVisible = $ControlMap.ContainsKey("1095")
     }
 }
 
@@ -538,6 +554,26 @@ if ($Action -eq "dump-tools-menu") {
 
 if ($Action -eq "get-reference-status") {
     Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $controlMap
+    return
+}
+
+if ($Action -eq "test-hidden-reference-bregma") {
+    Invoke-DirectCommand -MainWindowHandle $mainHandle -CommandId 1095
+    $postMap = Get-ControlMap -MainWindowHandle $mainHandle
+    [pscustomobject]@{
+        Coords = Get-Coords -ControlMap $postMap
+        Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $postMap -EnsureVisible $false
+    }
+    return
+}
+
+if ($Action -eq "test-hidden-drill-to-bregma") {
+    Invoke-DirectCommand -MainWindowHandle $mainHandle -CommandId 1071
+    $postMap = Get-ControlMap -MainWindowHandle $mainHandle
+    [pscustomobject]@{
+        Coords = Get-Coords -ControlMap $postMap
+        Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $postMap -EnsureVisible $false
+    }
     return
 }
 
