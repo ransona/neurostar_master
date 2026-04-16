@@ -321,10 +321,12 @@ function Find-MenuItem {
         [void][StereoDriveWin32]::GetMenuString($MenuHandle, [uint32]$i, $buffer, $buffer.Capacity, [StereoDriveWin32]::MF_BYPOSITION)
         $label = $buffer.ToString()
         if ((Normalize-MenuLabel -Text $label) -eq $wanted) {
+            $rawId = [uint32][StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
             return [pscustomobject]@{
                 Position = $i
                 Label = $label
-                Id = [StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
+                Id = if ($rawId -eq 0xFFFFFFFF) { $null } else { [int]$rawId }
+                RawId = ('0x{0:X8}' -f $rawId)
                 SubMenu = [StereoDriveWin32]::GetSubMenu($MenuHandle, $i)
             }
         }
@@ -398,7 +400,7 @@ function Invoke-PopupMenuItem {
 
     $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
     $match = Find-MenuItem -MenuHandle $menu -WantedLabel $Label
-    if (-not $match -or $match.Id -eq 0xFFFFFFFF) {
+    if (-not $match -or $null -eq $match.Id) {
         throw "Popup menu item '$Label' was not found."
     }
 
