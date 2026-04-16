@@ -10,6 +10,7 @@ param(
         "store-coords",
         "use-target",
         "get-reference-status",
+        "open-reference-panel",
         "set-reference-other",
         "set-reference-bregma",
         "set-reference-lambda",
@@ -43,8 +44,9 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
- public static class StereoDriveWin32
- {
+public static class StereoDriveWin32
+{
+    public const uint MF_BYPOSITION = 0x00000400;
     public const uint WM_COMMAND = 0x0111;
     public const uint WM_GETTEXT = 0x000D;
     public const uint WM_GETTEXTLENGTH = 0x000E;
@@ -59,6 +61,21 @@ using System.Text;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetMenu(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetMenuItemCount(IntPtr hMenu);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetSubMenu(IntPtr hMenu, int nPos);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int GetMenuString(IntPtr hMenu, uint uIDItem, StringBuilder lpString, int cchMax, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetDlgCtrlID(IntPtr hWnd);
@@ -245,8 +262,105 @@ function Get-Coords {
     }
 }
 
+function Normalize-MenuLabel {
+    param([string]$Text)
+
+    if ($null -eq $Text) {
+        return ""
+    }
+
+    $normalized = $Text.ToLowerInvariant()
+    $normalized = $normalized -replace '&', ''
+    $normalized = $normalized -replace '\.\.\.', ''
+    $normalized = $normalized -replace '\s+', ' '
+    return $normalized.Trim()
+}
+
+function Find-MenuItem {
+    param(
+        [IntPtr]$MenuHandle,
+        [string]$WantedLabel
+    )
+
+    $count = [StereoDriveWin32]::GetMenuItemCount($MenuHandle)
+    if ($count -lt 0) {
+        return $null
+    }
+
+    $wanted = Normalize-MenuLabel -Text $WantedLabel
+    for ($i = 0; $i -lt $count; $i++) {
+        $buffer = New-Object System.Text.StringBuilder 256
+        [void][StereoDriveWin32]::GetMenuString($MenuHandle, [uint32]$i, $buffer, $buffer.Capacity, [StereoDriveWin32]::MF_BYPOSITION)
+        $label = $buffer.ToString()
+        if ((Normalize-MenuLabel -Text $label) -eq $wanted) {
+            return [pscustomobject]@{
+                Position = $i
+                Label = $label
+                Id = [StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
+                SubMenu = [StereoDriveWin32]::GetSubMenu($MenuHandle, $i)
+            }
+        }
+    }
+
+    return $null
+}
+
+function Invoke-MenuPath {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [string[]]$Labels
+    )
+
+    $menu = [StereoDriveWin32]::GetMenu($MainWindowHandle)
+    if ($menu -eq [IntPtr]::Zero) {
+        throw "Main window does not expose a standard menu."
+    }
+
+    $currentMenu = $menu
+    $match = $null
+    foreach ($label in $Labels) {
+        $match = Find-MenuItem -MenuHandle $currentMenu -WantedLabel $label
+        if (-not $match) {
+            throw "Menu item '$label' was not found."
+        }
+        $currentMenu = $match.SubMenu
+    }
+
+    if ($null -eq $match -or $match.Id -eq 0xFFFFFFFF) {
+        throw "The menu path '$($Labels -join " -> ")' did not resolve to an invokable command."
+    }
+
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr][int]$match.Id, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+}
+
+function Open-ReferencePanel {
+    param([IntPtr]$MainWindowHandle)
+
+    Invoke-MenuPath -MainWindowHandle $MainWindowHandle -Labels @("Tools", "Synchonrise tdrill and syringe")
+}
+
+function Ensure-ReferencePanel {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [hashtable]$ControlMap
+    )
+
+    if (-not $ControlMap.ContainsKey("1095")) {
+        Open-ReferencePanel -MainWindowHandle $MainWindowHandle
+        return (Get-ControlMap -MainWindowHandle $MainWindowHandle)
+    }
+
+    return $ControlMap
+}
+
 function Get-ReferenceStatus {
-    param([hashtable]$ControlMap)
+    param(
+        [IntPtr]$MainWindowHandle,
+        [hashtable]$ControlMap
+    )
+
+    $ControlMap = Ensure-ReferencePanel -MainWindowHandle $MainWindowHandle -ControlMap $ControlMap
 
     $status = ""
     if ($ControlMap.ContainsKey("1097")) {
@@ -310,8 +424,14 @@ if ($Action -eq "read-coords") {
     return
 }
 
+if ($Action -eq "open-reference-panel") {
+    Open-ReferencePanel -MainWindowHandle $mainHandle
+    Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
+    return
+}
+
 if ($Action -eq "get-reference-status") {
-    Get-ReferenceStatus -ControlMap $controlMap
+    Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap $controlMap
     return
 }
 
@@ -325,10 +445,13 @@ if ($comboIds.ContainsKey($Action)) {
 }
 
 if ($buttonIds.ContainsKey($Action)) {
+    if ($Action -like "set-reference-*" -or $Action -like "set-*-to-bregma" -or $Action -eq "close-reference-panel") {
+        $controlMap = Ensure-ReferencePanel -MainWindowHandle $mainHandle -ControlMap $controlMap
+    }
     Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle -ClickMode $ClickMode
     [pscustomobject]@{
         Coords = Get-Coords -ControlMap $controlMap
-        Reference = Get-ReferenceStatus -ControlMap $controlMap
+        Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
     }
     return
 }
