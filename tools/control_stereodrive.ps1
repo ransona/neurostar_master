@@ -415,7 +415,8 @@ function Open-ReferencePanel {
         [int]$ProcessId
     )
 
-    Invoke-PopupMenuItem -MainWindowHandle $MainWindowHandle -ProcessId $ProcessId -Label "Synchronize Drill and Syringe"
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new(32809), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
 }
 
 function Ensure-ReferencePanel {
