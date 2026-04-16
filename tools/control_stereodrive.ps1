@@ -9,6 +9,13 @@ param(
         "goto",
         "store-coords",
         "use-target",
+        "get-reference-status",
+        "set-reference-other",
+        "set-reference-bregma",
+        "set-reference-lambda",
+        "set-drill-to-bregma",
+        "set-syringe-to-bregma",
+        "close-reference-panel",
         "set-mode-drill",
         "set-mode-syringe",
         "jog-ap-ant",
@@ -238,6 +245,20 @@ function Get-Coords {
     }
 }
 
+function Get-ReferenceStatus {
+    param([hashtable]$ControlMap)
+
+    $status = ""
+    if ($ControlMap.ContainsKey("1097")) {
+        $status = Get-ControlText -Handle $ControlMap["1097"].Handle
+    }
+
+    return [pscustomobject]@{
+        ReferenceSelector = if ($ControlMap.ContainsKey("1387")) { Get-ControlText -Handle $ControlMap["1387"].Handle } else { "" }
+        ReferenceStatus = $status
+    }
+}
+
 $mainHandle = Get-MainWindowHandle -ProcessName $ProcessName
 $controlMap = Get-ControlMap -MainWindowHandle $mainHandle
 
@@ -248,6 +269,12 @@ $buttonIds = @{
     "goto" = 1014
     "store-coords" = 1019
     "use-target" = 1152
+    "set-reference-other" = 1094
+    "set-reference-bregma" = 1095
+    "set-reference-lambda" = 1096
+    "set-drill-to-bregma" = 1071
+    "set-syringe-to-bregma" = 1072
+    "close-reference-panel" = 1042
     "set-mode-drill" = 1043
     "set-mode-syringe" = 1101
     "jog-ap-post" = 1103
@@ -283,6 +310,11 @@ if ($Action -eq "read-coords") {
     return
 }
 
+if ($Action -eq "get-reference-status") {
+    Get-ReferenceStatus -ControlMap $controlMap
+    return
+}
+
 if ($comboIds.ContainsKey($Action)) {
     if (-not $Value) {
         throw "Action '$Action' requires -Value, for example -Value '0.1 mm'."
@@ -294,7 +326,10 @@ if ($comboIds.ContainsKey($Action)) {
 
 if ($buttonIds.ContainsKey($Action)) {
     Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle -ClickMode $ClickMode
-    Get-Coords -ControlMap $controlMap
+    [pscustomobject]@{
+        Coords = Get-Coords -ControlMap $controlMap
+        Reference = Get-ReferenceStatus -ControlMap $controlMap
+    }
     return
 }
 
