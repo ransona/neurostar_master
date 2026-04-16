@@ -46,6 +46,12 @@ class ProjectionWidget(QWidget):
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return width
+
     def set_data(self, trajectory: list[tuple[float, float, float]], seed_points: list[tuple[float, float, bool]]) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
@@ -263,6 +269,13 @@ class CraniotomyWindow(QMainWindow):
 
         generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
+        self.move_seed_btn = QPushButton("Move To Current Seed")
+        self.move_seed_btn.clicked.connect(self.move_to_current_seed)
+        self.capture_surface_btn = QPushButton("At Surface / Capture DV")
+        self.capture_surface_btn.setProperty("variant", "primary")
+        self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
+        self.capture_surface_btn.style().polish(self.capture_surface_btn)
+        self.capture_surface_btn.clicked.connect(self.capture_surface)
         stop_btn = QPushButton("Stop Motion")
         stop_btn.setProperty("variant", "danger")
         stop_btn.style().unpolish(stop_btn)
@@ -273,40 +286,26 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(generate_btn, 4, 0, 1, 2)
         setup_layout.addWidget(clear_btn, 4, 2, 1, 2)
         setup_layout.addWidget(stop_btn, 4, 4, 1, 2)
-
-        workflow_box = QGroupBox("Workflow")
-        workflow_layout = QVBoxLayout(workflow_box)
-        workflow_layout.setContentsMargins(14, 14, 14, 14)
-        workflow_layout.setSpacing(10)
-        left_column.addWidget(workflow_box)
-
-        button_row = QHBoxLayout()
-        self.move_seed_btn = QPushButton("Move To Current Seed")
-        self.move_seed_btn.clicked.connect(self.move_to_current_seed)
-        self.capture_surface_btn = QPushButton("At Surface / Capture DV")
-        self.capture_surface_btn.setProperty("variant", "primary")
-        self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
-        self.capture_surface_btn.style().polish(self.capture_surface_btn)
-        self.capture_surface_btn.clicked.connect(self.capture_surface)
-        button_row.addWidget(self.move_seed_btn)
-        button_row.addWidget(self.capture_surface_btn)
-        workflow_layout.addLayout(button_row)
+        setup_layout.addWidget(self.move_seed_btn, 5, 0, 1, 3)
+        setup_layout.addWidget(self.capture_surface_btn, 5, 3, 1, 3)
 
         self.status_label = QLabel("Ready.")
         self.status_label.setWordWrap(True)
         self.status_label.setProperty("role", "muted")
-        workflow_layout.addWidget(self.status_label)
+        left_column.addWidget(self.status_label)
 
         right_column = QVBoxLayout()
         right_column.setSpacing(12)
         content.addLayout(right_column, 1)
 
-        views_box = QGroupBox("Trajectory Views")
+        views_box = QGroupBox("Trajectory View")
         views_layout = QGridLayout(views_box)
         views_layout.setContentsMargins(14, 14, 14, 14)
         right_column.addWidget(views_box, 1)
 
         self.top_view = ProjectionWidget("Top View", "AP", "ML")
+        self.top_view.setMinimumSize(420, 420)
+        self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
