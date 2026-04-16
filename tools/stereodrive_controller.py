@@ -218,9 +218,12 @@ class StereoDriveController:
         tolerance: float = 0.003,
         stop_requested=None,
         status_callback=None,
+        dwell_seconds: float = 0.02,
     ) -> None:
         self.set_nudge_step(axis, step_mm)
         max_iterations = 10000
+        moved = False
+        positive = False
         for _ in range(max_iterations):
             if stop_requested is not None and stop_requested():
                 raise StereoDriveError("Operation paused.")
@@ -228,11 +231,15 @@ class StereoDriveController:
             diff = target - current
             if abs(diff) <= tolerance:
                 return
-            positive = diff > 0
+            if not moved:
+                positive = diff > 0
+            elif (positive and current >= target) or ((not positive) and current <= target):
+                return
             self.nudge_axis(axis, positive)
+            moved = True
             if status_callback is not None:
                 status_callback(f"Nudging {axis.upper()} to {target:.3f} (current {current:.3f})")
-            time.sleep(0.02)
+            time.sleep(dwell_seconds)
         raise StereoDriveError(f"Timed out moving {axis.upper()} to target {target:.3f}.")
 
     def move_to_position_nudged(
@@ -243,10 +250,11 @@ class StereoDriveController:
         step_mm: float = 0.005,
         stop_requested=None,
         status_callback=None,
+        dwell_seconds: float = 0.02,
     ) -> None:
-        self.move_axis_to_target("AP", ap, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
-        self.move_axis_to_target("ML", ml, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
-        self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
+        self.move_axis_to_target("AP", ap, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+        self.move_axis_to_target("ML", ml, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+        self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
 
     def set_target_position(self, ap: float, ml: float, dv: float) -> None:
         self._set_text(self._control_handle(TARGET_AP_ID), f"{ap:.2f}")
