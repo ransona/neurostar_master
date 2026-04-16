@@ -1,4 +1,5 @@
 import ctypes
+import time
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -147,6 +148,7 @@ class StereoDriveController:
 
     def goto_position(self, ap: float, ml: float, dv: float) -> None:
         self.set_target_position(ap, ml, dv)
+        time.sleep(0.1)
         self._click(GOTO_ID)
 
     def stop(self) -> None:
