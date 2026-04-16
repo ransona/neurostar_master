@@ -146,9 +146,9 @@ class StereoDriveController:
         if round(actual_dv, 2) != round(dv, 2):
             raise StereoDriveError(f"Failed to set Bregma DV target box to {dv:.2f}.")
 
-    def goto_position(self, ap: float, ml: float, dv: float) -> None:
+    def goto_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.5) -> None:
         self.set_target_position(ap, ml, dv)
-        time.sleep(0.5)
+        time.sleep(delay_seconds)
         self._click(GOTO_ID)
 
     def stop(self) -> None:

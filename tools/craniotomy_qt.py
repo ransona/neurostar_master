@@ -133,8 +133,6 @@ class CraniotomyWindow(QMainWindow):
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
         self.current_seed_index: int | None = None
-        self.raise_amount_dv = 1.5
-
         self.setWindowTitle("Craniotomy Planner")
         self.resize(1120, 760)
         self._build_ui()
@@ -385,12 +383,9 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             seed = self.seeds[self.current_seed_index]
-            current_ap, current_ml, current_dv = self.controller.get_current_position()
-            raised_dv = current_dv - self.raise_amount_dv
-            self.controller.goto_position(current_ap, current_ml, raised_dv)
-            self.controller.goto_position(seed.ap, seed.ml, raised_dv)
+            self.controller.goto_position(seed.ap, seed.ml, -1.0, delay_seconds=1.0)
             self.set_status(
-                f"Moved above seed {seed.index + 1} at DV {raised_dv:.2f}. Lower manually to the skull surface, then click 'At Surface / Capture DV'."
+                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'At Surface / Capture DV'."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
