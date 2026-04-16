@@ -346,11 +346,13 @@ function Get-MenuItems {
         $buffer = New-Object System.Text.StringBuilder 256
         [void][StereoDriveWin32]::GetMenuString($MenuHandle, [uint32]$i, $buffer, $buffer.Capacity, [StereoDriveWin32]::MF_BYPOSITION)
         $label = $buffer.ToString()
+        $rawId = [uint32][StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
         $items += [pscustomobject]@{
             Position = $i
             Label = $label
             NormalizedLabel = Normalize-MenuLabel -Text $label
-            Id = [int][StereoDriveWin32]::GetMenuItemID($MenuHandle, $i)
+            Id = if ($rawId -eq 0xFFFFFFFF) { $null } else { [int]$rawId }
+            RawId = ('0x{0:X8}' -f $rawId)
             HasSubMenu = ([StereoDriveWin32]::GetSubMenu($MenuHandle, $i) -ne [IntPtr]::Zero)
         }
     }
