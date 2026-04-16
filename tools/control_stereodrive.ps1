@@ -14,6 +14,7 @@ param(
         "dump-tools-menu",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
+        "probe-command",
         "set-reference-other",
         "set-reference-bregma",
         "set-reference-lambda",
@@ -37,6 +38,7 @@ param(
     [ValidateSet("both", "bmclick", "wmcommand")]
     [string]$ClickMode = "both",
     [int]$DelaySeconds = 0,
+    [int]$CommandId = 0,
     [string]$ProcessName = "StereoDrive"
 )
 
@@ -190,6 +192,12 @@ function Get-TopLevelWindows {
     return $rows
 }
 
+function Get-ProcessWindows {
+    param([int]$ProcessId)
+
+    return Get-TopLevelWindows | Where-Object { $_.ProcessId -eq $ProcessId }
+}
+
 function Get-ControlMap {
     param([IntPtr]$MainWindowHandle)
 
@@ -236,6 +244,33 @@ function Invoke-DirectCommand {
 
     [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new([int64]$CommandId), [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300
+}
+
+function Get-WindowSnapshot {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId
+    )
+
+    $processWindows = Get-ProcessWindows -ProcessId $ProcessId |
+        Select-Object Handle, ProcessId, ClassName, Caption
+
+    $controlMap = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    $interesting = $controlMap.GetEnumerator() |
+        Sort-Object { [int]$_.Key } |
+        ForEach-Object {
+            [pscustomobject]@{
+                ControlId = [int]$_.Key
+                ClassName = $_.Value.ClassName
+                Caption = $_.Value.Caption
+                Text = $_.Value.Text
+            }
+        }
+
+    return [pscustomobject]@{
+        Windows = $processWindows
+        Controls = $interesting
+    }
 }
 
 function Set-EditText {
@@ -554,6 +589,23 @@ if ($Action -eq "dump-tools-menu") {
 
 if ($Action -eq "get-reference-status") {
     Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $controlMap
+    return
+}
+
+if ($Action -eq "probe-command") {
+    if ($CommandId -le 0) {
+        throw "Action 'probe-command' requires -CommandId."
+    }
+
+    $before = Get-WindowSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    Invoke-DirectCommand -MainWindowHandle $mainHandle -CommandId $CommandId
+    $after = Get-WindowSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+
+    [pscustomobject]@{
+        CommandId = $CommandId
+        Before = $before
+        After = $after
+    }
     return
 }
 
