@@ -19,6 +19,15 @@ CURRENT_DV_ID = 1146
 GOTO_ID = 1014
 STOP_ID = 1018
 REFERENCE_SELECTOR_ID = 1387
+STEP_AP_ID = 1132
+STEP_ML_ID = 1133
+STEP_DV_ID = 1134
+BUTTON_AP_NEGATIVE_ID = 1103
+BUTTON_AP_POSITIVE_ID = 1102
+BUTTON_ML_NEGATIVE_ID = 1104
+BUTTON_ML_POSITIVE_ID = 1105
+BUTTON_DV_NEGATIVE_ID = 1106
+BUTTON_DV_POSITIVE_ID = 1107
 
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -116,6 +125,28 @@ class StereoDriveController:
             raise StereoDriveError(f"Control ID {control_id} has no numeric value.")
         return float(text)
 
+    def _axis_ids(self, axis: str) -> tuple[int, int, int]:
+        normalized = axis.upper()
+        mapping = {
+            "AP": (CURRENT_AP_ID, STEP_AP_ID, BUTTON_AP_POSITIVE_ID),
+            "ML": (CURRENT_ML_ID, STEP_ML_ID, BUTTON_ML_POSITIVE_ID),
+            "DV": (CURRENT_DV_ID, STEP_DV_ID, BUTTON_DV_POSITIVE_ID),
+        }
+        if normalized not in mapping:
+            raise StereoDriveError(f"Unknown axis '{axis}'.")
+        return mapping[normalized]
+
+    def _axis_button_ids(self, axis: str) -> tuple[int, int]:
+        normalized = axis.upper()
+        mapping = {
+            "AP": (BUTTON_AP_NEGATIVE_ID, BUTTON_AP_POSITIVE_ID),
+            "ML": (BUTTON_ML_NEGATIVE_ID, BUTTON_ML_POSITIVE_ID),
+            "DV": (BUTTON_DV_NEGATIVE_ID, BUTTON_DV_POSITIVE_ID),
+        }
+        if normalized not in mapping:
+            raise StereoDriveError(f"Unknown axis '{axis}'.")
+        return mapping[normalized]
+
     def get_reference_selector(self) -> str:
         try:
             return self._get_text(self._control_handle(REFERENCE_SELECTOR_ID))
@@ -128,6 +159,59 @@ class StereoDriveController:
             self._parse_float(CURRENT_ML_ID),
             self._parse_float(CURRENT_DV_ID),
         )
+
+    def get_current_axis(self, axis: str) -> float:
+        current_id, _step_id, _positive_id = self._axis_ids(axis)
+        return self._parse_float(current_id)
+
+    def set_nudge_step(self, axis: str, step_mm: float) -> None:
+        _current_id, step_id, _positive_id = self._axis_ids(axis)
+        self._set_text(self._control_handle(step_id), f"{step_mm:.3f} mm")
+        actual = self._get_text(self._control_handle(step_id))
+        if f"{step_mm:.3f}" not in actual:
+            raise StereoDriveError(f"Failed to set {axis.upper()} nudge step to {step_mm:.3f} mm.")
+
+    def nudge_axis(self, axis: str, positive: bool) -> None:
+        negative_button_id, positive_button_id = self._axis_button_ids(axis)
+        self._click(positive_button_id if positive else negative_button_id)
+
+    def move_axis_to_target(
+        self,
+        axis: str,
+        target: float,
+        step_mm: float = 0.005,
+        tolerance: float = 0.003,
+        stop_requested=None,
+        status_callback=None,
+    ) -> None:
+        self.set_nudge_step(axis, step_mm)
+        max_iterations = 10000
+        for _ in range(max_iterations):
+            if stop_requested is not None and stop_requested():
+                raise StereoDriveError("Operation paused.")
+            current = self.get_current_axis(axis)
+            diff = target - current
+            if abs(diff) <= tolerance:
+                return
+            positive = diff > 0
+            self.nudge_axis(axis, positive)
+            if status_callback is not None:
+                status_callback(f"Nudging {axis.upper()} to {target:.3f} (current {current:.3f})")
+            time.sleep(0.02)
+        raise StereoDriveError(f"Timed out moving {axis.upper()} to target {target:.3f}.")
+
+    def move_to_position_nudged(
+        self,
+        ap: float,
+        ml: float,
+        dv: float,
+        step_mm: float = 0.005,
+        stop_requested=None,
+        status_callback=None,
+    ) -> None:
+        self.move_axis_to_target("AP", ap, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
+        self.move_axis_to_target("ML", ml, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
+        self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback)
 
     def set_target_position(self, ap: float, ml: float, dv: float) -> None:
         self._set_text(self._control_handle(TARGET_AP_ID), f"{ap:.2f}")

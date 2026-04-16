@@ -1,8 +1,10 @@
 import math
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -84,7 +86,7 @@ class ProjectionWidget(QWidget):
         painter.drawRoundedRect(draw_rect, 16, 16)
 
         painter.setPen(QColor("#496052"))
-        painter.drawText(16, 20, f"{self.title} ({self.x_label} vs {self.y_label})")
+        painter.drawText(16, 20, self.title)
 
         if not self.trajectory and not self.seed_points:
             painter.setPen(QColor("#8b9a8d"))
@@ -151,14 +153,25 @@ class ProjectionWidget(QWidget):
 
 
 class CraniotomyWindow(QMainWindow):
+    status_signal = Signal(str)
+    redraw_signal = Signal()
+    drill_progress_signal = Signal(int)
+
     def __init__(self) -> None:
         super().__init__()
         self.controller = StereoDriveController()
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
         self.current_seed_index: int | None = None
+        self.current_action = "No trajectory yet"
+        self.drill_stop_requested = threading.Event()
+        self.drill_thread: threading.Thread | None = None
+        self.drill_completed_points = 0
         self.setWindowTitle("Craniotomy Planner")
         self.resize(1120, 760)
+        self.status_signal.connect(self.set_status)
+        self.redraw_signal.connect(self.redraw_views)
+        self.drill_progress_signal.connect(self.set_drill_completed_points)
         self._build_ui()
         self.refresh_live_position()
         self.refresh_timer = QTimer(self)
@@ -253,6 +266,8 @@ class CraniotomyWindow(QMainWindow):
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
+        self.drill_depth = self._double_spinbox(value=0.10, minimum=0.0, maximum=5.0)
+        self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
@@ -281,9 +296,14 @@ class CraniotomyWindow(QMainWindow):
 
         setup_layout.addWidget(QLabel("Cut Offset DV"), 3, 0)
         setup_layout.addWidget(self.cut_offset, 3, 1)
-        setup_layout.addWidget(QLabel("Current Seed"), 3, 2)
-        setup_layout.addWidget(self.current_seed_spin, 3, 3)
-        setup_layout.addWidget(self.current_seed_coords, 3, 4, 1, 2)
+        setup_layout.addWidget(QLabel("Drill Depth"), 3, 2)
+        setup_layout.addWidget(self.drill_depth, 3, 3)
+        setup_layout.addWidget(QLabel("Round Time (s)"), 3, 4)
+        setup_layout.addWidget(self.round_time_seconds, 3, 5)
+
+        setup_layout.addWidget(QLabel("Current Seed"), 4, 0)
+        setup_layout.addWidget(self.current_seed_spin, 4, 1)
+        setup_layout.addWidget(self.current_seed_coords, 4, 2, 1, 4)
 
         generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
@@ -301,18 +321,28 @@ class CraniotomyWindow(QMainWindow):
         stop_btn.clicked.connect(self.stop_motion)
         clear_btn = QPushButton("Clear Surface Measurements")
         clear_btn.clicked.connect(self.clear_surface_measurements)
-        setup_layout.addWidget(generate_btn, 4, 0, 1, 2)
-        setup_layout.addWidget(clear_btn, 4, 2, 1, 2)
-        setup_layout.addWidget(stop_btn, 4, 4, 1, 2)
-        setup_layout.addWidget(self.move_seed_btn, 5, 0, 1, 3)
-        setup_layout.addWidget(self.capture_surface_btn, 5, 3, 1, 3)
+        self.start_round_btn = QPushButton("Start Drilling Round")
+        self.start_round_btn.setProperty("variant", "primary")
+        self.start_round_btn.style().unpolish(self.start_round_btn)
+        self.start_round_btn.style().polish(self.start_round_btn)
+        self.start_round_btn.clicked.connect(self.start_drilling_round)
+        self.pause_round_btn = QPushButton("Pause Round")
+        self.pause_round_btn.clicked.connect(self.pause_drilling_round)
+
+        setup_layout.addWidget(generate_btn, 5, 0, 1, 2)
+        setup_layout.addWidget(clear_btn, 5, 2, 1, 2)
+        setup_layout.addWidget(stop_btn, 5, 4, 1, 2)
+        setup_layout.addWidget(self.move_seed_btn, 6, 0, 1, 3)
+        setup_layout.addWidget(self.capture_surface_btn, 6, 3, 1, 3)
+        setup_layout.addWidget(self.start_round_btn, 7, 0, 1, 3)
+        setup_layout.addWidget(self.pause_round_btn, 7, 3, 1, 3)
 
         views_box = QGroupBox("Trajectory View")
         views_layout = QGridLayout(views_box)
         views_layout.setContentsMargins(14, 14, 14, 14)
         content.addWidget(views_box, 1)
 
-        self.top_view = ProjectionWidget("Top View", "AP", "ML")
+        self.top_view = ProjectionWidget(self.current_action, "AP", "ML")
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
@@ -331,7 +361,9 @@ class CraniotomyWindow(QMainWindow):
         return widget
 
     def set_status(self, message: str) -> None:
-        return
+        self.current_action = message or "Trajectory"
+        self.top_view.title = self.current_action
+        self.top_view.update()
 
     def refresh_live_position(self) -> None:
         try:
@@ -380,6 +412,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_seed_spin.setValue(1)
             self.current_seed_spin.blockSignals(False)
             self.update_seed_selector_label()
+            self.drill_completed_points = 0
             self.redraw_views()
             self.set_status(f"Generated {seed_count} seed points.")
         except Exception as exc:
@@ -448,6 +481,7 @@ class CraniotomyWindow(QMainWindow):
             seed.sampled_ap = None
             seed.sampled_ml = None
         self.trajectory = []
+        self.drill_completed_points = 0
         self.current_seed_index = 0 if self.seeds else None
         if self.seeds:
             self.current_seed_spin.blockSignals(True)
@@ -493,13 +527,86 @@ class CraniotomyWindow(QMainWindow):
 
     def stop_motion(self) -> None:
         try:
+            self.drill_stop_requested.set()
             self.controller.stop()
             self.set_status("Sent Stop command.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
+    def set_drill_completed_points(self, completed_points: int) -> None:
+        self.drill_completed_points = completed_points
+        self.redraw_views()
+
+    def start_drilling_round(self) -> None:
+        if self.drill_thread is not None and self.drill_thread.is_alive():
+            return
+        if not self.trajectory or any(seed.dv is None for seed in self.seeds):
+            QMessageBox.information(self, "Craniotomy", "Capture all seed surfaces before drilling.")
+            return
+        self.drill_stop_requested.clear()
+        self.drill_completed_points = 0
+        depth = self.drill_depth.value()
+        round_time_seconds = self.round_time_seconds.value()
+        point_targets = [(ap, ml, dv + depth) for ap, ml, dv in self.trajectory]
+        self.drill_thread = threading.Thread(
+            target=self._run_drilling_round,
+            args=(point_targets, round_time_seconds),
+            daemon=True,
+        )
+        self.drill_thread.start()
+
+    def pause_drilling_round(self) -> None:
+        self.drill_stop_requested.set()
+        self.set_status("Pausing drilling round and retracting to DV -2.00.")
+
+    def _run_drilling_round(self, point_targets: list[tuple[float, float, float]], round_time_seconds: float) -> None:
+        per_point_budget = round_time_seconds / max(1, len(point_targets))
+        try:
+            for index, (ap, ml, dv) in enumerate(point_targets):
+                if self.drill_stop_requested.is_set():
+                    break
+                self.status_signal.emit(f"Moving to {int(index / max(1, len(point_targets)) * 100)}%")
+                started_at = time.monotonic()
+                self.controller.move_to_position_nudged(
+                    ap,
+                    ml,
+                    dv,
+                    step_mm=0.005,
+                    stop_requested=self.drill_stop_requested.is_set,
+                    status_callback=None,
+                )
+                self.drill_progress_signal.emit(index + 1)
+                remaining = per_point_budget - (time.monotonic() - started_at)
+                while remaining > 0 and not self.drill_stop_requested.is_set():
+                    sleep_window = min(0.05, remaining)
+                    time.sleep(sleep_window)
+                    remaining -= sleep_window
+            if not self.drill_stop_requested.is_set():
+                self.status_signal.emit("Drilling round complete.")
+        except Exception as exc:
+            if not self.drill_stop_requested.is_set():
+                self.status_signal.emit(str(exc))
+        finally:
+            if self.drill_stop_requested.is_set():
+                try:
+                    self.controller.move_axis_to_target(
+                        "DV",
+                        -2.0,
+                        step_mm=0.005,
+                        stop_requested=None,
+                        status_callback=None,
+                    )
+                    self.status_signal.emit("Round paused at DV -2.00.")
+                except Exception as retract_exc:
+                    self.status_signal.emit(str(retract_exc))
+                self.drill_stop_requested.clear()
+            self.redraw_signal.emit()
+
     def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
-        top_points = [(ap, ml, 0.0) for ap, ml, _ in self.trajectory]
+        top_points: list[tuple[float, float, float]] = []
+        for index, (ap, ml, _dv) in enumerate(self.trajectory):
+            progress = 1.0 if index < self.drill_completed_points else 0.0
+            top_points.append((ap, ml, progress))
         top_seeds = [(seed.ap, seed.ml, seed.dv is not None) for seed in self.seeds]
         if current_point is None and self.seeds:
             try:
