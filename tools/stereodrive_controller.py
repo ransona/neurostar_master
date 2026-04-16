@@ -35,6 +35,7 @@ BUTTON_ML_NEGATIVE_ID = 1104
 BUTTON_ML_POSITIVE_ID = 1105
 BUTTON_DV_NEGATIVE_ID = 1106
 BUTTON_DV_POSITIVE_ID = 1107
+NUDGE_STEP_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -200,11 +201,26 @@ class StereoDriveController:
 
     def set_nudge_step(self, axis: str, step_mm: float) -> None:
         _current_id, step_id, _positive_id = self._axis_ids(axis)
-        label = f"{step_mm:.3f} mm"
+        label = self._format_step_label(step_mm)
         self._combo_select_exact(step_id, label)
         actual = self._combo_selected_text(step_id)
         if actual != label:
             raise StereoDriveError(f"Failed to set {axis.upper()} nudge step to {label}. Got '{actual}'.")
+
+    def _format_step_label(self, step_mm: float) -> str:
+        if step_mm >= 1.0 and float(step_mm).is_integer():
+            return f"{int(step_mm)} mm"
+        trimmed = f"{step_mm:.3f}".rstrip("0").rstrip(".")
+        return f"{trimmed} mm"
+
+    def choose_nudge_step(self, remaining_distance_mm: float, max_step_mm: float | None = None) -> float:
+        remaining = abs(remaining_distance_mm)
+        if max_step_mm is not None:
+            remaining = min(remaining, max_step_mm)
+        candidates = [step for step in NUDGE_STEP_OPTIONS_MM if step <= remaining + 1e-9]
+        if candidates:
+            return candidates[-1]
+        return NUDGE_STEP_OPTIONS_MM[0]
 
     def nudge_axis(self, axis: str, positive: bool) -> None:
         negative_button_id, positive_button_id = self._axis_button_ids(axis)
@@ -214,16 +230,16 @@ class StereoDriveController:
         self,
         axis: str,
         target: float,
-        step_mm: float = 0.005,
+        step_mm: float = 5.0,
         tolerance: float = 0.003,
         stop_requested=None,
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
-        self.set_nudge_step(axis, step_mm)
         max_iterations = 10000
         moved = False
         positive = False
+        active_step: float | None = None
         for _ in range(max_iterations):
             if stop_requested is not None and stop_requested():
                 raise StereoDriveError("Operation paused.")
@@ -231,6 +247,10 @@ class StereoDriveController:
             diff = target - current
             if abs(diff) <= tolerance:
                 return
+            chosen_step = self.choose_nudge_step(diff, max_step_mm=step_mm)
+            if active_step is None or not abs(active_step - chosen_step) < 1e-9:
+                self.set_nudge_step(axis, chosen_step)
+                active_step = chosen_step
             if not moved:
                 positive = diff > 0
             elif (positive and current >= target) or ((not positive) and current <= target):
