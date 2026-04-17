@@ -109,7 +109,7 @@ class ProjectionWidget(QWidget):
 
         span_x = max_x - min_x
         span_y = max_y - min_y
-        uniform_span = max(span_x, span_y)
+        uniform_span = max(span_x, span_y) * 1.3
         cx = (min_x + max_x) / 2.0
         cy = (min_y + max_y) / 2.0
         min_x = cx - uniform_span / 2.0
