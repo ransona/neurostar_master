@@ -289,12 +289,6 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.setVerticalSpacing(6)
         content.addWidget(setup_box)
 
-        midpoint_btn = QPushButton("Use Current AP/ML As Midpoint")
-        midpoint_btn.setProperty("variant", "primary")
-        midpoint_btn.style().unpolish(midpoint_btn)
-        midpoint_btn.style().polish(midpoint_btn)
-        midpoint_btn.clicked.connect(self.capture_midpoint)
-
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
         self.current_ap_label = QLabel("-")
@@ -380,15 +374,14 @@ class CraniotomyWindow(QMainWindow):
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
         button_layout.setVerticalSpacing(6)
-        button_layout.addWidget(midpoint_btn, 0, 0)
-        button_layout.addWidget(generate_btn, 0, 1)
-        button_layout.addWidget(clear_btn, 0, 2)
-        button_layout.addWidget(stop_btn, 0, 3)
+        button_layout.addWidget(generate_btn, 0, 0)
+        button_layout.addWidget(clear_btn, 0, 1)
+        button_layout.addWidget(stop_btn, 0, 2)
         button_layout.addWidget(self.move_seed_btn, 1, 0)
         button_layout.addWidget(self.capture_surface_btn, 1, 1)
         button_layout.addWidget(self.start_round_btn, 1, 2)
-        button_layout.addWidget(self.pause_round_btn, 1, 3)
-        button_layout.addWidget(self.stop_drill_btn, 2, 0, 1, 4)
+        button_layout.addWidget(self.pause_round_btn, 2, 0)
+        button_layout.addWidget(self.stop_drill_btn, 2, 1, 1, 2)
         setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox("Trajectory View")
@@ -433,17 +426,11 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             self.set_status(str(exc))
 
-    def capture_midpoint(self) -> None:
+    def generate_seeds(self) -> None:
         try:
             ap, ml, _dv = self.controller.get_current_position()
             self.mid_ap.setValue(ap)
             self.mid_ml.setValue(ml)
-            self.set_status("Captured current AP/ML as the craniotomy midpoint.")
-        except Exception as exc:
-            QMessageBox.critical(self, "StereoDrive", str(exc))
-
-    def generate_seeds(self) -> None:
-        try:
             diameter = self.diameter.value()
             seed_count = self.seed_count.value()
             if diameter <= 0:
@@ -471,7 +458,7 @@ class CraniotomyWindow(QMainWindow):
             self.update_seed_selector_label()
             self.drill_completed_points = 0
             self.redraw_views()
-            self.set_status(f"Generated {seed_count} seed points.")
+            self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
