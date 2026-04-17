@@ -853,10 +853,10 @@ class CraniotomyWindow(QMainWindow):
                 started_at = time.monotonic()
                 if frozen_points[index]:
                     if not in_air:
-                        self.status_signal.emit("Frozen section: retracting to DV -1.00")
+                        self.status_signal.emit("Frozen section: retracting to DV 1.00")
                         self.controller.move_axis_to_target(
                             "DV",
-                            -1.0,
+                            1.0,
                             step_mm=5.0,
                             stop_requested=self._should_abort_drilling,
                             status_callback=None,
@@ -867,7 +867,7 @@ class CraniotomyWindow(QMainWindow):
                     self.controller.move_to_position_nudged(
                         ap,
                         ml,
-                        -1.0,
+                        1.0,
                         step_mm=5.0,
                         stop_requested=self._should_abort_drilling,
                         status_callback=None,
