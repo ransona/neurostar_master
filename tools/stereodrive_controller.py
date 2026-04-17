@@ -53,7 +53,7 @@ user32.GetClassNameW.restype = ctypes.c_int
 user32.GetDlgCtrlID.argtypes = [ctypes.c_void_p]
 user32.GetDlgCtrlID.restype = ctypes.c_int
 user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-user32.SendMessageW.restype = ctypes.c_void_p
+user32.SendMessageW.restype = ctypes.c_ssize_t
 
 
 class StereoDriveError(RuntimeError):
@@ -128,20 +128,20 @@ class StereoDriveController:
     def _combo_select_exact(self, control_id: int, text: str) -> None:
         hwnd = self._control_handle(control_id)
         text_buffer = ctypes.create_unicode_buffer(text)
-        match_index = int(user32.SendMessageW(hwnd, CB_FINDSTRINGEXACT, -1, ctypes.cast(text_buffer, ctypes.c_void_p)))
+        match_index = user32.SendMessageW(hwnd, CB_FINDSTRINGEXACT, -1, ctypes.cast(text_buffer, ctypes.c_void_p))
         if match_index < 0:
             raise StereoDriveError(f"Could not find combo entry '{text}' in control {control_id}.")
-        selected_index = int(user32.SendMessageW(hwnd, CB_SETCURSEL, match_index, 0))
+        selected_index = user32.SendMessageW(hwnd, CB_SETCURSEL, match_index, 0)
         if selected_index < 0:
             raise StereoDriveError(f"Failed to select combo entry '{text}' in control {control_id}.")
         self._notify_command(control_id, CBN_SELCHANGE, hwnd)
 
     def _combo_selected_text(self, control_id: int) -> str:
         hwnd = self._control_handle(control_id)
-        selected_index = int(user32.SendMessageW(hwnd, CB_GETCURSEL, 0, 0))
+        selected_index = user32.SendMessageW(hwnd, CB_GETCURSEL, 0, 0)
         if selected_index < 0:
             return self._get_text(hwnd)
-        text_length = int(user32.SendMessageW(hwnd, CB_GETLBTEXTLEN, selected_index, 0))
+        text_length = user32.SendMessageW(hwnd, CB_GETLBTEXTLEN, selected_index, 0)
         if text_length < 0:
             return self._get_text(hwnd)
         buffer = ctypes.create_unicode_buffer(text_length + 1)
