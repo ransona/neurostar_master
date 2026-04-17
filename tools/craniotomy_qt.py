@@ -532,18 +532,34 @@ class CraniotomyWindow(QMainWindow):
 
     def _bind_shortcuts(self) -> None:
         bindings = [
-            ("Left", lambda: self.keyboard_nudge("ML", False, "ML left")),
-            ("Right", lambda: self.keyboard_nudge("ML", True, "ML right")),
-            ("Up", lambda: self.keyboard_nudge("AP", True, "AP anterior")),
-            ("Down", lambda: self.keyboard_nudge("AP", False, "AP posterior")),
-            ("PgUp", lambda: self.keyboard_nudge("DV", False, "DV up")),
-            ("PgDown", lambda: self.keyboard_nudge("DV", True, "DV down")),
+            ("Left", "ML", False, "ML left", 0.05),
+            ("Right", "ML", True, "ML right", 0.05),
+            ("Up", "AP", True, "AP anterior", 0.05),
+            ("Down", "AP", False, "AP posterior", 0.05),
+            ("PgUp", "DV", False, "DV up", 0.05),
+            ("PgDown", "DV", True, "DV down", 0.05),
+            ("Shift+Left", "ML", False, "ML left", 0.01),
+            ("Shift+Right", "ML", True, "ML right", 0.01),
+            ("Shift+Up", "AP", True, "AP anterior", 0.01),
+            ("Shift+Down", "AP", False, "AP posterior", 0.01),
+            ("Shift+PgUp", "DV", False, "DV up", 0.01),
+            ("Shift+PgDown", "DV", True, "DV down", 0.01),
+            ("Ctrl+Left", "ML", False, "ML left", 0.5),
+            ("Ctrl+Right", "ML", True, "ML right", 0.5),
+            ("Ctrl+Up", "AP", True, "AP anterior", 0.5),
+            ("Ctrl+Down", "AP", False, "AP posterior", 0.5),
+            ("Ctrl+PgUp", "DV", False, "DV up", 0.5),
+            ("Ctrl+PgDown", "DV", True, "DV down", 0.5),
         ]
         self.shortcuts: list[QShortcut] = []
-        for key, handler in bindings:
+        for key, axis, positive, label, step_mm in bindings:
             shortcut = QShortcut(key, self)
             shortcut.setContext(Qt.ApplicationShortcut)
-            shortcut.activated.connect(handler)
+            shortcut.activated.connect(
+                lambda axis=axis, positive=positive, label=label, step_mm=step_mm: self.keyboard_nudge(
+                    axis, positive, label, step_mm
+                )
+            )
             self.shortcuts.append(shortcut)
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
@@ -564,17 +580,17 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.title = self.current_action
         self.top_view.update()
 
-    def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
+    def keyboard_nudge(self, axis: str, positive: bool, label: str, step_mm: float) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             return
         focus_widget = QApplication.focusWidget()
         if isinstance(focus_widget, (QLineEdit, QAbstractSpinBox)):
             return
         try:
-            self.controller.set_nudge_step(axis, 0.05)
+            self.controller.set_nudge_step(axis, step_mm)
             self.controller.nudge_axis(axis, positive)
             self.refresh_live_position()
-            self.set_status(f"Keyboard nudge: {label} 0.05 mm")
+            self.set_status(f"Keyboard nudge: {label} {step_mm:.2f} mm")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
