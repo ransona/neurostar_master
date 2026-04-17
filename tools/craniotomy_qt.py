@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QShortcut,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -314,6 +315,7 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_signal.connect(self.redraw_views)
         self.drill_progress_signal.connect(self.set_drill_completed_points)
         self._build_ui()
+        self._bind_shortcuts()
         self.refresh_live_position()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
@@ -527,6 +529,22 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addStretch(1)
         views_layout.addLayout(legend_layout, 0, 1)
 
+    def _bind_shortcuts(self) -> None:
+        bindings = [
+            ("Left", lambda: self.keyboard_nudge("ML", False, "ML left")),
+            ("Right", lambda: self.keyboard_nudge("ML", True, "ML right")),
+            ("Up", lambda: self.keyboard_nudge("AP", True, "AP anterior")),
+            ("Down", lambda: self.keyboard_nudge("AP", False, "AP posterior")),
+            ("PgUp", lambda: self.keyboard_nudge("DV", False, "DV up")),
+            ("PgDown", lambda: self.keyboard_nudge("DV", True, "DV down")),
+        ]
+        self.shortcuts: list[QShortcut] = []
+        for key, handler in bindings:
+            shortcut = QShortcut(key, self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(handler)
+            self.shortcuts.append(shortcut)
+
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
         widget.setDecimals(2)
@@ -544,6 +562,17 @@ class CraniotomyWindow(QMainWindow):
         self.current_action = message or "Trajectory"
         self.top_view.title = self.current_action
         self.top_view.update()
+
+    def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
+        if self.drill_thread is not None and self.drill_thread.is_alive():
+            return
+        try:
+            self.controller.set_nudge_step(axis, 0.05)
+            self.controller.nudge_axis(axis, positive)
+            self.refresh_live_position()
+            self.set_status(f"Keyboard nudge: {label} 0.05 mm")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def refresh_live_position(self) -> None:
         try:
