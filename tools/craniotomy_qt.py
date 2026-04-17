@@ -214,6 +214,8 @@ class CraniotomyWindow(QMainWindow):
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
         self.drill_completed_points = 0
+        self.drill_round_started_at: float | None = None
+        self.drill_round_target_seconds: float = 0.0
         self.setWindowTitle("Craniotomy Planner")
         self.resize(1120, 760)
         self.status_signal.connect(self.set_status)
@@ -403,9 +405,22 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
+        legend_layout = QVBoxLayout()
+        legend_layout.setSpacing(6)
         self.depth_legend = DepthLegendWidget()
         self.depth_legend.set_skull_thickness_um(self.skull_thickness_um.value())
-        views_layout.addWidget(self.depth_legend, 0, 1, alignment=Qt.AlignTop)
+        legend_layout.addWidget(self.depth_legend, 0, Qt.AlignTop)
+        self.round_elapsed_label = QLabel("Elapsed: --:--")
+        self.round_remaining_label = QLabel("Remaining: --:--")
+        self.round_percent_label = QLabel("Complete: --%")
+        self.round_elapsed_label.setProperty("role", "muted")
+        self.round_remaining_label.setProperty("role", "muted")
+        self.round_percent_label.setProperty("role", "muted")
+        legend_layout.addWidget(self.round_elapsed_label)
+        legend_layout.addWidget(self.round_remaining_label)
+        legend_layout.addWidget(self.round_percent_label)
+        legend_layout.addStretch(1)
+        views_layout.addLayout(legend_layout, 0, 1)
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
@@ -536,6 +551,8 @@ class CraniotomyWindow(QMainWindow):
             seed.sampled_ml = None
         self.trajectory = []
         self.drill_completed_points = 0
+        self.drill_round_started_at = None
+        self.drill_round_target_seconds = 0.0
         self.current_seed_index = 0 if self.seeds else None
         if self.seeds:
             self.current_seed_spin.blockSignals(True)
@@ -602,6 +619,8 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = 0
         depth = self.drill_depth.value()
         round_time_seconds = self.round_time_seconds.value()
+        self.drill_round_started_at = time.monotonic()
+        self.drill_round_target_seconds = round_time_seconds
         surface_targets = list(self.trajectory)
         point_targets = [(ap, ml, dv + depth) for ap, ml, dv in surface_targets]
         self.drill_thread = threading.Thread(
@@ -702,6 +721,8 @@ class CraniotomyWindow(QMainWindow):
             elif self.drill_stop_requested.is_set():
                 self.status_signal.emit("Drilling round stopped.")
                 self.drill_stop_requested.clear()
+            self.drill_round_started_at = None
+            self.drill_round_target_seconds = 0.0
             self.drill_thread = None
             self.redraw_signal.emit()
 
@@ -727,8 +748,30 @@ class CraniotomyWindow(QMainWindow):
                 current_point = None
         self.depth_legend.set_skull_thickness_um(self.skull_thickness_um.value())
         self.depth_legend.set_current_depth_ratio(current_depth_ratio)
+        self._update_round_status_labels()
         self.top_view.set_data(top_points, top_seeds, current_point=current_point if self.seeds else None)
         self.update_seed_selector_label()
+
+    def _format_duration(self, seconds: float) -> str:
+        total_seconds = max(0, int(round(seconds)))
+        minutes, secs = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _update_round_status_labels(self) -> None:
+        if self.drill_round_started_at is None or self.drill_round_target_seconds <= 0:
+            self.round_elapsed_label.setText("Elapsed: --:--")
+            self.round_remaining_label.setText("Remaining: --:--")
+            self.round_percent_label.setText("Complete: --%")
+            return
+        elapsed = max(0.0, time.monotonic() - self.drill_round_started_at)
+        remaining = max(0.0, self.drill_round_target_seconds - elapsed)
+        percent = min(100.0, (elapsed / self.drill_round_target_seconds) * 100.0)
+        self.round_elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed)}")
+        self.round_remaining_label.setText(f"Remaining: {self._format_duration(remaining)}")
+        self.round_percent_label.setText(f"Complete: {percent:.0f}%")
 
 
 def main() -> None:
