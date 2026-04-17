@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractSpinBox,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QShortcut,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
