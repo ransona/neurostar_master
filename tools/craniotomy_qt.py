@@ -645,6 +645,15 @@ class CraniotomyWindow(QMainWindow):
                 if index == 0:
                     surface_ap, surface_ml, surface_dv = surface_targets[0]
                     self.controller.goto_position(surface_ap, surface_ml, surface_dv, delay_seconds=0.5)
+                    self.controller.wait_for_position(
+                        surface_ap,
+                        surface_ml,
+                        surface_dv,
+                        tolerance_mm=0.02,
+                        timeout_seconds=60.0,
+                        poll_seconds=0.1,
+                        stop_requested=self._should_abort_drilling,
+                    )
                     if self._should_abort_drilling():
                         break
                     self.status_signal.emit("Drilling down at 0%")
