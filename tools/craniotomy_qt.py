@@ -807,7 +807,8 @@ class CraniotomyWindow(QMainWindow):
             return
         elapsed = max(0.0, time.monotonic() - self.drill_round_started_at)
         remaining = max(0.0, self.drill_round_target_seconds - elapsed)
-        percent = min(100.0, (elapsed / self.drill_round_target_seconds) * 100.0)
+        total_points = max(1, len(self.trajectory))
+        percent = min(100.0, (self.drill_completed_points / total_points) * 100.0)
         self.round_elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed)}")
         self.round_remaining_label.setText(f"Remaining: {self._format_duration(remaining)}")
         self.round_percent_label.setText(f"Complete: {percent:.0f}%")
