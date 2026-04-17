@@ -53,6 +53,7 @@ class ProjectionWidget(QWidget):
         self.freeze_mode = False
         self.unfreeze_mode = False
         self._trajectory_screen_points: list[QPointF] = []
+        self._inner_ring_screen_points: list[QPointF] = []
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -188,19 +189,31 @@ class ProjectionWidget(QWidget):
             return QPointF(px, py)
 
         self._trajectory_screen_points = [map_point(point[0], point[1]) for point in self.trajectory]
+        if self.trajectory:
+            center_x = sum(point[0] for point in self.trajectory) / len(self.trajectory)
+            center_y = sum(point[1] for point in self.trajectory) / len(self.trajectory)
+            self._inner_ring_screen_points = []
+            for point in self.trajectory:
+                dx = point[0] - center_x
+                dy = point[1] - center_y
+                self._inner_ring_screen_points.append(map_point(center_x + dx * 0.88, center_y + dy * 0.88))
+        else:
+            self._inner_ring_screen_points = []
 
         if len(self.trajectory) > 1:
             for index, (start, end) in enumerate(zip(self.trajectory[:-1], self.trajectory[1:])):
-                if index < len(self.frozen_points) and self.frozen_points[index]:
-                    painter.setPen(QPen(QColor("#7b8794"), 6))
-                    painter.drawLine(map_point(start[0], start[1]), map_point(end[0], end[1]))
-                    continue
                 progress = max(0.0, min(1.0, (start[2] + end[2]) / 2.0))
-                red = int(130 + progress * 90)
-                green = int(170 - progress * 70)
-                blue = int(150 - progress * 50)
-                painter.setPen(QPen(QColor(red, green, blue), 6))
+                red = int(235 + progress * 20)
+                green = int(215 - progress * 160)
+                blue = int(70 - progress * 50)
+                painter.setPen(QPen(QColor(red, green, max(0, blue)), 6))
                 painter.drawLine(map_point(start[0], start[1]), map_point(end[0], end[1]))
+
+        if len(self._inner_ring_screen_points) > 1:
+            for index, (start, end) in enumerate(zip(self._inner_ring_screen_points[:-1], self._inner_ring_screen_points[1:])):
+                frozen = index < len(self.frozen_points) and self.frozen_points[index]
+                painter.setPen(QPen(QColor("#2563eb" if frozen else "#16a34a"), 4))
+                painter.drawLine(start, end)
 
         for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
             pt = map_point(x, y)
@@ -250,10 +263,10 @@ class DepthLegendWidget(QWidget):
         bar_rect = QRectF(24, 24, 18, max(120, self.height() - 56))
         for idx in range(int(bar_rect.height())):
             ratio = idx / max(1.0, bar_rect.height() - 1.0)
-            red = int(20 + ratio * 210)
-            green = int(160 - ratio * 90)
-            blue = int(100 - ratio * 50)
-            painter.setPen(QPen(QColor(red, green, blue), 1))
+            red = int(235 + ratio * 20)
+            green = int(215 - ratio * 160)
+            blue = int(70 - ratio * 50)
+            painter.setPen(QPen(QColor(red, green, max(0, blue)), 1))
             y = bar_rect.top() + idx
             painter.drawLine(QPointF(bar_rect.left(), y), QPointF(bar_rect.right(), y))
         painter.setPen(QColor("#496052"))
