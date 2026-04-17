@@ -834,6 +834,7 @@ class CraniotomyWindow(QMainWindow):
         point_count = len(surface_targets)
         per_point_budget = round_time_seconds / max(1, point_count)
         in_air = False
+        active_drill_section = False
         try:
             for index, (ap, ml, surface_dv) in enumerate(surface_targets):
                 if self._should_abort_drilling():
@@ -862,6 +863,7 @@ class CraniotomyWindow(QMainWindow):
                             dwell_seconds=0.005,
                         )
                         in_air = True
+                        active_drill_section = False
                     self.controller.move_to_position_nudged(
                         ap,
                         ml,
@@ -872,7 +874,7 @@ class CraniotomyWindow(QMainWindow):
                         dwell_seconds=0.005,
                     )
                 else:
-                    if index == 0 or in_air:
+                    if index == 0 or in_air or (not active_drill_section):
                         self.controller.goto_position(ap, ml, current_dv_target, delay_seconds=0.5)
                         self.controller.wait_for_position(
                             ap,
@@ -884,11 +886,12 @@ class CraniotomyWindow(QMainWindow):
                             stop_requested=self._should_abort_drilling,
                         )
                         in_air = False
+                        active_drill_section = True
                     else:
                         self.controller.move_to_position_nudged(
                             ap,
                             ml,
-                            current_dv_target,
+                            target_dv,
                             step_mm=5.0,
                             stop_requested=self._should_abort_drilling,
                             status_callback=None,
