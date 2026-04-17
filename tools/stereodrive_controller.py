@@ -64,6 +64,9 @@ class StereoDriveController:
     def __init__(self) -> None:
         self.main_hwnd = self._find_main_window()
 
+    def _refresh_main_window(self) -> None:
+        self.main_hwnd = self._find_main_window()
+
     def _find_main_window(self) -> int:
         matches: list[int] = []
 
@@ -104,12 +107,23 @@ class StereoDriveController:
         user32.EnumChildWindows(self.main_hwnd, callback, 0)
         return controls
 
-    def _control_handle(self, control_id: int) -> int:
-        controls = self._control_map()
-        hwnd = controls.get(control_id)
-        if not hwnd:
-            raise StereoDriveError(f"Control ID {control_id} was not found in StereoDrive.")
-        return hwnd
+    def _control_handle(self, control_id: int, timeout_seconds: float = 5.0, poll_seconds: float = 0.2) -> int:
+        deadline = time.monotonic() + timeout_seconds
+        last_seen_controls: list[int] = []
+        while time.monotonic() < deadline:
+            self._refresh_main_window()
+            controls = self._control_map()
+            hwnd = controls.get(control_id)
+            if hwnd:
+                return hwnd
+            last_seen_controls = sorted(controls.keys())
+            time.sleep(poll_seconds)
+        if last_seen_controls:
+            preview = ", ".join(str(control) for control in last_seen_controls[:12])
+            raise StereoDriveError(
+                f"Control ID {control_id} was not found in StereoDrive. Visible controls included: {preview}"
+            )
+        raise StereoDriveError(f"Control ID {control_id} was not found in StereoDrive.")
 
     def _get_text(self, hwnd: int) -> str:
         length = int(user32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0))
