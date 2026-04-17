@@ -316,7 +316,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_depth = self._double_spinbox(value=0.10, minimum=0.0, maximum=5.0)
         self.skull_thickness_mm = self._double_spinbox(value=0.25, minimum=0.001, maximum=5.0)
         self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
-        self.drill_rate_mm_per_s = self._double_spinbox(value=0.10, minimum=0.001, maximum=5.0)
+        self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
