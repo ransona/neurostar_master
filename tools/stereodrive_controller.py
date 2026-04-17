@@ -272,9 +272,69 @@ class StereoDriveController:
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
-        self.move_axis_to_target("AP", ap, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
-        self.move_axis_to_target("ML", ml, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+        self.move_planar_to_target(
+            ap,
+            ml,
+            step_mm=step_mm,
+            stop_requested=stop_requested,
+            status_callback=status_callback,
+            dwell_seconds=dwell_seconds,
+        )
         self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+
+    def move_planar_to_target(
+        self,
+        ap: float,
+        ml: float,
+        step_mm: float = 5.0,
+        tolerance: float = 0.003,
+        stop_requested=None,
+        status_callback=None,
+        dwell_seconds: float = 0.02,
+    ) -> None:
+        max_iterations = 20000
+        active_steps: dict[str, float] = {}
+        move_directions: dict[str, bool] = {}
+        moved_axes: dict[str, bool] = {"AP": False, "ML": False}
+        for _ in range(max_iterations):
+            if stop_requested is not None and stop_requested():
+                raise StereoDriveError("Operation paused.")
+            current_ap, current_ml, _current_dv = self.get_current_position()
+            diffs = {"AP": ap - current_ap, "ML": ml - current_ml}
+            remaining_axes = [axis for axis, diff in diffs.items() if abs(diff) > tolerance]
+            if not remaining_axes:
+                return
+
+            def can_continue(axis: str) -> bool:
+                current_value = current_ap if axis == "AP" else current_ml
+                target_value = ap if axis == "AP" else ml
+                if not moved_axes[axis]:
+                    return True
+                direction_positive = move_directions[axis]
+                if direction_positive and current_value >= target_value:
+                    return False
+                if (not direction_positive) and current_value <= target_value:
+                    return False
+                return True
+
+            candidate_axes = [axis for axis in remaining_axes if can_continue(axis)]
+            if not candidate_axes:
+                return
+            axis = max(candidate_axes, key=lambda name: abs(diffs[name]))
+            diff = diffs[axis]
+            chosen_step = self.choose_nudge_step(diff, max_step_mm=step_mm)
+            previous_step = active_steps.get(axis)
+            if previous_step is None or not abs(previous_step - chosen_step) < 1e-9:
+                self.set_nudge_step(axis, chosen_step)
+                active_steps[axis] = chosen_step
+            if not moved_axes[axis]:
+                move_directions[axis] = diff > 0
+            self.nudge_axis(axis, move_directions[axis])
+            moved_axes[axis] = True
+            if status_callback is not None:
+                status_callback(f"Nudging XY toward [{ap:.3f}, {ml:.3f}]")
+            time.sleep(dwell_seconds)
+        raise StereoDriveError(f"Timed out moving AP/ML to target [{ap:.3f}, {ml:.3f}].")
 
     def set_target_position(self, ap: float, ml: float, dv: float) -> None:
         self._set_text(self._control_handle(TARGET_AP_ID), f"{ap:.2f}")
