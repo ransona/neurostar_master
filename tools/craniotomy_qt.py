@@ -713,7 +713,21 @@ class CraniotomyWindow(QMainWindow):
                     time.sleep(sleep_window)
                     remaining -= sleep_window
             if not self._should_abort_drilling():
-                self.status_signal.emit("Drilling round complete.")
+                midpoint_ap = self.mid_ap.value()
+                midpoint_ml = self.mid_ml.value()
+                self.status_signal.emit("Drilling round complete. Returning to midpoint.")
+                self.controller.goto_position(midpoint_ap, midpoint_ml, -1.0, delay_seconds=0.5)
+                self.controller.wait_for_position(
+                    midpoint_ap,
+                    midpoint_ml,
+                    -1.0,
+                    tolerance_mm=0.02,
+                    timeout_seconds=60.0,
+                    poll_seconds=0.1,
+                    stop_requested=self._should_abort_drilling,
+                )
+                if not self._should_abort_drilling():
+                    self.status_signal.emit("Drilling round complete. Returned to midpoint.")
         except Exception as exc:
             if not self._should_abort_drilling():
                 self.status_signal.emit(str(exc))
