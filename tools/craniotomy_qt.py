@@ -713,7 +713,8 @@ class CraniotomyWindow(QMainWindow):
         skull_thickness_mm = max(self.skull_thickness_um.value() / 1000.0, 0.001)
         depth_ratio = max(0.0, min(1.0, self.drill_depth.value() / skull_thickness_mm))
         for index, (ap, ml, _dv) in enumerate(self.trajectory):
-            top_points.append((ml, ap, depth_ratio))
+            point_depth_ratio = depth_ratio if index < self.drill_completed_points else 0.0
+            top_points.append((ml, ap, point_depth_ratio))
         top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
         if current_point is None and self.seeds:
             try:
