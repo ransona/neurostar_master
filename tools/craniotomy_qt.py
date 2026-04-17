@@ -8,11 +8,13 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractSpinBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -565,6 +567,9 @@ class CraniotomyWindow(QMainWindow):
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
+            return
+        focus_widget = QApplication.focusWidget()
+        if isinstance(focus_widget, (QLineEdit, QAbstractSpinBox)):
             return
         try:
             self.controller.set_nudge_step(axis, 0.05)
