@@ -216,6 +216,9 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = 0
         self.drill_round_started_at: float | None = None
         self.drill_round_target_seconds: float = 0.0
+        self.active_surface_dv: float | None = None
+        self.active_depth_ratio: float | None = None
+        self.active_drill_depth_mm: float | None = None
         self.setWindowTitle("Craniotomy Planner")
         self.resize(1120, 760)
         self.status_signal.connect(self.set_status)
@@ -553,6 +556,9 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = 0
         self.drill_round_started_at = None
         self.drill_round_target_seconds = 0.0
+        self.active_surface_dv = None
+        self.active_depth_ratio = None
+        self.active_drill_depth_mm = None
         self.current_seed_index = 0 if self.seeds else None
         if self.seeds:
             self.current_seed_spin.blockSignals(True)
@@ -621,11 +627,15 @@ class CraniotomyWindow(QMainWindow):
         round_time_seconds = self.round_time_seconds.value()
         self.drill_round_started_at = time.monotonic()
         self.drill_round_target_seconds = round_time_seconds
+        self.active_drill_depth_mm = depth
+        self.active_depth_ratio = 0.0
         surface_targets = list(self.trajectory)
         point_targets = [(ap, ml, dv + depth) for ap, ml, dv in surface_targets]
+        if surface_targets:
+            self.active_surface_dv = surface_targets[0][2]
         self.drill_thread = threading.Thread(
             target=self._run_drilling_round,
-            args=(surface_targets, point_targets, round_time_seconds),
+            args=(surface_targets, point_targets, round_time_seconds, depth),
             daemon=True,
         )
         self.drill_thread.start()
@@ -650,12 +660,14 @@ class CraniotomyWindow(QMainWindow):
         surface_targets: list[tuple[float, float, float]],
         point_targets: list[tuple[float, float, float]],
         round_time_seconds: float,
+        depth_mm: float,
     ) -> None:
         per_point_budget = round_time_seconds / max(1, len(point_targets))
         try:
             for index, (ap, ml, dv) in enumerate(point_targets):
                 if self._should_abort_drilling():
                     break
+                self.active_surface_dv = surface_targets[index][2]
                 self.status_signal.emit(f"Moving to {int(index / max(1, len(point_targets)) * 100)}%")
                 started_at = time.monotonic()
                 if index == 0:
@@ -672,7 +684,9 @@ class CraniotomyWindow(QMainWindow):
                     )
                     if self._should_abort_drilling():
                         break
-                    self.status_signal.emit("Drilling down at 0%")
+                    self.status_signal.emit(
+                        f"Drilling down at 0% to DV {dv:.2f} ({depth_mm:.2f} mm below surface)"
+                    )
                     dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
                     self.controller.move_axis_to_target(
                         "DV",
@@ -723,14 +737,20 @@ class CraniotomyWindow(QMainWindow):
                 self.drill_stop_requested.clear()
             self.drill_round_started_at = None
             self.drill_round_target_seconds = 0.0
+            self.active_surface_dv = None
+            self.active_depth_ratio = None
+            self.active_drill_depth_mm = None
             self.drill_thread = None
             self.redraw_signal.emit()
 
     def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
         top_points: list[tuple[float, float, float]] = []
         skull_thickness_mm = max(self.skull_thickness_mm.value(), 0.001)
-        depth_ratio = max(0.0, min(1.0, self.drill_depth.value() / skull_thickness_mm))
-        current_depth_ratio: float | None = None
+        displayed_drill_depth = (
+            self.active_drill_depth_mm if self.active_drill_depth_mm is not None else self.drill_depth.value()
+        )
+        depth_ratio = max(0.0, min(1.0, displayed_drill_depth / skull_thickness_mm))
+        current_depth_ratio = self.active_depth_ratio
         for index, (ap, ml, _dv) in enumerate(self.trajectory):
             point_depth_ratio = depth_ratio if index < self.drill_completed_points else 0.0
             top_points.append((ml, ap, point_depth_ratio))
@@ -739,13 +759,18 @@ class CraniotomyWindow(QMainWindow):
             try:
                 current_ap, current_ml, current_dv = self.controller.get_current_position()
                 current_point = (current_ml, current_ap)
-                if self.drill_thread is not None and self.drill_thread.is_alive() and self.trajectory:
-                    active_index = min(self.drill_completed_points, len(self.trajectory) - 1)
-                    _surface_ap, _surface_ml, surface_dv = self.trajectory[active_index]
-                    current_depth_mm = max(0.0, current_dv - surface_dv)
-                    current_depth_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
             except Exception:
                 current_point = None
+        if self.drill_thread is not None and self.drill_thread.is_alive() and self.active_surface_dv is not None:
+            try:
+                _current_ap, _current_ml, current_dv = self.controller.get_current_position()
+                current_depth_mm = max(0.0, current_dv - self.active_surface_dv)
+                computed_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
+                if self.active_depth_ratio is None or abs(computed_ratio - self.active_depth_ratio) >= 0.0005:
+                    self.active_depth_ratio = computed_ratio
+                current_depth_ratio = self.active_depth_ratio
+            except Exception:
+                current_depth_ratio = self.active_depth_ratio
         self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         self.depth_legend.set_current_depth_ratio(current_depth_ratio)
         self._update_round_status_labels()
