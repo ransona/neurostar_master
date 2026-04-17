@@ -658,10 +658,10 @@ class CraniotomyWindow(QMainWindow):
                         ap,
                         ml,
                         dv,
-                        step_mm=0.005,
+                        step_mm=5.0,
                         stop_requested=self._should_abort_drilling,
                         status_callback=None,
-                        dwell_seconds=0.02,
+                        dwell_seconds=0.005,
                     )
                 self.drill_progress_signal.emit(index + 1)
                 remaining = per_point_budget - (time.monotonic() - started_at)
@@ -680,10 +680,10 @@ class CraniotomyWindow(QMainWindow):
                     self.controller.move_axis_to_target(
                         "DV",
                         -2.0,
-                        step_mm=0.005,
+                        step_mm=5.0,
                         stop_requested=None,
                         status_callback=None,
-                        dwell_seconds=0.02,
+                        dwell_seconds=0.005,
                     )
                     self.status_signal.emit("Round paused at DV -2.00.")
                 except Exception as retract_exc:
