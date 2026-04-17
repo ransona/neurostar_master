@@ -786,14 +786,21 @@ class CraniotomyWindow(QMainWindow):
         self.drill_stop_requested.clear()
         self.drill_completed_points = 0
         depth = self.drill_depth.value()
+        current_depths = list(self.drilled_depths or [0.0] * len(self.trajectory))
+        frozen_points = list(self.frozen_points or [False] * len(self.trajectory))
+        if not any((not frozen) and current_depth + 0.0005 < depth for current_depth, frozen in zip(current_depths, frozen_points, strict=False)):
+            QMessageBox.information(
+                self,
+                "Craniotomy",
+                "Requested depth has already been drilled in all unfrozen section",
+            )
+            return
         round_time_seconds = self.round_time_seconds.value()
         self.drill_round_started_at = time.monotonic()
         self.drill_round_target_seconds = round_time_seconds
         self.active_drill_depth_mm = depth
         self.active_depth_ratio = 0.0
         surface_targets = list(self.trajectory)
-        current_depths = list(self.drilled_depths or [0.0] * len(surface_targets))
-        frozen_points = list(self.frozen_points or [False] * len(surface_targets))
         target_depths = [
             current_depth if frozen else max(current_depth, depth)
             for current_depth, frozen in zip(current_depths, frozen_points, strict=False)
