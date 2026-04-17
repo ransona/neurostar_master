@@ -38,6 +38,7 @@ class SeedPoint:
 
 class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
+    unfreeze_drawn = Signal(int)
 
     def __init__(self, title: str, x_label: str, y_label: str, invert_y: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
@@ -50,6 +51,7 @@ class ProjectionWidget(QWidget):
         self.frozen_points: list[bool] = []
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
+        self.unfreeze_mode = False
         self._trajectory_screen_points: list[QPointF] = []
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -75,23 +77,39 @@ class ProjectionWidget(QWidget):
 
     def set_freeze_mode(self, enabled: bool) -> None:
         self.freeze_mode = enabled
+        if enabled:
+            self.unfreeze_mode = False
+        self.update()
+
+    def set_unfreeze_mode(self, enabled: bool) -> None:
+        self.unfreeze_mode = enabled
+        if enabled:
+            self.freeze_mode = False
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if self.freeze_mode and event.button() == Qt.LeftButton:
-            self._emit_nearest_trajectory_index(event.position())
+            self._emit_nearest_trajectory_index(event.position(), freeze=True)
+            event.accept()
+            return
+        if self.unfreeze_mode and event.button() == Qt.LeftButton:
+            self._emit_nearest_trajectory_index(event.position(), freeze=False)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self.freeze_mode and event.buttons() & Qt.LeftButton:
-            self._emit_nearest_trajectory_index(event.position())
+            self._emit_nearest_trajectory_index(event.position(), freeze=True)
+            event.accept()
+            return
+        if self.unfreeze_mode and event.buttons() & Qt.LeftButton:
+            self._emit_nearest_trajectory_index(event.position(), freeze=False)
             event.accept()
             return
         super().mouseMoveEvent(event)
 
-    def _emit_nearest_trajectory_index(self, position) -> None:
+    def _emit_nearest_trajectory_index(self, position, freeze: bool) -> None:
         if not self._trajectory_screen_points:
             return
         nearest_index = None
@@ -104,7 +122,10 @@ class ProjectionWidget(QWidget):
                 nearest_distance = distance
                 nearest_index = index
         if nearest_index is not None:
-            self.freeze_drawn.emit(nearest_index)
+            if freeze:
+                self.freeze_drawn.emit(nearest_index)
+            else:
+                self.unfreeze_drawn.emit(nearest_index)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -200,6 +221,9 @@ class ProjectionWidget(QWidget):
         if self.freeze_mode:
             painter.setPen(QColor("#b23a48"))
             painter.drawText(self.rect().adjusted(0, 0, -10, -10), Qt.AlignRight | Qt.AlignTop, "Draw Freeze")
+        elif self.unfreeze_mode:
+            painter.setPen(QColor("#1d4ed8"))
+            painter.drawText(self.rect().adjusted(0, 0, -10, -10), Qt.AlignRight | Qt.AlignTop, "Draw Unfreeze")
 
 
 class DepthLegendWidget(QWidget):
@@ -439,6 +463,9 @@ class CraniotomyWindow(QMainWindow):
         self.freeze_draw_btn = QPushButton("Draw Freeze")
         self.freeze_draw_btn.setCheckable(True)
         self.freeze_draw_btn.toggled.connect(self.toggle_freeze_mode)
+        self.unfreeze_draw_btn = QPushButton("Draw Unfreeze")
+        self.unfreeze_draw_btn.setCheckable(True)
+        self.unfreeze_draw_btn.toggled.connect(self.toggle_unfreeze_mode)
         self.clear_freeze_btn = QPushButton("Clear Freeze")
         self.clear_freeze_btn.clicked.connect(self.clear_frozen_points)
         setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 6)
@@ -454,8 +481,9 @@ class CraniotomyWindow(QMainWindow):
         button_layout.addWidget(self.start_round_btn, 1, 2)
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
         button_layout.addWidget(self.clear_freeze_btn, 2, 1)
-        button_layout.addWidget(self.pause_round_btn, 2, 2)
-        button_layout.addWidget(self.stop_drill_btn, 3, 0, 1, 3)
+        button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
+        button_layout.addWidget(self.pause_round_btn, 3, 0)
+        button_layout.addWidget(self.stop_drill_btn, 3, 1, 1, 2)
         setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox("Trajectory View")
@@ -465,6 +493,7 @@ class CraniotomyWindow(QMainWindow):
 
         self.top_view = ProjectionWidget(self.current_action, "ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
+        self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
@@ -552,6 +581,8 @@ class CraniotomyWindow(QMainWindow):
             self.active_drill_depth_mm = None
             if self.freeze_draw_btn.isChecked():
                 self.freeze_draw_btn.setChecked(False)
+            if self.unfreeze_draw_btn.isChecked():
+                self.unfreeze_draw_btn.setChecked(False)
             self.redraw_views()
             self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
         except Exception as exc:
@@ -630,6 +661,8 @@ class CraniotomyWindow(QMainWindow):
         self.active_drill_depth_mm = None
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
+        if self.unfreeze_draw_btn.isChecked():
+            self.unfreeze_draw_btn.setChecked(False)
         self.current_seed_index = 0 if self.seeds else None
         if self.seeds:
             self.current_seed_spin.blockSignals(True)
@@ -664,11 +697,22 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def toggle_freeze_mode(self, enabled: bool) -> None:
+        if enabled and self.unfreeze_draw_btn.isChecked():
+            self.unfreeze_draw_btn.setChecked(False)
         self.top_view.set_freeze_mode(enabled)
         if enabled:
             self.set_status("Draw on the circle to freeze points from deeper drilling.")
         elif self.trajectory:
             self.set_status("Freeze drawing off.")
+
+    def toggle_unfreeze_mode(self, enabled: bool) -> None:
+        if enabled and self.freeze_draw_btn.isChecked():
+            self.freeze_draw_btn.setChecked(False)
+        self.top_view.set_unfreeze_mode(enabled)
+        if enabled:
+            self.set_status("Draw on the circle to remove frozen points.")
+        elif self.trajectory:
+            self.set_status("Unfreeze drawing off.")
 
     def clear_frozen_points(self) -> None:
         if not self.frozen_points:
@@ -686,6 +730,13 @@ class CraniotomyWindow(QMainWindow):
             self.frozen_points = [False] * len(self.trajectory)
         if not self.frozen_points[index]:
             self.frozen_points[index] = True
+            self.redraw_views()
+
+    def unmark_frozen_point(self, index: int) -> None:
+        if not self.frozen_points or index < 0 or index >= len(self.frozen_points):
+            return
+        if self.frozen_points[index]:
+            self.frozen_points[index] = False
             self.redraw_views()
 
     def interpolate_periodic(self, theta: float, angles: list[float], values: list[float]) -> float:
