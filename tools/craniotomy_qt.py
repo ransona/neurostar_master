@@ -156,12 +156,17 @@ class DepthLegendWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.skull_thickness_um = 250.0
+        self.current_depth_ratio: float | None = None
         self.setMinimumWidth(90)
         self.setMaximumWidth(90)
         self.setMinimumHeight(260)
 
     def set_skull_thickness_um(self, skull_thickness_um: float) -> None:
         self.skull_thickness_um = skull_thickness_um
+        self.update()
+
+    def set_current_depth_ratio(self, current_depth_ratio: float | None) -> None:
+        self.current_depth_ratio = current_depth_ratio
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -186,6 +191,11 @@ class DepthLegendWidget(QWidget):
             Qt.AlignLeft | Qt.AlignVCenter,
             f"{int(round(self.skull_thickness_um))} um",
         )
+        if self.current_depth_ratio is not None:
+            ratio = max(0.0, min(1.0, self.current_depth_ratio))
+            y = bar_rect.top() + ratio * bar_rect.height()
+            painter.setPen(QPen(QColor("#111111"), 2))
+            painter.drawLine(QPointF(bar_rect.left() - 6, y), QPointF(bar_rect.right() + 6, y))
 
 
 class CraniotomyWindow(QMainWindow):
@@ -699,17 +709,24 @@ class CraniotomyWindow(QMainWindow):
         top_points: list[tuple[float, float, float]] = []
         skull_thickness_mm = max(self.skull_thickness_um.value() / 1000.0, 0.001)
         depth_ratio = max(0.0, min(1.0, self.drill_depth.value() / skull_thickness_mm))
+        current_depth_ratio: float | None = None
         for index, (ap, ml, _dv) in enumerate(self.trajectory):
             point_depth_ratio = depth_ratio if index < self.drill_completed_points else 0.0
             top_points.append((ml, ap, point_depth_ratio))
         top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
         if current_point is None and self.seeds:
             try:
-                current_ap, current_ml, _current_dv = self.controller.get_current_position()
+                current_ap, current_ml, current_dv = self.controller.get_current_position()
                 current_point = (current_ml, current_ap)
+                if self.drill_thread is not None and self.drill_thread.is_alive() and self.trajectory:
+                    active_index = min(self.drill_completed_points, len(self.trajectory) - 1)
+                    _surface_ap, _surface_ml, surface_dv = self.trajectory[active_index]
+                    current_depth_mm = max(0.0, current_dv - surface_dv)
+                    current_depth_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
             except Exception:
                 current_point = None
         self.depth_legend.set_skull_thickness_um(self.skull_thickness_um.value())
+        self.depth_legend.set_current_depth_ratio(current_depth_ratio)
         self.top_view.set_data(top_points, top_seeds, current_point=current_point if self.seeds else None)
         self.update_seed_selector_label()
 
