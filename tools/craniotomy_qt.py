@@ -345,7 +345,7 @@ class CraniotomyWindow(QMainWindow):
         generate_btn.clicked.connect(self.generate_seeds)
         self.move_seed_btn = QPushButton("Move To Current Seed")
         self.move_seed_btn.clicked.connect(self.move_to_current_seed)
-        self.capture_surface_btn = QPushButton("At Surface / Capture DV")
+        self.capture_surface_btn = QPushButton("Set Surface")
         self.capture_surface_btn.setProperty("variant", "primary")
         self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
         self.capture_surface_btn.style().polish(self.capture_surface_btn)
@@ -488,7 +488,7 @@ class CraniotomyWindow(QMainWindow):
             seed = self.seeds[self.current_seed_index]
             self.controller.goto_position(seed.ap, seed.ml, -1.0, delay_seconds=1.0)
             self.set_status(
-                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'At Surface / Capture DV'."
+                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'Set Surface'."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
