@@ -224,26 +224,27 @@ class CraniotomyWindow(QMainWindow):
                 background: #eef3ea;
                 color: #173122;
                 font-family: 'Segoe UI';
-                font-size: 12px;
+                font-size: 11px;
             }
             QGroupBox {
                 border: 1px solid #d4ded3;
-                border-radius: 14px;
-                margin-top: 10px;
+                border-radius: 10px;
+                margin-top: 8px;
                 background: rgba(255,255,255,0.92);
                 font-weight: 600;
-                padding-top: 10px;
+                padding-top: 8px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
+                left: 10px;
+                padding: 0 4px;
             }
             QPushButton {
                 border: none;
-                border-radius: 14px;
-                padding: 8px 12px;
+                border-radius: 8px;
+                padding: 4px 8px;
                 background: #dceae0;
+                min-height: 24px;
             }
             QPushButton:hover {
                 background: #cfe3d6;
@@ -265,27 +266,27 @@ class CraniotomyWindow(QMainWindow):
             }
             QDoubleSpinBox, QSpinBox {
                 border: 1px solid #cfdbcf;
-                border-radius: 10px;
-                padding: 6px;
+                border-radius: 8px;
+                padding: 2px 4px;
                 background: white;
-                min-height: 18px;
+                min-height: 16px;
             }
             """
         )
 
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         content = QVBoxLayout()
-        content.setSpacing(12)
+        content.setSpacing(8)
         layout.addLayout(content, 1)
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
-        setup_layout.setContentsMargins(14, 14, 14, 14)
-        setup_layout.setHorizontalSpacing(10)
-        setup_layout.setVerticalSpacing(8)
+        setup_layout.setContentsMargins(10, 10, 10, 10)
+        setup_layout.setHorizontalSpacing(8)
+        setup_layout.setVerticalSpacing(6)
         content.addWidget(setup_box)
 
         midpoint_btn = QPushButton("Use Current AP/ML As Midpoint")
@@ -320,11 +321,10 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(QLabel("Current DV"), 0, 4)
         setup_layout.addWidget(self.current_dv_label, 0, 5)
 
-        setup_layout.addWidget(midpoint_btn, 1, 0, 1, 2)
-        setup_layout.addWidget(QLabel("Mid AP"), 1, 2)
-        setup_layout.addWidget(self.mid_ap, 1, 3)
-        setup_layout.addWidget(QLabel("Mid ML"), 1, 4)
-        setup_layout.addWidget(self.mid_ml, 1, 5)
+        setup_layout.addWidget(QLabel("Mid AP"), 1, 0)
+        setup_layout.addWidget(self.mid_ap, 1, 1)
+        setup_layout.addWidget(QLabel("Mid ML"), 1, 2)
+        setup_layout.addWidget(self.mid_ml, 1, 3)
 
         setup_layout.addWidget(QLabel("Diameter (mm)"), 2, 0)
         setup_layout.addWidget(self.diameter, 2, 1)
@@ -346,8 +346,6 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(self.drill_rate_um_per_s, 4, 3)
         setup_layout.addWidget(QLabel("Round Time (s)"), 4, 4)
         setup_layout.addWidget(self.round_time_seconds, 4, 5)
-
-        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 6)
 
         generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
@@ -377,19 +375,25 @@ class CraniotomyWindow(QMainWindow):
         self.stop_drill_btn.style().unpolish(self.stop_drill_btn)
         self.stop_drill_btn.style().polish(self.stop_drill_btn)
         self.stop_drill_btn.clicked.connect(self.stop_drilling_round)
+        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 6)
 
-        setup_layout.addWidget(generate_btn, 6, 0, 1, 2)
-        setup_layout.addWidget(clear_btn, 6, 2, 1, 2)
-        setup_layout.addWidget(stop_btn, 6, 4, 1, 2)
-        setup_layout.addWidget(self.move_seed_btn, 7, 0, 1, 3)
-        setup_layout.addWidget(self.capture_surface_btn, 7, 3, 1, 3)
-        setup_layout.addWidget(self.start_round_btn, 8, 0, 1, 2)
-        setup_layout.addWidget(self.pause_round_btn, 8, 2, 1, 2)
-        setup_layout.addWidget(self.stop_drill_btn, 8, 4, 1, 2)
+        button_layout = QGridLayout()
+        button_layout.setHorizontalSpacing(6)
+        button_layout.setVerticalSpacing(6)
+        button_layout.addWidget(midpoint_btn, 0, 0)
+        button_layout.addWidget(generate_btn, 0, 1)
+        button_layout.addWidget(clear_btn, 0, 2)
+        button_layout.addWidget(stop_btn, 0, 3)
+        button_layout.addWidget(self.move_seed_btn, 1, 0)
+        button_layout.addWidget(self.capture_surface_btn, 1, 1)
+        button_layout.addWidget(self.start_round_btn, 1, 2)
+        button_layout.addWidget(self.pause_round_btn, 1, 3)
+        button_layout.addWidget(self.stop_drill_btn, 2, 0, 1, 4)
+        setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox("Trajectory View")
         views_layout = QGridLayout(views_box)
-        views_layout.setContentsMargins(14, 14, 14, 14)
+        views_layout.setContentsMargins(10, 10, 10, 10)
         content.addWidget(views_box, 1)
 
         self.top_view = ProjectionWidget(self.current_action, "ML", "AP")
