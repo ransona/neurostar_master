@@ -155,14 +155,14 @@ class ProjectionWidget(QWidget):
 class DepthLegendWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.skull_thickness_um = 250.0
+        self.skull_thickness_mm = 0.25
         self.current_depth_ratio: float | None = None
         self.setMinimumWidth(90)
         self.setMaximumWidth(90)
         self.setMinimumHeight(260)
 
-    def set_skull_thickness_um(self, skull_thickness_um: float) -> None:
-        self.skull_thickness_um = skull_thickness_um
+    def set_skull_thickness_mm(self, skull_thickness_mm: float) -> None:
+        self.skull_thickness_mm = skull_thickness_mm
         self.update()
 
     def set_current_depth_ratio(self, current_depth_ratio: float | None) -> None:
@@ -185,11 +185,11 @@ class DepthLegendWidget(QWidget):
         painter.setPen(QColor("#496052"))
         painter.drawRect(bar_rect)
         painter.drawText(QRectF(0, 4, self.width(), 18), Qt.AlignHCenter, "Depth")
-        painter.drawText(QRectF(48, bar_rect.top() - 6, self.width() - 50, 20), Qt.AlignLeft | Qt.AlignVCenter, "0 um")
+        painter.drawText(QRectF(48, bar_rect.top() - 6, self.width() - 50, 20), Qt.AlignLeft | Qt.AlignVCenter, "0 mm")
         painter.drawText(
             QRectF(48, bar_rect.bottom() - 10, self.width() - 50, 28),
             Qt.AlignLeft | Qt.AlignVCenter,
-            f"{int(round(self.skull_thickness_um))} um",
+            f"{self.skull_thickness_mm:.2f} mm",
         )
         if self.current_depth_ratio is not None:
             ratio = max(0.0, min(1.0, self.current_depth_ratio))
@@ -311,9 +311,9 @@ class CraniotomyWindow(QMainWindow):
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
         self.drill_depth = self._double_spinbox(value=0.10, minimum=0.0, maximum=5.0)
-        self.skull_thickness_um = self._double_spinbox(value=250.0, minimum=1.0, maximum=5000.0)
+        self.skull_thickness_mm = self._double_spinbox(value=0.25, minimum=0.001, maximum=5.0)
         self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
-        self.drill_rate_um_per_s = self._double_spinbox(value=100.0, minimum=1.0, maximum=5000.0)
+        self.drill_rate_mm_per_s = self._double_spinbox(value=0.10, minimum=0.001, maximum=5.0)
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
@@ -343,13 +343,13 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(self.cut_offset, 3, 1)
         setup_layout.addWidget(QLabel("Drill Depth"), 3, 2)
         setup_layout.addWidget(self.drill_depth, 3, 3)
-        setup_layout.addWidget(QLabel("Skull Thickness (um)"), 3, 4)
-        setup_layout.addWidget(self.skull_thickness_um, 3, 5)
+        setup_layout.addWidget(QLabel("Skull Thickness (mm)"), 3, 4)
+        setup_layout.addWidget(self.skull_thickness_mm, 3, 5)
 
         setup_layout.addWidget(QLabel("Current Seed"), 4, 0)
         setup_layout.addWidget(self.current_seed_spin, 4, 1)
-        setup_layout.addWidget(QLabel("Drill Rate (um/s)"), 4, 2)
-        setup_layout.addWidget(self.drill_rate_um_per_s, 4, 3)
+        setup_layout.addWidget(QLabel("Drill Rate (mm/s)"), 4, 2)
+        setup_layout.addWidget(self.drill_rate_mm_per_s, 4, 3)
         setup_layout.addWidget(QLabel("Round Time (s)"), 4, 4)
         setup_layout.addWidget(self.round_time_seconds, 4, 5)
 
@@ -408,7 +408,7 @@ class CraniotomyWindow(QMainWindow):
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(6)
         self.depth_legend = DepthLegendWidget()
-        self.depth_legend.set_skull_thickness_um(self.skull_thickness_um.value())
+        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         legend_layout.addWidget(self.depth_legend, 0, Qt.AlignTop)
         self.round_elapsed_label = QLabel("Elapsed: --:--")
         self.round_remaining_label = QLabel("Remaining: --:--")
@@ -673,7 +673,7 @@ class CraniotomyWindow(QMainWindow):
                     if self._should_abort_drilling():
                         break
                     self.status_signal.emit("Drilling down at 0%")
-                    dwell_seconds = 0.005 / max(self.drill_rate_um_per_s.value() / 1000.0, 0.001)
+                    dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
                     self.controller.move_axis_to_target(
                         "DV",
                         dv,
@@ -728,7 +728,7 @@ class CraniotomyWindow(QMainWindow):
 
     def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
         top_points: list[tuple[float, float, float]] = []
-        skull_thickness_mm = max(self.skull_thickness_um.value() / 1000.0, 0.001)
+        skull_thickness_mm = max(self.skull_thickness_mm.value(), 0.001)
         depth_ratio = max(0.0, min(1.0, self.drill_depth.value() / skull_thickness_mm))
         current_depth_ratio: float | None = None
         for index, (ap, ml, _dv) in enumerate(self.trajectory):
@@ -746,7 +746,7 @@ class CraniotomyWindow(QMainWindow):
                     current_depth_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
             except Exception:
                 current_point = None
-        self.depth_legend.set_skull_thickness_um(self.skull_thickness_um.value())
+        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         self.depth_legend.set_current_depth_ratio(current_depth_ratio)
         self._update_round_status_labels()
         self.top_view.set_data(top_points, top_seeds, current_point=current_point if self.seeds else None)
