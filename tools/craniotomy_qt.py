@@ -356,7 +356,7 @@ class PlungerGaugeWidget(QWidget):
             ratio = value / self.maximum_nl
             y = bottom - ratio * (bottom - top)
             painter.setPen(QPen(QColor("#1d4ed8"), 6))
-            painter.drawLine(QPointF(axis_x - 6, bottom), QPointF(axis_x - 6, y))
+            painter.drawLine(QPointF(axis_x - 6, top), QPointF(axis_x - 6, y))
             painter.setPen(QColor("#1d4ed8"))
             painter.drawText(QRectF(4, self.height() - 28, self.width() - 8, 24), Qt.AlignCenter, f"{self.position_nl:.0f}")
         else:
@@ -415,7 +415,7 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_live_position()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
-        self.refresh_timer.start(250)
+        self.refresh_timer.start(50)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -475,6 +475,13 @@ class CraniotomyWindow(QMainWindow):
                 padding: 2px 8px;
             }
             QDoubleSpinBox, QSpinBox {
+                border: 1px solid #cfdbcf;
+                border-radius: 6px;
+                padding: 1px 3px;
+                background: white;
+                min-height: 14px;
+            }
+            QLineEdit {
                 border: 1px solid #cfdbcf;
                 border-radius: 6px;
                 padding: 1px 3px;
@@ -723,13 +730,12 @@ class CraniotomyWindow(QMainWindow):
         single_layout.setVerticalSpacing(3)
         layout.addWidget(single_box)
 
-        self.single_injection_volume_nl = self._spinbox(value=100, minimum=10, maximum=100000)
+        self.single_injection_volume_nl = self._number_edit(100)
         self.single_injection_volume_nl.editingFinished.connect(self.round_single_injection_volume_up)
-        self.single_injection_time_s = self._double_spinbox(value=10.0, minimum=0.1, maximum=3600.0)
-        self.single_injection_time_s.setDecimals(1)
-        self.single_injection_volume_nl.valueChanged.connect(self.update_injection_rate_label)
-        self.single_injection_time_s.valueChanged.connect(self.update_injection_rate_label)
-        self.block_test_volume_nl = self._spinbox(value=50, minimum=10, maximum=2000)
+        self.single_injection_time_s = self._number_edit(10.0)
+        self.single_injection_volume_nl.textChanged.connect(self.update_injection_rate_label)
+        self.single_injection_time_s.textChanged.connect(self.update_injection_rate_label)
+        self.block_test_volume_nl = self._number_edit(50)
         self.block_test_volume_nl.editingFinished.connect(self.round_test_volume_to_supported)
         self.injection_progress = QProgressBar()
         self.injection_progress.setRange(0, 100)
@@ -754,12 +760,9 @@ class CraniotomyWindow(QMainWindow):
         self.empty_syringe_btn = QPushButton("Empty Syringe")
         self.empty_syringe_btn.clicked.connect(self.empty_syringe)
 
-        self.movement_offset_mm = self._double_spinbox(value=0.2, minimum=-10.0, maximum=10.0)
-        self.movement_offset_mm.setDecimals(3)
-        self.movement_overshoot_mm = self._double_spinbox(value=0.0, minimum=0.0, maximum=10.0)
-        self.movement_overshoot_mm.setDecimals(3)
-        self.movement_duration_s = self._double_spinbox(value=60.0, minimum=0.1, maximum=3600.0)
-        self.movement_duration_s.setDecimals(1)
+        self.movement_offset_mm = self._number_edit(0.2)
+        self.movement_overshoot_mm = self._number_edit(0.0)
+        self.movement_duration_s = self._number_edit(60.0)
         self.movement_steps_list = QListWidget()
         add_movement_btn = QPushButton("Add Movement Step")
         add_movement_btn.clicked.connect(self.add_movement_step)
@@ -826,6 +829,33 @@ class CraniotomyWindow(QMainWindow):
         widget.setRange(minimum, maximum)
         widget.setValue(value)
         return widget
+
+    def _number_edit(self, value: float | int) -> QLineEdit:
+        widget = QLineEdit()
+        widget.setText(f"{value:g}")
+        widget.setAlignment(Qt.AlignmentFlag.AlignRight)
+        return widget
+
+    def _line_float(self, widget: QLineEdit, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+        try:
+            value = float(widget.text().strip())
+        except ValueError:
+            value = default
+        if minimum is not None:
+            value = max(minimum, value)
+        if maximum is not None:
+            value = min(maximum, value)
+        return value
+
+    def _line_int(self, widget: QLineEdit, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+        value = int(round(self._line_float(widget, float(default), minimum, maximum)))
+        return value
+
+    def _set_number_edit(self, widget: QLineEdit, value: float | int) -> None:
+        if isinstance(value, int):
+            widget.setText(str(value))
+        else:
+            widget.setText(f"{value:g}")
 
     def set_status(self, message: str) -> None:
         self.current_action = message or "Trajectory"
@@ -949,14 +979,17 @@ class CraniotomyWindow(QMainWindow):
 
     def update_injection_rate_label(self) -> None:
         volume_nl = self._rounded_single_injection_volume()
-        duration_s = max(self.single_injection_time_s.value(), 0.1)
+        duration_s = max(self._line_float(self.single_injection_time_s, 10.0, 0.1, 3600.0), 0.1)
         self.injection_rate_label.setText(f"Current volume rate = {(volume_nl / duration_s) * 60.0:.1f} nl/min")
 
     def round_single_injection_volume_up(self) -> None:
-        self.single_injection_volume_nl.setValue(self._rounded_single_injection_volume())
+        self._set_number_edit(self.single_injection_volume_nl, self._rounded_single_injection_volume())
 
     def round_test_volume_to_supported(self) -> None:
-        self.block_test_volume_nl.setValue(self._nearest_supported_injection_volume(self.block_test_volume_nl.value()))
+        self._set_number_edit(
+            self.block_test_volume_nl,
+            self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000)),
+        )
 
     def on_manual_volume_combo_changed(self) -> None:
         value = self.manual_volume_combo.currentData()
@@ -985,8 +1018,8 @@ class CraniotomyWindow(QMainWindow):
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
         try:
-            volume_nl = self._nearest_supported_injection_volume(self.block_test_volume_nl.value())
-            self.block_test_volume_nl.setValue(volume_nl)
+            volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
+            self._set_number_edit(self.block_test_volume_nl, volume_nl)
             self.controller.syringe_step(f"{volume_nl} nl", up=True)
             self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
         except Exception as exc:
@@ -1023,7 +1056,8 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def _rounded_single_injection_volume(self) -> int:
-        return max(10, int(math.ceil(self.single_injection_volume_nl.value() / 10.0) * 10))
+        value = self._line_int(self.single_injection_volume_nl, 100, 10, 100000)
+        return max(10, int(math.ceil(value / 10.0) * 10))
 
     def _nearest_supported_injection_volume(self, volume_nl: int) -> int:
         return min(INJECTION_VOLUME_OPTIONS_NL, key=lambda option: (abs(option - volume_nl), option))
@@ -1041,9 +1075,9 @@ class CraniotomyWindow(QMainWindow):
 
     def add_movement_step(self) -> None:
         step = InjectionMovementStep(
-            dv_offset_mm=self.movement_offset_mm.value(),
-            duration_s=max(0.1, self.movement_duration_s.value()),
-            overshoot_mm=max(0.0, self.movement_overshoot_mm.value()),
+            dv_offset_mm=self._line_float(self.movement_offset_mm, 0.2, -10.0, 10.0),
+            duration_s=max(0.1, self._line_float(self.movement_duration_s, 60.0, 0.1, 3600.0)),
+            overshoot_mm=max(0.0, self._line_float(self.movement_overshoot_mm, 0.0, 0.0, 10.0)),
         )
         self.injection_movement_steps.append(step)
         self.refresh_movement_steps_list()
@@ -1068,7 +1102,7 @@ class CraniotomyWindow(QMainWindow):
             self,
             "Add Pause",
             "Pause duration (s)",
-            self.movement_duration_s.value(),
+            self._line_float(self.movement_duration_s, 60.0, 0.1, 3600.0),
             0.1,
             3600.0,
             1,
@@ -1144,8 +1178,8 @@ class CraniotomyWindow(QMainWindow):
         try:
             sites = self._active_injection_sites()
             volume_nl = self._rounded_single_injection_volume()
-            self.single_injection_volume_nl.setValue(volume_nl)
-            duration_s = max(self.single_injection_time_s.value(), 0.1)
+            self._set_number_edit(self.single_injection_volume_nl, volume_nl)
+            duration_s = max(self._line_float(self.single_injection_time_s, 10.0, 0.1, 3600.0), 0.1)
             injection_plan = self._injection_step_plan(volume_nl)
             movement_steps = list(self.injection_movement_steps)
             if not injection_plan and not movement_steps:
@@ -1191,8 +1225,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_status_label.setText("Stopping injection")
 
     def _rounded_test_volume(self) -> int:
-        volume_nl = self._nearest_supported_injection_volume(self.block_test_volume_nl.value())
-        self.block_test_volume_nl.setValue(volume_nl)
+        volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
+        self._set_number_edit(self.block_test_volume_nl, volume_nl)
         return volume_nl
 
     def _run_injection_protocol(
