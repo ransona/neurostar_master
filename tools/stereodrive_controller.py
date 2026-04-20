@@ -115,6 +115,10 @@ class StereoDriveController:
             raise StereoDriveError("Could not read StereoDrive window rectangle.")
         return (rect.left, rect.top, max(1, rect.right - rect.left), max(1, rect.bottom - rect.top))
 
+    def get_main_window_handle(self) -> int:
+        self._refresh_main_window()
+        return int(self.main_hwnd)
+
     def _find_main_window(self) -> int:
         matches: list[int] = []
 

@@ -1606,12 +1606,12 @@ class CraniotomyWindow(QMainWindow):
         screen = QApplication.primaryScreen()
         if screen is None:
             return None
-        window_left, window_top, window_width, window_height = self.controller.get_main_window_rect()
+        _window_left, _window_top, window_width, window_height = self.controller.get_main_window_rect()
         width = max(1, int(window_width * 0.20))
         height = max(1, int(window_height * 0.20))
-        left = window_left + window_width - width
-        top = window_top + window_height - height
-        pixmap = screen.grabWindow(0, left, top, width, height)
+        left = window_width - width
+        top = window_height - height
+        pixmap = screen.grabWindow(self.controller.get_main_window_handle(), left, top, width, height)
         if pixmap.isNull():
             return None
         image = pixmap.toImage()
