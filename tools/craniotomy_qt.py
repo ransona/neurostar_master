@@ -1508,8 +1508,8 @@ class CraniotomyWindow(QMainWindow):
                     blue_rows.append(y)
             if not blue_rows:
                 return None
-            blue_bottom = max(blue_rows)
-            ratio = 1.0 - ((blue_bottom - y_start) / max(1, y_end - y_start))
+            blue_top = min(blue_rows)
+            ratio = 1.0 - ((blue_top - y_start) / max(1, y_end - y_start))
             return max(0.0, min(5000.0, ratio * 5000.0))
         except Exception:
             return None
