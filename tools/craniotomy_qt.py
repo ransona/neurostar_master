@@ -1508,8 +1508,34 @@ class CraniotomyWindow(QMainWindow):
                     blue_rows.append(y)
             if not blue_rows:
                 return None
-            blue_top = min(blue_rows)
-            ratio = 1.0 - ((blue_top - y_start) / max(1, y_end - y_start))
+            axis_x_start = max(0, int(image_width * 0.25))
+            axis_x_end = min(image_width - 1, int(image_width * 0.58))
+            axis_column = None
+            axis_dark_count = 0
+            for x in range(axis_x_start, axis_x_end):
+                dark_count = 0
+                for y in range(y_start, y_end):
+                    color = image.pixelColor(x, y)
+                    if color.red() < 90 and color.green() < 90 and color.blue() < 90:
+                        dark_count += 1
+                if dark_count > axis_dark_count:
+                    axis_dark_count = dark_count
+                    axis_column = x
+
+            scale_top = y_start
+            scale_bottom = y_end
+            if axis_column is not None and axis_dark_count > image_height * 0.25:
+                axis_rows: list[int] = []
+                for y in range(y_start, y_end):
+                    color = image.pixelColor(axis_column, y)
+                    if color.red() < 120 and color.green() < 120 and color.blue() < 120:
+                        axis_rows.append(y)
+                if axis_rows:
+                    scale_top = min(axis_rows)
+                    scale_bottom = max(axis_rows)
+
+            blue_bottom = max(blue_rows)
+            ratio = 1.0 - ((blue_bottom - scale_top) / max(1, scale_bottom - scale_top))
             return max(0.0, min(5000.0, ratio * 5000.0))
         except Exception:
             return None
