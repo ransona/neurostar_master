@@ -19,6 +19,7 @@ param(
         "open-injectomate-calibrate",
         "probe-injectomate-calibrate",
         "probe-scale-control",
+        "probe-plunger-gauge-control",
         "scan-open-windows",
         "set-injection-volume",
         "set-syringe-type",
@@ -627,6 +628,103 @@ function Write-ScaleControlProbe {
         }
 }
 
+function Find-PlungerGaugeControl {
+    param([IntPtr]$MainWindowHandle)
+
+    $controls = @(Get-ChildControls -ParentHandle $MainWindowHandle)
+    $exact = $controls |
+        Where-Object { $_.ClassName -eq "AfxWnd140" -and ($_.Text -eq "MMCDepth" -or $_.Caption -eq "MMCDepth") } |
+        Sort-Object { $_.Rect.Width * $_.Rect.Height } -Descending |
+        Select-Object -First 1
+    if ($exact) {
+        return [pscustomobject]@{ Control = $exact; AllControls = $controls }
+    }
+
+    $fallback = $controls |
+        Where-Object { $_.ClassName -eq "AfxWnd140" -and $_.Rect -and $_.Rect.Height -gt 200 -and $_.Rect.Width -gt 20 } |
+        Sort-Object { $_.Rect.Left } -Descending |
+        Select-Object -First 1
+    if ($fallback) {
+        return [pscustomobject]@{ Control = $fallback; AllControls = $controls }
+    }
+
+    return [pscustomobject]@{ Control = $null; AllControls = $controls }
+}
+
+function Get-ParentChain {
+    param([IntPtr]$Handle)
+
+    $chain = @()
+    $current = $Handle
+    for ($i = 0; $i -lt 8; $i++) {
+        $parent = [StereoDriveWin32]::GetParent($current)
+        if ($parent -eq [IntPtr]::Zero) {
+            break
+        }
+        $chain += Get-WindowDetails -Handle $parent
+        $current = $parent
+    }
+    return $chain
+}
+
+function Write-PlungerGaugeProbe {
+    param([IntPtr]$MainWindowHandle)
+
+    Show-Injectomate -MainWindowHandle $MainWindowHandle
+    $probe = Find-PlungerGaugeControl -MainWindowHandle $MainWindowHandle
+    if (-not $probe.Control) {
+        Write-Output "MMCDepth plunger gauge control was not found."
+        Write-Output ""
+        Write-Output "AfxWnd140 candidates:"
+        $probe.AllControls |
+            Where-Object { $_.ClassName -eq "AfxWnd140" } |
+            ForEach-Object {
+                Write-Output ("  handle={0} control_id={1} text='{2}' caption='{3}' rect=({4},{5},{6},{7})" -f $_.Handle, $_.ControlId, $_.Text, $_.Caption, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom)
+            }
+        return
+    }
+
+    $control = $probe.Control
+    Write-Output "Plunger gauge control:"
+    Get-WindowDetails -Handle $control.Handle | Format-List | Out-String -Width 240 | Write-Output
+    Write-Output "UI Automation details:"
+    Get-UiAutomationDetails -Handle $control.Handle | Format-List | Out-String -Width 240 | Write-Output
+
+    Write-Output "Parent chain:"
+    Get-ParentChain -Handle $control.Handle | ForEach-Object {
+        Write-Output ("  handle={0} control_id={1} class={2} text='{3}' caption='{4}' rect=({5},{6},{7},{8})" -f $_.Handle, $_.ControlId, $_.ClassName, $_.Text, $_.Caption, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom)
+    }
+
+    Write-Output "Gauge child windows:"
+    $children = @(Get-ChildControls -ParentHandle $control.Handle)
+    if ($children.Count -eq 0) {
+        Write-Output "  none"
+    } else {
+        $children | ForEach-Object {
+            Write-Output ("  handle={0} control_id={1} class={2} text='{3}' caption='{4}' rect=({5},{6},{7},{8})" -f $_.Handle, $_.ControlId, $_.ClassName, $_.Text, $_.Caption, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom)
+        }
+    }
+
+    Write-Output "Nearby sibling controls:"
+    $left = $control.Rect.Left - 40
+    $right = $control.Rect.Right + 40
+    $top = $control.Rect.Top - 40
+    $bottom = $control.Rect.Bottom + 40
+    $probe.AllControls |
+        Where-Object {
+            $_.Handle -ne $control.Handle -and
+            $_.Rect -and
+            $_.Rect.Right -ge $left -and
+            $_.Rect.Left -le $right -and
+            $_.Rect.Bottom -ge $top -and
+            $_.Rect.Top -le $bottom
+        } |
+        Sort-Object { $_.Rect.Top }, { $_.Rect.Left } |
+        ForEach-Object {
+            Write-Output ("  handle={0} control_id={1} class={2} text='{3}' caption='{4}' rect=({5},{6},{7},{8})" -f $_.Handle, $_.ControlId, $_.ClassName, $_.Text, $_.Caption, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom)
+        }
+}
+
 function Set-EditText {
     param(
         [hashtable]$ControlMap,
@@ -1124,6 +1222,11 @@ if ($Action -eq "probe-injectomate-calibrate") {
 
 if ($Action -eq "probe-scale-control") {
     Write-ScaleControlProbe -ProcessId $mainProcessId
+    return
+}
+
+if ($Action -eq "probe-plunger-gauge-control") {
+    Write-PlungerGaugeProbe -MainWindowHandle $mainHandle
     return
 }
 
