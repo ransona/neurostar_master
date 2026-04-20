@@ -287,6 +287,12 @@ class StereoDriveController:
         user32.SendMessageW(hwnd, WM_GETTEXT, len(buffer), ctypes.cast(buffer, ctypes.c_void_p))
         return buffer.value.strip()
 
+    def _window_rect_tuple(self, hwnd: int) -> tuple[int, int, int, int] | None:
+        rect = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        return (rect.left, rect.top, rect.right, rect.bottom)
+
     def _set_text(self, hwnd: int, text: str) -> None:
         text_buffer = ctypes.create_unicode_buffer(text)
         user32.SendMessageW(hwnd, WM_SETTEXT, 0, ctypes.cast(text_buffer, ctypes.c_void_p))
@@ -507,35 +513,58 @@ class StereoDriveController:
     def open_injectomate_calibrate(self) -> None:
         self.show_injectomate()
         self._click(CALIBRATE_INJECTOMATE_ID)
-        time.sleep(0.8)
+        time.sleep(0.2)
 
-    def _find_injectomate_calibrate_window(self, timeout_seconds: float = 2.0) -> int:
+    def _find_injectomate_calibrate_window(self, timeout_seconds: float = 5.0) -> int:
         deadline = time.monotonic() + timeout_seconds
         wanted_pid = self._window_process_id(self.main_hwnd)
+        seen_windows: list[str] = []
         while time.monotonic() < deadline:
             for window in self._top_level_windows():
                 if self._window_process_id(window.hwnd) != wanted_pid:
                     continue
+                if window.right <= window.left or window.bottom <= window.top:
+                    continue
+                if window.text:
+                    seen_windows.append(f"{window.class_name}:{window.text}")
                 if "Microdrive Calibrate Scale - Injectomate" in window.text:
                     return window.hwnd
                 if self._child_control_handle(window.hwnd, CALIBRATE_SCALE_VALUE_ID):
                     return window.hwnd
             time.sleep(0.1)
-        raise StereoDriveError("Injectomate calibrate scale popup was not found.")
+        preview = ", ".join(dict.fromkeys(seen_windows[:8]))
+        suffix = f" Seen windows: {preview}" if preview else ""
+        raise StereoDriveError(f"Injectomate calibrate scale popup was not found.{suffix}")
 
     def read_injectomate_calibrate_scale_nl(self, close_popup: bool = True) -> float:
         self.open_injectomate_calibrate()
         popup_hwnd = self._find_injectomate_calibrate_window()
-        value_hwnd = self._child_control_handle(popup_hwnd, CALIBRATE_SCALE_VALUE_ID)
-        if not value_hwnd:
-            raise StereoDriveError(f"Calibrate scale value control ID {CALIBRATE_SCALE_VALUE_ID} was not found.")
-        text = self._get_text(value_hwnd)
-        if close_popup:
-            user32.SendMessageW(popup_hwnd, WM_CLOSE, 0, 0)
+        deadline = time.monotonic() + 5.0
+        last_text = ""
+        value_hwnd = 0
         try:
-            return float(text)
-        except ValueError as exc:
-            raise StereoDriveError(f"Calibrate scale value was not numeric: '{text}'.") from exc
+            while time.monotonic() < deadline:
+                value_hwnd = self._child_control_handle(popup_hwnd, CALIBRATE_SCALE_VALUE_ID) or 0
+                if not value_hwnd:
+                    time.sleep(0.1)
+                    continue
+                last_text = self._get_text(value_hwnd)
+                if re.fullmatch(r"-?\d+(?:\.\d+)?", last_text.replace(",", "")):
+                    return float(last_text.replace(",", ""))
+                time.sleep(0.1)
+            popup_rect = self._window_rect_tuple(popup_hwnd)
+            if not value_hwnd:
+                raise StereoDriveError(
+                    f"Calibrate popup was found but value control ID {CALIBRATE_SCALE_VALUE_ID} was not found. "
+                    f"Popup={popup_hwnd} rect={popup_rect}."
+                )
+            raise StereoDriveError(
+                f"Calibrate value control was found but did not contain a numeric value. "
+                f"Control={value_hwnd} text='{last_text}'."
+            )
+        finally:
+            if close_popup:
+                user32.SendMessageW(popup_hwnd, WM_CLOSE, 0, 0)
 
     def get_injectomate_calibrate_snapshot(self) -> dict[str, object]:
         before_windows = [self._control_row(window) for window in self._top_level_windows()]
