@@ -14,6 +14,7 @@ param(
         "show-injectomate",
         "hide-injectomate",
         "injectomate-map",
+        "scan-injectomate-value",
         "set-injection-volume",
         "set-syringe-type",
         "inject",
@@ -513,6 +514,40 @@ function Get-InjectomateMap {
         }
 }
 
+function Find-InjectomateValueControls {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [string]$WantedValue
+    )
+
+    $controls = Get-ChildControls -ParentHandle $MainWindowHandle
+    $injectomateControls = @($controls | Where-Object { $_.ControlId -ge 10000 })
+    if ($injectomateControls.Count -eq 0) {
+        return @()
+    }
+
+    $numericPattern = if ($WantedValue) {
+        [regex]::Escape($WantedValue)
+    } else {
+        "^-?\d+(\.\d+)?$"
+    }
+
+    return $controls |
+        Where-Object {
+            ($_.Text -match $numericPattern -or $_.Caption -match $numericPattern)
+        } |
+        Sort-Object ControlId, ClassName |
+        ForEach-Object {
+            [pscustomobject]@{
+                Handle = $_.Handle
+                ControlId = $_.ControlId
+                ClassName = $_.ClassName
+                Caption = $_.Caption
+                Text = $_.Text
+            }
+        }
+}
+
 function Ensure-ReferencePanel {
     param(
         [IntPtr]$MainWindowHandle,
@@ -636,6 +671,12 @@ if ($Action -eq "hide-injectomate") {
 
 if ($Action -eq "injectomate-map") {
     Get-InjectomateMap -MainWindowHandle $mainHandle
+    return
+}
+
+if ($Action -eq "scan-injectomate-value") {
+    Show-Injectomate -MainWindowHandle $mainHandle
+    Find-InjectomateValueControls -MainWindowHandle $mainHandle -WantedValue $Value
     return
 }
 
