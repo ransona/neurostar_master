@@ -1610,7 +1610,7 @@ class CraniotomyWindow(QMainWindow):
             return float(value)
         return None
 
-    def _capture_plunger_gauge_image(self) -> QImage | None:
+    def _plunger_gauge_capture_context(self) -> tuple[QImage, dict[str, object]] | None:
         rect = self.controller.get_mmc_depth_gauge_rect()
         if rect is None:
             return None
@@ -1619,12 +1619,38 @@ class CraniotomyWindow(QMainWindow):
         screen = QApplication.screenAt(center) or QApplication.primaryScreen()
         if screen is None:
             return None
-        pixmap = screen.grabWindow(0, left, top, width, height)
+        dpr = max(1.0, float(screen.devicePixelRatio()))
+        logical_left = int(round(left / dpr))
+        logical_top = int(round(top / dpr))
+        logical_width = max(1, int(round(width / dpr)))
+        logical_height = max(1, int(round(height / dpr)))
+        pixmap = screen.grabWindow(0, logical_left, logical_top, logical_width, logical_height)
         if pixmap.isNull():
             return None
         image = pixmap.toImage()
         if image.width() <= 1 or image.height() <= 1:
             return None
+        return (
+            image,
+            {
+                "gauge_rect_physical": rect,
+                "capture_rect_logical": (logical_left, logical_top, logical_width, logical_height),
+                "screen_name": screen.name(),
+                "screen_geometry": (
+                    screen.geometry().x(),
+                    screen.geometry().y(),
+                    screen.geometry().width(),
+                    screen.geometry().height(),
+                ),
+                "device_pixel_ratio": dpr,
+            },
+        )
+
+    def _capture_plunger_gauge_image(self) -> QImage | None:
+        context = self._plunger_gauge_capture_context()
+        if context is None:
+            return None
+        image, _metadata = context
         return image
 
     def _blue_filtered_plunger_image(self, image: QImage) -> QImage:
@@ -1638,9 +1664,10 @@ class CraniotomyWindow(QMainWindow):
 
     def save_plunger_debug_capture(self) -> None:
         try:
-            image = self._capture_plunger_gauge_image()
-            if image is None:
+            context = self._plunger_gauge_capture_context()
+            if context is None:
                 raise StereoDriveError("Could not capture MMCDepth plunger gauge.")
+            image, metadata = context
             filtered = self._blue_filtered_plunger_image(image)
             value = self._read_plunger_text_from_image(image)
             output_dir = Path(__file__).resolve().parent
@@ -1650,12 +1677,15 @@ class CraniotomyWindow(QMainWindow):
             image.save(str(raw_path))
             filtered.save(str(filtered_path))
             value_text = "--" if value is None else f"{value:.0f}"
-            gauge_rect = self.controller.get_mmc_depth_gauge_rect()
             value_path.write_text(
                 "\n".join(
                     [
                         f"detected_value_nl={value_text}",
-                        f"gauge_rect={gauge_rect}",
+                        f"gauge_rect_physical={metadata['gauge_rect_physical']}",
+                        f"capture_rect_logical={metadata['capture_rect_logical']}",
+                        f"screen_name={metadata['screen_name']}",
+                        f"screen_geometry={metadata['screen_geometry']}",
+                        f"device_pixel_ratio={metadata['device_pixel_ratio']}",
                         f"digit_groups={self._blue_digit_groups(image)}",
                         f"capture_size={image.width()}x{image.height()}",
                     ]
