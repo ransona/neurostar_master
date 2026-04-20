@@ -4,8 +4,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractSpinBox,
@@ -25,6 +25,10 @@ from PySide6.QtWidgets import (
 )
 
 from stereodrive_controller import StereoDriveController, StereoDriveError
+
+
+MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+DEFAULT_MOVE_SPEED_MM = 0.05
 
 
 @dataclass
@@ -301,7 +305,7 @@ class CraniotomyWindow(QMainWindow):
         self.frozen_points: list[bool] = []
         self.current_seed_index: int | None = None
         self.current_action = "No trajectory yet"
-        self.move_speed_step_mm = 0.05
+        self.move_speed_step_mm = DEFAULT_MOVE_SPEED_MM
         self.drill_pause_requested = threading.Event()
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
@@ -317,7 +321,7 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_signal.connect(self.redraw_views)
         self.drill_progress_signal.connect(self.set_drill_completed_points)
         self._build_ui()
-        self._bind_shortcuts()
+        QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
@@ -542,38 +546,6 @@ class CraniotomyWindow(QMainWindow):
         views_layout.addLayout(legend_layout, 1, 1)
         self.update_move_speed_label()
 
-    def _bind_shortcuts(self) -> None:
-        bindings = [
-            ("Left", "ML", False, "ML left", 0.05),
-            ("Right", "ML", True, "ML right", 0.05),
-            ("Up", "AP", True, "AP anterior", 0.05),
-            ("Down", "AP", False, "AP posterior", 0.05),
-            ("PgUp", "DV", False, "DV up", 0.05),
-            ("PgDown", "DV", True, "DV down", 0.05),
-            ("Shift+Left", "ML", False, "ML left", 0.5),
-            ("Shift+Right", "ML", True, "ML right", 0.5),
-            ("Shift+Up", "AP", True, "AP anterior", 0.5),
-            ("Shift+Down", "AP", False, "AP posterior", 0.5),
-            ("Shift+PgUp", "DV", False, "DV up", 0.5),
-            ("Shift+PgDown", "DV", True, "DV down", 0.5),
-            ("Ctrl+Left", "ML", False, "ML left", 0.01),
-            ("Ctrl+Right", "ML", True, "ML right", 0.01),
-            ("Ctrl+Up", "AP", True, "AP anterior", 0.01),
-            ("Ctrl+Down", "AP", False, "AP posterior", 0.01),
-            ("Ctrl+PgUp", "DV", False, "DV up", 0.01),
-            ("Ctrl+PgDown", "DV", True, "DV down", 0.01),
-        ]
-        self.shortcuts: list[QShortcut] = []
-        for key, axis, positive, label, step_mm in bindings:
-            shortcut = QShortcut(key, self)
-            shortcut.setContext(Qt.ApplicationShortcut)
-            shortcut.activated.connect(
-                lambda axis=axis, positive=positive, label=label, step_mm=step_mm: self.keyboard_nudge(
-                    axis, positive, label, step_mm
-                )
-            )
-            self.shortcuts.append(shortcut)
-
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
         widget.setDecimals(2)
@@ -593,27 +565,71 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.update()
 
     def update_move_speed_label(self) -> None:
-        if self.move_speed_step_mm <= 0.011:
-            color = "#2563eb"
-        elif self.move_speed_step_mm >= 0.49:
-            color = "#dc2626"
-        else:
-            color = "#b45309"
+        try:
+            speed_index = MOVE_SPEED_OPTIONS_MM.index(self.move_speed_step_mm)
+        except ValueError:
+            speed_index = min(
+                range(len(MOVE_SPEED_OPTIONS_MM)),
+                key=lambda index: abs(MOVE_SPEED_OPTIONS_MM[index] - self.move_speed_step_mm),
+            )
+        ratio = speed_index / max(1, len(MOVE_SPEED_OPTIONS_MM) - 1)
+        red = int(37 + ratio * 183)
+        green = int(99 - ratio * 61)
+        blue = int(235 - ratio * 197)
+        color = f"#{red:02x}{green:02x}{blue:02x}"
         self.move_speed_label.setText(f"Move speed = {self.move_speed_step_mm:g} mm")
         self.move_speed_label.setStyleSheet(f"color: {color}; font-weight: 700;")
 
-    def keyboard_nudge(self, axis: str, positive: bool, label: str, step_mm: float) -> None:
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(watched, event)
+        if self._focus_is_editable():
+            return super().eventFilter(watched, event)
+        key = event.key()
+        if key == Qt.Key.Key_Shift:
+            self.adjust_move_speed(1)
+            return True
+        if key == Qt.Key.Key_Control:
+            self.adjust_move_speed(-1)
+            return True
+        key_map = {
+            Qt.Key.Key_Left: ("ML", False, "ML left"),
+            Qt.Key.Key_Right: ("ML", True, "ML right"),
+            Qt.Key.Key_Up: ("AP", True, "AP anterior"),
+            Qt.Key.Key_Down: ("AP", False, "AP posterior"),
+            Qt.Key.Key_PageUp: ("DV", False, "DV up"),
+            Qt.Key.Key_PageDown: ("DV", True, "DV down"),
+        }
+        if key not in key_map:
+            return super().eventFilter(watched, event)
+        axis, positive, label = key_map[key]
+        self.keyboard_nudge(axis, positive, label)
+        return True
+
+    def _focus_is_editable(self) -> bool:
+        focus_widget = QApplication.focusWidget()
+        return isinstance(focus_widget, (QLineEdit, QAbstractSpinBox))
+
+    def adjust_move_speed(self, direction: int) -> None:
+        current_index = min(
+            range(len(MOVE_SPEED_OPTIONS_MM)),
+            key=lambda index: abs(MOVE_SPEED_OPTIONS_MM[index] - self.move_speed_step_mm),
+        )
+        next_index = max(0, min(len(MOVE_SPEED_OPTIONS_MM) - 1, current_index + direction))
+        self.move_speed_step_mm = MOVE_SPEED_OPTIONS_MM[next_index]
+        self.update_move_speed_label()
+        self.set_status(f"Move speed set to {self.move_speed_step_mm:g} mm")
+
+    def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             return
-        focus_widget = QApplication.focusWidget()
-        if isinstance(focus_widget, (QLineEdit, QAbstractSpinBox)):
+        if self._focus_is_editable():
             return
         try:
-            self.move_speed_step_mm = step_mm
             self.update_move_speed_label()
-            self.controller.set_nudge_step(axis, step_mm)
+            self.controller.set_nudge_step(axis, self.move_speed_step_mm)
             self.controller.nudge_axis(axis, positive)
-            self.set_status(f"Keyboard nudge: {label} {step_mm:.2f} mm")
+            self.set_status(f"Keyboard nudge: {label} {self.move_speed_step_mm:g} mm")
             try:
                 self.refresh_live_position()
             except Exception:
