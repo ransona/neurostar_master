@@ -15,6 +15,7 @@ param(
         "hide-injectomate",
         "injectomate-map",
         "scan-injectomate-value",
+        "scan-injectomate-region",
         "set-injection-volume",
         "set-syringe-type",
         "inject",
@@ -75,6 +76,15 @@ public static class StereoDriveWin32
 
     public delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
 
@@ -101,6 +111,9 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetDlgCtrlID(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
@@ -173,6 +186,20 @@ function Get-ChildControls {
             ClassName = Get-ClassName -Handle $hwnd
             Caption = Get-WindowCaption -Handle $hwnd
             Text = Get-ControlText -Handle $hwnd
+            Rect = $(try {
+                $rect = New-Object StereoDriveWin32+RECT
+                [void][StereoDriveWin32]::GetWindowRect($hwnd, [ref]$rect)
+                [pscustomobject]@{
+                    Left = $rect.Left
+                    Top = $rect.Top
+                    Right = $rect.Right
+                    Bottom = $rect.Bottom
+                    Width = $rect.Right - $rect.Left
+                    Height = $rect.Bottom - $rect.Top
+                }
+            } catch {
+                $null
+            })
         }) | Out-Null
         return $true
     }
@@ -562,6 +589,44 @@ function Find-InjectomateValueControls {
         }
 }
 
+function Get-InjectomateRegionControls {
+    param([IntPtr]$MainWindowHandle)
+
+    $controls = Get-ChildControls -ParentHandle $MainWindowHandle
+    $injectomateControls = @($controls | Where-Object { $_.ControlId -ge 10000 })
+    if ($injectomateControls.Count -eq 0) {
+        return @()
+    }
+
+    $left = ($injectomateControls | ForEach-Object { $_.Rect.Left } | Measure-Object -Minimum).Minimum
+    $right = ($injectomateControls | ForEach-Object { $_.Rect.Right } | Measure-Object -Maximum).Maximum
+    $top = ($injectomateControls | ForEach-Object { $_.Rect.Top } | Measure-Object -Minimum).Minimum
+    $bottom = ($injectomateControls | ForEach-Object { $_.Rect.Bottom } | Measure-Object -Maximum).Maximum
+
+    return $controls |
+        Where-Object {
+            $_.Rect -and
+            $_.Rect.Right -ge ($left - 30) -and
+            $_.Rect.Left -le ($right + 30) -and
+            $_.Rect.Bottom -ge ($top - 30) -and
+            $_.Rect.Top -le ($bottom + 30)
+        } |
+        Sort-Object { $_.Rect.Top }, { $_.Rect.Left } |
+        ForEach-Object {
+            [pscustomobject]@{
+                Handle = $_.Handle
+                ControlId = $_.ControlId
+                ClassName = $_.ClassName
+                Caption = $_.Caption
+                Text = $_.Text
+                Left = $_.Rect.Left
+                Top = $_.Rect.Top
+                Width = $_.Rect.Width
+                Height = $_.Rect.Height
+            }
+        }
+}
+
 function Ensure-ReferencePanel {
     param(
         [IntPtr]$MainWindowHandle,
@@ -691,6 +756,12 @@ if ($Action -eq "injectomate-map") {
 if ($Action -eq "scan-injectomate-value") {
     Show-Injectomate -MainWindowHandle $mainHandle
     Find-InjectomateValueControls -MainWindowHandle $mainHandle -WantedValue $Value
+    return
+}
+
+if ($Action -eq "scan-injectomate-region") {
+    Show-Injectomate -MainWindowHandle $mainHandle
+    Get-InjectomateRegionControls -MainWindowHandle $mainHandle
     return
 }
 
