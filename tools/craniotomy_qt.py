@@ -1552,10 +1552,10 @@ class CraniotomyWindow(QMainWindow):
             return None
         return best_digit
 
-    def _read_plunger_text_from_image(self, image: QImage) -> float | None:
+    def _blue_digit_groups(self, image: QImage) -> list[tuple[int, int, int, int]]:
         image_width = image.width()
         image_height = image.height()
-        y_start = max(0, int(image_height * 0.92))
+        y_start = max(0, int(image_height * 0.80))
         y_end = image_height - 1
 
         blue_columns: list[int] = []
@@ -1567,7 +1567,7 @@ class CraniotomyWindow(QMainWindow):
             if hits >= 2:
                 blue_columns.append(x)
         if not blue_columns:
-            return None
+            return []
 
         groups: list[tuple[int, int]] = []
         group_start = blue_columns[0]
@@ -1579,7 +1579,7 @@ class CraniotomyWindow(QMainWindow):
             previous = x
         groups.append((group_start, previous))
 
-        digits: list[str] = []
+        digit_groups: list[tuple[int, int, int, int]] = []
         for x0, x1 in groups:
             if x1 - x0 < 2:
                 continue
@@ -1590,7 +1590,15 @@ class CraniotomyWindow(QMainWindow):
                         ys.append(y)
             if not ys:
                 continue
-            digit = self._recognize_plunger_digit(image, x0, x1, min(ys), max(ys))
+            if max(ys) - min(ys) < 5:
+                continue
+            digit_groups.append((x0, x1, min(ys), max(ys)))
+        return digit_groups
+
+    def _read_plunger_text_from_image(self, image: QImage) -> float | None:
+        digits: list[str] = []
+        for x0, x1, y0, y1 in self._blue_digit_groups(image):
+            digit = self._recognize_plunger_digit(image, x0, x1, y0, y1)
             if digit is None:
                 return None
             digits.append(digit)
@@ -1602,12 +1610,11 @@ class CraniotomyWindow(QMainWindow):
             return float(value)
         return None
 
-    def _capture_stereodrive_bottom_right_image(self) -> QImage | None:
-        window_left, window_top, window_width, window_height = self.controller.get_main_window_rect()
-        width = max(1, int(window_width * 0.20))
-        height = max(1, int(window_height * 0.20))
-        left = window_left + window_width - width
-        top = window_top + window_height - height
+    def _capture_plunger_gauge_image(self) -> QImage | None:
+        rect = self.controller.get_mmc_depth_gauge_rect()
+        if rect is None:
+            return None
+        left, top, width, height = rect
         center = QPoint(left + width // 2, top + height // 2)
         screen = QApplication.screenAt(center) or QApplication.primaryScreen()
         if screen is None:
@@ -1631,9 +1638,9 @@ class CraniotomyWindow(QMainWindow):
 
     def save_plunger_debug_capture(self) -> None:
         try:
-            image = self._capture_stereodrive_bottom_right_image()
+            image = self._capture_plunger_gauge_image()
             if image is None:
-                raise StereoDriveError("Could not capture bottom-right StereoDrive region.")
+                raise StereoDriveError("Could not capture MMCDepth plunger gauge.")
             filtered = self._blue_filtered_plunger_image(image)
             value = self._read_plunger_text_from_image(image)
             output_dir = Path(__file__).resolve().parent
@@ -1643,12 +1650,13 @@ class CraniotomyWindow(QMainWindow):
             image.save(str(raw_path))
             filtered.save(str(filtered_path))
             value_text = "--" if value is None else f"{value:.0f}"
-            win_left, win_top, win_width, win_height = self.controller.get_main_window_rect()
+            gauge_rect = self.controller.get_mmc_depth_gauge_rect()
             value_path.write_text(
                 "\n".join(
                     [
                         f"detected_value_nl={value_text}",
-                        f"window_rect={win_left},{win_top},{win_width},{win_height}",
+                        f"gauge_rect={gauge_rect}",
+                        f"digit_groups={self._blue_digit_groups(image)}",
                         f"capture_size={image.width()}x{image.height()}",
                     ]
                 )
@@ -1663,7 +1671,7 @@ class CraniotomyWindow(QMainWindow):
 
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:
-            image = self._capture_stereodrive_bottom_right_image()
+            image = self._capture_plunger_gauge_image()
             if image is None:
                 return None
             return self._read_plunger_text_from_image(image)
