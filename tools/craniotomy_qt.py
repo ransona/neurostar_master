@@ -1,5 +1,6 @@
 import math
 import ctypes
+import json
 import sys
 import threading
 import time
@@ -778,6 +779,8 @@ class CraniotomyWindow(QMainWindow):
         test_blockage_btn.clicked.connect(self.test_for_blockage)
         debug_plunger_btn = QPushButton("Debug Plunger Capture")
         debug_plunger_btn.clicked.connect(self.save_plunger_debug_capture)
+        debug_calibrate_btn = QPushButton("Debug Calibrate Dialog")
+        debug_calibrate_btn.clicked.connect(self.save_calibrate_dialog_debug)
 
         status_layout.addWidget(QLabel("Current manual injection volume"), 0, 0)
         status_layout.addWidget(self.manual_volume_label, 0, 1, 1, 3)
@@ -787,6 +790,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.inject_down_btn, 3, 1)
         status_layout.addWidget(test_blockage_btn, 3, 2, 1, 2)
         status_layout.addWidget(debug_plunger_btn, 4, 0, 1, 4)
+        status_layout.addWidget(debug_calibrate_btn, 5, 0, 1, 4)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -1817,6 +1821,26 @@ class CraniotomyWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Plunger Debug", str(exc))
+
+    def save_calibrate_dialog_debug(self) -> None:
+        try:
+            snapshot = self.controller.get_injectomate_calibrate_snapshot()
+            output_dir = Path(__file__).resolve().parent
+            json_path = output_dir / "injectomate_calibrate_debug.json"
+            text_path = output_dir / "injectomate_calibrate_values.txt"
+            json_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+            candidates = snapshot.get("numeric_candidates", [])
+            lines = ["numeric_candidates:"]
+            for candidate in candidates:
+                lines.append(
+                    "value={value} control_id={control_id} class={class_name} text={text!r} rect=({left},{top},{right},{bottom})".format(
+                        **candidate
+                    )
+                )
+            text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.set_status(f"Saved calibrate dialog debug: {json_path.name}, {text_path.name}.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Calibrate Debug", str(exc))
 
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:

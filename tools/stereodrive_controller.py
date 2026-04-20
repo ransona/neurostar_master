@@ -52,6 +52,7 @@ SET_REFERENCE_BREGMA_COMMAND_ID = 1095
 SET_DRILL_TO_BREGMA_COMMAND_ID = 1071
 INJECT_BUTTON_ID = 10018
 FILL_BUTTON_ID = 10032
+CALIBRATE_INJECTOMATE_ID = 10030
 CLOSE_INJECTOMATE_ID = 10031
 NUDGE_STEP_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
@@ -70,6 +71,8 @@ user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int
 user32.GetClassNameW.restype = ctypes.c_int
 user32.GetDlgCtrlID.argtypes = [ctypes.c_void_p]
 user32.GetDlgCtrlID.restype = ctypes.c_int
+user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+user32.GetWindowThreadProcessId.restype = ctypes.c_uint32
 user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 user32.SendMessageW.restype = ctypes.c_ssize_t
 
@@ -160,6 +163,9 @@ class StereoDriveController:
         return controls
 
     def _child_controls(self) -> list[ChildControl]:
+        return self._child_controls_for_window(self.main_hwnd)
+
+    def _child_controls_for_window(self, parent_hwnd: int) -> list[ChildControl]:
         controls: list[ChildControl] = []
 
         @WNDENUMPROC
@@ -181,8 +187,42 @@ class StereoDriveController:
             )
             return True
 
-        user32.EnumChildWindows(self.main_hwnd, callback, 0)
+        user32.EnumChildWindows(parent_hwnd, callback, 0)
         return controls
+
+    def _window_process_id(self, hwnd: int) -> int:
+        process_id = ctypes.c_uint32(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        return int(process_id.value)
+
+    def _top_level_windows_for_process(self) -> list[ChildControl]:
+        self._refresh_main_window()
+        wanted_pid = self._window_process_id(self.main_hwnd)
+        windows: list[ChildControl] = []
+
+        @WNDENUMPROC
+        def callback(hwnd: int, _lparam: int) -> bool:
+            if self._window_process_id(hwnd) != wanted_pid:
+                return True
+            rect = RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            windows.append(
+                ChildControl(
+                    hwnd=hwnd,
+                    control_id=user32.GetDlgCtrlID(hwnd),
+                    class_name=self._class_name(hwnd),
+                    text=self._window_text(hwnd).strip(),
+                    left=rect.left,
+                    top=rect.top,
+                    right=rect.right,
+                    bottom=rect.bottom,
+                )
+            )
+            return True
+
+        user32.EnumWindows(callback, 0)
+        return windows
 
     def _control_handle(self, control_id: int, timeout_seconds: float = 5.0, poll_seconds: float = 0.2) -> int:
         deadline = time.monotonic() + timeout_seconds
@@ -424,6 +464,52 @@ class StereoDriveController:
     def fill_injectomate(self) -> None:
         self.show_injectomate()
         self._click(FILL_BUTTON_ID)
+
+    def open_injectomate_calibrate(self) -> None:
+        self.show_injectomate()
+        self._click(CALIBRATE_INJECTOMATE_ID)
+        time.sleep(0.3)
+
+    def get_injectomate_calibrate_snapshot(self) -> dict[str, object]:
+        self.open_injectomate_calibrate()
+        windows = [
+            window
+            for window in self._top_level_windows_for_process()
+            if window.hwnd != self.main_hwnd and window.right > window.left and window.bottom > window.top
+        ]
+        window_rows: list[dict[str, object]] = []
+        numeric_candidates: list[dict[str, object]] = []
+        for window in windows:
+            child_rows: list[dict[str, object]] = []
+            for control in self._child_controls_for_window(window.hwnd):
+                row = {
+                    "handle": control.hwnd,
+                    "control_id": control.control_id,
+                    "class_name": control.class_name,
+                    "text": control.text,
+                    "left": control.left,
+                    "top": control.top,
+                    "right": control.right,
+                    "bottom": control.bottom,
+                }
+                child_rows.append(row)
+                for match in re.finditer(r"-?\d+(?:\.\d+)?", control.text.replace(",", "")):
+                    value = float(match.group(0))
+                    if 0.0 <= value <= 5000.0:
+                        numeric_candidates.append(row | {"value": value})
+            window_rows.append(
+                {
+                    "handle": window.hwnd,
+                    "class_name": window.class_name,
+                    "text": window.text,
+                    "left": window.left,
+                    "top": window.top,
+                    "right": window.right,
+                    "bottom": window.bottom,
+                    "children": child_rows,
+                }
+            )
+        return {"windows": window_rows, "numeric_candidates": numeric_candidates}
 
     def close_injectomate(self) -> None:
         self._click(CLOSE_INJECTOMATE_ID)
