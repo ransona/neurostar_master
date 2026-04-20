@@ -28,6 +28,7 @@ STOP_ID = 1018
 GOTO_HOME_ID = 1540
 GOTO_WORK_ID = 1541
 SHOW_INJECTOMATE_COMMAND_ID = 32815
+ACTIVE_DRILL_ID = 1043
 REFERENCE_SELECTOR_ID = 1387
 STEP_AP_ID = 1132
 STEP_ML_ID = 1133
@@ -45,6 +46,7 @@ SYRINGE_TYPE_ID = 10006
 SYRINGE_STEP_UP_ID = 10000
 SYRINGE_STEP_DOWN_ID = 10002
 SET_REFERENCE_BREGMA_COMMAND_ID = 1095
+SET_DRILL_TO_BREGMA_COMMAND_ID = 1071
 INJECT_BUTTON_ID = 10018
 FILL_BUTTON_ID = 10032
 CLOSE_INJECTOMATE_ID = 10031
@@ -271,7 +273,11 @@ class StereoDriveController:
         self._click(INJECTION_GOTO_BUTTON_ID)
 
     def set_current_location_to_bregma(self) -> None:
+        self._click(ACTIVE_DRILL_ID)
+        time.sleep(0.1)
         self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
+        time.sleep(0.1)
+        self._send_command(SET_DRILL_TO_BREGMA_COMMAND_ID)
 
     def goto_home(self) -> None:
         self._click(GOTO_HOME_ID)
