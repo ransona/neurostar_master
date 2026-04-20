@@ -10,6 +10,7 @@ WM_COMMAND = 0x0111
 WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 WM_SETTEXT = 0x000C
+WM_CLOSE = 0x0010
 BM_CLICK = 0x00F5
 CB_GETCOUNT = 0x0146
 CB_GETCURSEL = 0x0147
@@ -53,6 +54,7 @@ SET_DRILL_TO_BREGMA_COMMAND_ID = 1071
 INJECT_BUTTON_ID = 10018
 FILL_BUTTON_ID = 10032
 CALIBRATE_INJECTOMATE_ID = 10030
+CALIBRATE_SCALE_VALUE_ID = 3242
 CLOSE_INJECTOMATE_ID = 10031
 NUDGE_STEP_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
@@ -265,6 +267,19 @@ class StereoDriveController:
                 f"Control ID {control_id} was not found in StereoDrive. Visible controls included: {preview}"
             )
         raise StereoDriveError(f"Control ID {control_id} was not found in StereoDrive.")
+
+    def _child_control_handle(self, parent_hwnd: int, control_id: int) -> int | None:
+        match: list[int] = []
+
+        @WNDENUMPROC
+        def callback(hwnd: int, _lparam: int) -> bool:
+            if user32.GetDlgCtrlID(hwnd) == control_id:
+                match.append(hwnd)
+                return False
+            return True
+
+        user32.EnumChildWindows(parent_hwnd, callback, 0)
+        return match[0] if match else None
 
     def _get_text(self, hwnd: int) -> str:
         length = int(user32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0))
@@ -491,10 +506,36 @@ class StereoDriveController:
 
     def open_injectomate_calibrate(self) -> None:
         self.show_injectomate()
-        calibrate_hwnd = self._control_handle(CALIBRATE_INJECTOMATE_ID)
-        self._send_command(CALIBRATE_INJECTOMATE_ID)
-        self._notify_command(CALIBRATE_INJECTOMATE_ID, 0, calibrate_hwnd)
+        self._click(CALIBRATE_INJECTOMATE_ID)
         time.sleep(0.8)
+
+    def _find_injectomate_calibrate_window(self, timeout_seconds: float = 2.0) -> int:
+        deadline = time.monotonic() + timeout_seconds
+        wanted_pid = self._window_process_id(self.main_hwnd)
+        while time.monotonic() < deadline:
+            for window in self._top_level_windows():
+                if self._window_process_id(window.hwnd) != wanted_pid:
+                    continue
+                if "Microdrive Calibrate Scale - Injectomate" in window.text:
+                    return window.hwnd
+                if self._child_control_handle(window.hwnd, CALIBRATE_SCALE_VALUE_ID):
+                    return window.hwnd
+            time.sleep(0.1)
+        raise StereoDriveError("Injectomate calibrate scale popup was not found.")
+
+    def read_injectomate_calibrate_scale_nl(self, close_popup: bool = True) -> float:
+        self.open_injectomate_calibrate()
+        popup_hwnd = self._find_injectomate_calibrate_window()
+        value_hwnd = self._child_control_handle(popup_hwnd, CALIBRATE_SCALE_VALUE_ID)
+        if not value_hwnd:
+            raise StereoDriveError(f"Calibrate scale value control ID {CALIBRATE_SCALE_VALUE_ID} was not found.")
+        text = self._get_text(value_hwnd)
+        if close_popup:
+            user32.SendMessageW(popup_hwnd, WM_CLOSE, 0, 0)
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise StereoDriveError(f"Calibrate scale value was not numeric: '{text}'.") from exc
 
     def get_injectomate_calibrate_snapshot(self) -> dict[str, object]:
         before_windows = [self._control_row(window) for window in self._top_level_windows()]

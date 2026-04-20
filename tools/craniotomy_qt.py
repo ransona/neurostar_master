@@ -777,6 +777,8 @@ class CraniotomyWindow(QMainWindow):
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
+        read_scale_btn = QPushButton("Read Scale")
+        read_scale_btn.clicked.connect(self.read_injectomate_scale)
         debug_plunger_btn = QPushButton("Debug Plunger Capture")
         debug_plunger_btn.clicked.connect(self.save_plunger_debug_capture)
         debug_calibrate_btn = QPushButton("Debug Calibrate Dialog")
@@ -789,8 +791,9 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.inject_up_btn, 3, 0)
         status_layout.addWidget(self.inject_down_btn, 3, 1)
         status_layout.addWidget(test_blockage_btn, 3, 2, 1, 2)
-        status_layout.addWidget(debug_plunger_btn, 4, 0, 1, 4)
-        status_layout.addWidget(debug_calibrate_btn, 5, 0, 1, 4)
+        status_layout.addWidget(read_scale_btn, 4, 0, 1, 4)
+        status_layout.addWidget(debug_plunger_btn, 5, 0, 1, 4)
+        status_layout.addWidget(debug_calibrate_btn, 6, 0, 1, 4)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -1082,6 +1085,16 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(f"Syringe step {direction}: {self.manual_injection_volume_nl} nl")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def read_injectomate_scale(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        try:
+            value_nl = self.controller.read_injectomate_calibrate_scale_nl()
+            self.plunger_gauge.set_position(value_nl)
+            self.set_status(f"Injectomate scale: {value_nl:.3f} nl")
+        except Exception as exc:
+            QMessageBox.critical(self, "Read Scale", str(exc))
 
     def test_for_blockage(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
