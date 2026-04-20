@@ -16,6 +16,9 @@ param(
         "injectomate-map",
         "scan-injectomate-value",
         "scan-injectomate-region",
+        "open-injectomate-calibrate",
+        "probe-injectomate-calibrate",
+        "scan-open-windows",
         "set-injection-volume",
         "set-syringe-type",
         "inject",
@@ -173,6 +176,25 @@ function Get-WindowCaption {
     return $buffer.ToString()
 }
 
+function Get-WindowRectObject {
+    param([IntPtr]$Handle)
+
+    try {
+        $rect = New-Object StereoDriveWin32+RECT
+        [void][StereoDriveWin32]::GetWindowRect($Handle, [ref]$rect)
+        return [pscustomobject]@{
+            Left = $rect.Left
+            Top = $rect.Top
+            Right = $rect.Right
+            Bottom = $rect.Bottom
+            Width = $rect.Right - $rect.Left
+            Height = $rect.Bottom - $rect.Top
+        }
+    } catch {
+        return $null
+    }
+}
+
 function Get-ChildControls {
     param([IntPtr]$ParentHandle)
 
@@ -186,20 +208,7 @@ function Get-ChildControls {
             ClassName = Get-ClassName -Handle $hwnd
             Caption = Get-WindowCaption -Handle $hwnd
             Text = Get-ControlText -Handle $hwnd
-            Rect = $(try {
-                $rect = New-Object StereoDriveWin32+RECT
-                [void][StereoDriveWin32]::GetWindowRect($hwnd, [ref]$rect)
-                [pscustomobject]@{
-                    Left = $rect.Left
-                    Top = $rect.Top
-                    Right = $rect.Right
-                    Bottom = $rect.Bottom
-                    Width = $rect.Right - $rect.Left
-                    Height = $rect.Bottom - $rect.Top
-                }
-            } catch {
-                $null
-            })
+            Rect = Get-WindowRectObject -Handle $hwnd
         }) | Out-Null
         return $true
     }
@@ -220,6 +229,8 @@ function Get-TopLevelWindows {
             ProcessId = [int]$windowPid
             ClassName = Get-ClassName -Handle $hwnd
             Caption = Get-WindowCaption -Handle $hwnd
+            Text = Get-ControlText -Handle $hwnd
+            Rect = Get-WindowRectObject -Handle $hwnd
         }) | Out-Null
         return $true
     }
@@ -306,6 +317,85 @@ function Get-WindowSnapshot {
     return [pscustomobject]@{
         Windows = $processWindows
         Controls = $interesting
+    }
+}
+
+function Get-NumericCandidatesFromControls {
+    param([object[]]$Rows)
+
+    $numericPattern = "-?\d+(?:\.\d+)?"
+    $candidates = @()
+    foreach ($row in @($Rows)) {
+        foreach ($fieldName in @("Text", "Caption")) {
+            $property = $row.PSObject.Properties[$fieldName]
+            if (-not $property -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                continue
+            }
+            foreach ($match in [regex]::Matches([string]$property.Value, $numericPattern)) {
+                $candidates += [pscustomobject]@{
+                    Value = [double]$match.Value
+                    SourceField = $fieldName
+                    Handle = $row.Handle
+                    ProcessId = if ($row.PSObject.Properties["ProcessId"]) { $row.ProcessId } else { $null }
+                    ControlId = if ($row.PSObject.Properties["ControlId"]) { $row.ControlId } else { $null }
+                    ClassName = $row.ClassName
+                    Caption = if ($row.PSObject.Properties["Caption"]) { $row.Caption } else { "" }
+                    Text = if ($row.PSObject.Properties["Text"]) { $row.Text } else { "" }
+                    Rect = if ($row.PSObject.Properties["Rect"]) { $row.Rect } else { $null }
+                }
+            }
+        }
+    }
+    return $candidates
+}
+
+function Get-WindowTreeSnapshot {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId
+    )
+
+    $allWindows = @(
+        Get-TopLevelWindows |
+            Where-Object { $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 }
+    )
+    $processWindows = @($allWindows | Where-Object { $_.ProcessId -eq $ProcessId })
+    $candidateWindows = @(
+        $allWindows |
+            Where-Object {
+                $_.ProcessId -eq $ProcessId -or
+                $_.ClassName -eq "#32770" -or
+                $_.Caption -match "Calib|Inject|Syringe|Position|Piston|StereoDrive" -or
+                $_.Text -match "Calib|Inject|Syringe|Position|Piston|StereoDrive"
+            }
+    )
+
+    $windowTrees = @()
+    $allRows = @()
+    foreach ($window in $candidateWindows) {
+        $children = @(Get-ChildControls -ParentHandle $window.Handle)
+        $allRows += $window
+        $allRows += $children
+        $windowTrees += [pscustomobject]@{
+            Handle = $window.Handle
+            ProcessId = $window.ProcessId
+            ClassName = $window.ClassName
+            Caption = $window.Caption
+            Text = $window.Text
+            Rect = $window.Rect
+            Children = $children
+        }
+    }
+
+    $mainChildren = @(Get-ChildControls -ParentHandle $MainWindowHandle)
+    $allRows += $mainChildren
+
+    return [pscustomobject]@{
+        MainWindow = ($allWindows | Where-Object { $_.Handle -eq $MainWindowHandle } | Select-Object -First 1)
+        ProcessWindows = $processWindows
+        CandidateWindows = $windowTrees
+        MainChildren = $mainChildren
+        NumericCandidates = @(Get-NumericCandidatesFromControls -Rows $allRows)
     }
 }
 
@@ -509,6 +599,18 @@ function Show-Injectomate {
     Start-Sleep -Milliseconds 300
 }
 
+function Open-InjectomateCalibrate {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [string]$ClickMode
+    )
+
+    Show-Injectomate -MainWindowHandle $MainWindowHandle
+    $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    Invoke-ButtonClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    Start-Sleep -Milliseconds 700
+}
+
 function Get-InjectomateMap {
     param([IntPtr]$MainWindowHandle)
 
@@ -701,6 +803,7 @@ $buttonIds = @{
     "jog-dv-inf" = 1107
     "inject" = 10018
     "fill" = 10032
+    "open-injectomate-calibrate" = 10030
     "close-injectomate" = 10031
 }
 
@@ -762,6 +865,26 @@ if ($Action -eq "scan-injectomate-value") {
 if ($Action -eq "scan-injectomate-region") {
     Show-Injectomate -MainWindowHandle $mainHandle
     Get-InjectomateRegionControls -MainWindowHandle $mainHandle
+    return
+}
+
+if ($Action -eq "scan-open-windows") {
+    if ($DelaySeconds -gt 0) {
+        Start-Sleep -Seconds $DelaySeconds
+    }
+    Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    return
+}
+
+if ($Action -eq "probe-injectomate-calibrate") {
+    $before = Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    Open-InjectomateCalibrate -MainWindowHandle $mainHandle -ClickMode $ClickMode
+    $after = Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    [pscustomobject]@{
+        ClickMode = $ClickMode
+        Before = $before
+        After = $after
+    }
     return
 }
 
