@@ -18,6 +18,7 @@ param(
         "scan-injectomate-region",
         "open-injectomate-calibrate",
         "probe-injectomate-calibrate",
+        "probe-scale-control",
         "scan-open-windows",
         "set-injection-volume",
         "set-syringe-type",
@@ -121,6 +122,15 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool IsWindowEnabled(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
@@ -483,6 +493,138 @@ function Write-WindowTreeReport {
 
     Write-Output ""
     Write-Output "Tip: if the precise plunger value is visible in the calibrate popup but missing above, the popup is probably not a Win32 child/control. In that case we need OCR on the popup rectangle."
+}
+
+function Get-WindowDetails {
+    param([IntPtr]$Handle)
+
+    return [pscustomobject]@{
+        Handle = $Handle
+        ProcessId = $(try {
+            $pid = [uint32]0
+            [void][StereoDriveWin32]::GetWindowThreadProcessId($Handle, [ref]$pid)
+            [int]$pid
+        } catch { $null })
+        ControlId = [StereoDriveWin32]::GetDlgCtrlID($Handle)
+        ClassName = Get-ClassName -Handle $Handle
+        Caption = Get-WindowCaption -Handle $Handle
+        Text = Get-ControlText -Handle $Handle
+        Rect = Get-WindowRectObject -Handle $Handle
+        Visible = [StereoDriveWin32]::IsWindowVisible($Handle)
+        Enabled = [StereoDriveWin32]::IsWindowEnabled($Handle)
+        Parent = [StereoDriveWin32]::GetParent($Handle)
+        Style = ("0x{0:X}" -f [StereoDriveWin32]::GetWindowLongPtr($Handle, -16).ToInt64())
+        ExStyle = ("0x{0:X}" -f [StereoDriveWin32]::GetWindowLongPtr($Handle, -20).ToInt64())
+    }
+}
+
+function Find-ScaleControl {
+    param([int]$ProcessId)
+
+    foreach ($window in @(Get-ProcessWindows -ProcessId $ProcessId)) {
+        if ($window.Caption -notmatch "Microdrive Calibrate Scale|Injectomate") {
+            continue
+        }
+        $children = @(Get-ChildControls -ParentHandle $window.Handle)
+        $match = $children | Where-Object { $_.ControlId -eq 3242 } | Select-Object -First 1
+        if ($match) {
+            return [pscustomobject]@{
+                Window = $window
+                Control = $match
+                Children = $children
+            }
+        }
+    }
+
+    return $null
+}
+
+function Get-UiAutomationDetails {
+    param([IntPtr]$Handle)
+
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $element = [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
+        if (-not $element) {
+            return [pscustomobject]@{ Available = $false; Error = "AutomationElement.FromHandle returned null." }
+        }
+
+        $patterns = @()
+        $value = $null
+        $rangeValue = $null
+        $text = $null
+
+        try {
+            $pattern = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            if ($pattern) {
+                $patterns += "ValuePattern"
+                $value = $pattern.Current.Value
+            }
+        } catch {}
+
+        try {
+            $pattern = $element.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+            if ($pattern) {
+                $patterns += "RangeValuePattern"
+                $rangeValue = $pattern.Current.Value
+            }
+        } catch {}
+
+        try {
+            $pattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+            if ($pattern) {
+                $patterns += "TextPattern"
+                $text = $pattern.DocumentRange.GetText(1024)
+            }
+        } catch {}
+
+        return [pscustomobject]@{
+            Available = $true
+            Name = $element.Current.Name
+            AutomationId = $element.Current.AutomationId
+            ClassName = $element.Current.ClassName
+            ControlType = $element.Current.ControlType.ProgrammaticName
+            LocalizedControlType = $element.Current.LocalizedControlType
+            IsEnabled = $element.Current.IsEnabled
+            IsKeyboardFocusable = $element.Current.IsKeyboardFocusable
+            HasKeyboardFocus = $element.Current.HasKeyboardFocus
+            Patterns = $patterns -join ", "
+            ValuePatternValue = $value
+            RangeValuePatternValue = $rangeValue
+            TextPatternText = $text
+        }
+    } catch {
+        return [pscustomobject]@{ Available = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Write-ScaleControlProbe {
+    param([int]$ProcessId)
+
+    $probe = Find-ScaleControl -ProcessId $ProcessId
+    if (-not $probe) {
+        Write-Output "Scale control 3242 was not found. Open the Injectomate calibrate popup first."
+        Write-Output ""
+        Write-Output "Current StereoDrive process windows:"
+        Get-ProcessWindows -ProcessId $ProcessId | ForEach-Object {
+            Write-Output ("  handle={0} class={1} caption='{2}' rect=({3},{4},{5},{6})" -f $_.Handle, $_.ClassName, $_.Caption, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom)
+        }
+        return
+    }
+
+    Write-Output "Scale popup:"
+    Get-WindowDetails -Handle $probe.Window.Handle | Format-List | Out-String -Width 240 | Write-Output
+    Write-Output "Scale value control:"
+    Get-WindowDetails -Handle $probe.Control.Handle | Format-List | Out-String -Width 240 | Write-Output
+    Write-Output "UI Automation details:"
+    Get-UiAutomationDetails -Handle $probe.Control.Handle | Format-List | Out-String -Width 240 | Write-Output
+    Write-Output "Popup children:"
+    $probe.Children |
+        Sort-Object { $_.Rect.Top }, { $_.Rect.Left } |
+        ForEach-Object {
+            Write-Output ("  handle={0} control_id={1} class={2} rect=({3},{4},{5},{6}) text='{7}' caption='{8}'" -f $_.Handle, $_.ControlId, $_.ClassName, $_.Rect.Left, $_.Rect.Top, $_.Rect.Right, $_.Rect.Bottom, $_.Text, $_.Caption)
+        }
 }
 
 function Set-EditText {
@@ -977,6 +1119,11 @@ if ($Action -eq "probe-injectomate-calibrate") {
         Before = $before
         After = $after
     }
+    return
+}
+
+if ($Action -eq "probe-scale-control") {
+    Write-ScaleControlProbe -ProcessId $mainProcessId
     return
 }
 
