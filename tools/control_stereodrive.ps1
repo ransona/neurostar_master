@@ -11,6 +11,9 @@ param(
         "use-target",
         "get-reference-status",
         "open-reference-panel",
+        "show-injectomate",
+        "hide-injectomate",
+        "injectomate-map",
         "dump-tools-menu",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
@@ -466,6 +469,45 @@ function Open-ReferencePanel {
     Start-Sleep -Milliseconds 300
 }
 
+function Show-Injectomate {
+    param([IntPtr]$MainWindowHandle)
+
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new(32815), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+}
+
+function Get-InjectomateMap {
+    param([IntPtr]$MainWindowHandle)
+
+    $controls = Get-ChildControls -ParentHandle $MainWindowHandle
+    return $controls |
+        Where-Object {
+            $_.ClassName -eq "Button" -or
+            $_.ClassName -eq "ComboBox" -or
+            $_.ClassName -eq "Edit" -or
+            $_.Caption -match "Inject|Syringe|nl|ul|Start|Stop|Volume|Rate|Speed" -or
+            $_.Text -match "Inject|Syringe|nl|ul|Start|Stop|Volume|Rate|Speed"
+        } |
+        Sort-Object ControlId |
+        ForEach-Object {
+            $items = @()
+            if ($_.ClassName -eq "ComboBox") {
+                try {
+                    $items = @(Get-ComboItems -Handle $_.Handle)
+                } catch {
+                    $items = @()
+                }
+            }
+            [pscustomobject]@{
+                ControlId = $_.ControlId
+                ClassName = $_.ClassName
+                Caption = $_.Caption
+                Text = $_.Text
+                ComboItems = if ($items.Count -gt 0) { $items -join ", " } else { "" }
+            }
+        }
+}
+
 function Ensure-ReferencePanel {
     param(
         [IntPtr]$MainWindowHandle,
@@ -568,6 +610,22 @@ if ($Action -eq "read-coords") {
 if ($Action -eq "open-reference-panel") {
     Open-ReferencePanel -MainWindowHandle $mainHandle -ProcessId $mainProcessId
     Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
+    return
+}
+
+if ($Action -eq "show-injectomate") {
+    Show-Injectomate -MainWindowHandle $mainHandle
+    Get-InjectomateMap -MainWindowHandle $mainHandle
+    return
+}
+
+if ($Action -eq "hide-injectomate") {
+    Show-Injectomate -MainWindowHandle $mainHandle
+    return
+}
+
+if ($Action -eq "injectomate-map") {
+    Get-InjectomateMap -MainWindowHandle $mainHandle
     return
 }
 
