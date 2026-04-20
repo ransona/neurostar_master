@@ -555,10 +555,35 @@ function Get-WindowDetails {
 }
 
 function Find-ScaleControl {
-    param([int]$ProcessId)
+    param(
+        [int]$ProcessId,
+        [IntPtr]$MainWindowHandle = [IntPtr]::Zero,
+        [bool]$SearchAllVisibleWindows = $true
+    )
 
-    foreach ($window in @(Get-ProcessWindows -ProcessId $ProcessId)) {
-        if ($window.Caption -notmatch "Microdrive Calibrate Scale|Injectomate") {
+    $windows = if ($SearchAllVisibleWindows) {
+        @(Get-TopLevelWindows | Where-Object { $_.Visible -and $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 })
+    } else {
+        @(Get-ProcessWindows -ProcessId $ProcessId)
+    }
+
+    $mainWindow = $null
+    if ($MainWindowHandle -ne [IntPtr]::Zero) {
+        $mainWindow = $windows | Where-Object { $_.Handle -eq $MainWindowHandle } | Select-Object -First 1
+    }
+
+    foreach ($window in $windows) {
+        if (
+            $window.ProcessId -ne $ProcessId -and
+            $window.Caption -notmatch "Microdrive Calibrate Scale|Injectomate" -and
+            $mainWindow -and
+            (
+                $window.Rect.Right -lt ($mainWindow.Rect.Left - 120) -or
+                $window.Rect.Left -gt ($mainWindow.Rect.Right + 240) -or
+                $window.Rect.Bottom -lt ($mainWindow.Rect.Top - 120) -or
+                $window.Rect.Top -gt ($mainWindow.Rect.Bottom + 240)
+            )
+        ) {
             continue
         }
         $children = @(Get-ChildControls -ParentHandle $window.Handle)
@@ -636,9 +661,12 @@ function Get-UiAutomationDetails {
 }
 
 function Write-ScaleControlProbe {
-    param([int]$ProcessId)
+    param(
+        [int]$ProcessId,
+        [IntPtr]$MainWindowHandle = [IntPtr]::Zero
+    )
 
-    $probe = Find-ScaleControl -ProcessId $ProcessId
+    $probe = Find-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -SearchAllVisibleWindows $true
     if (-not $probe) {
         Write-Output "Scale control 3242 was not found. Open the Injectomate calibrate popup first."
         Write-Output ""
@@ -666,19 +694,26 @@ function Write-ScaleControlProbe {
 function Wait-ScaleControl {
     param(
         [int]$ProcessId,
+        [IntPtr]$MainWindowHandle = [IntPtr]::Zero,
         [int]$TimeoutMilliseconds = 5000
     )
 
+    $seen = @()
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     do {
-        $probe = Find-ScaleControl -ProcessId $ProcessId
+        $probe = Find-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -SearchAllVisibleWindows $true
         if ($probe) {
             return $probe
         }
+        $seen = @(
+            Get-TopLevelWindows |
+                Where-Object { $_.Visible -and $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 } |
+                Select-Object -First 20
+        )
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
 
-    return $null
+    return [pscustomobject]@{ Found = $false; SeenWindows = $seen }
 }
 
 function Read-ScaleViaPopupApi {
@@ -689,9 +724,12 @@ function Read-ScaleViaPopupApi {
     )
 
     Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    $probe = Wait-ScaleControl -ProcessId $ProcessId -TimeoutMilliseconds 5000
-    if (-not $probe) {
-        throw "Scale popup/control 3242 was not found after opening calibrate."
+    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 5000
+    if ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false) {
+        $windowSummary = @($probe.SeenWindows | ForEach-Object {
+            "handle=$($_.Handle) pid=$($_.ProcessId) class=$($_.ClassName) caption='$($_.Caption)' rect=($($_.Rect.Left),$($_.Rect.Top),$($_.Rect.Right),$($_.Rect.Bottom))"
+        }) -join "; "
+        throw "Scale popup/control 3242 was not found after opening calibrate. Visible windows: $windowSummary"
     }
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds(5000)
@@ -1613,7 +1651,7 @@ if ($Action -eq "probe-injectomate-calibrate") {
 }
 
 if ($Action -eq "probe-scale-control") {
-    Write-ScaleControlProbe -ProcessId $mainProcessId
+    Write-ScaleControlProbe -ProcessId $mainProcessId -MainWindowHandle $mainHandle
     return
 }
 
