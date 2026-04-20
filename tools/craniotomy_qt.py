@@ -316,6 +316,7 @@ class CraniotomyWindow(QMainWindow):
     redraw_signal = Signal()
     drill_progress_signal = Signal(int)
     injection_progress_signal = Signal(int, str)
+    injection_site_progress_signal = Signal(int)
     injection_finished_signal = Signal(str)
     block_prompt_signal = Signal()
 
@@ -353,6 +354,7 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_signal.connect(self.redraw_views)
         self.drill_progress_signal.connect(self.set_drill_completed_points)
         self.injection_progress_signal.connect(self.set_injection_progress)
+        self.injection_site_progress_signal.connect(self.set_injection_site_progress)
         self.injection_finished_signal.connect(self.finish_injection)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
@@ -635,6 +637,9 @@ class CraniotomyWindow(QMainWindow):
         self.injection_progress = QProgressBar()
         self.injection_progress.setRange(0, 100)
         self.injection_progress.setValue(0)
+        self.injection_site_progress = QProgressBar()
+        self.injection_site_progress.setRange(0, 100)
+        self.injection_site_progress.setValue(0)
         self.injection_status_label = QLabel("Idle")
         self.injection_status_label.setProperty("role", "muted")
         self.start_injection_btn = QPushButton("Go")
@@ -670,11 +675,14 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(add_movement_btn, 2, 0, 1, 2)
         single_layout.addWidget(remove_movement_btn, 2, 2, 1, 2)
         single_layout.addWidget(self.movement_steps_list, 3, 0, 1, 4)
-        single_layout.addWidget(self.injection_progress, 4, 0, 1, 4)
-        single_layout.addWidget(self.injection_status_label, 5, 0, 1, 4)
-        single_layout.addWidget(self.start_injection_btn, 6, 0)
-        single_layout.addWidget(self.pause_injection_btn, 6, 1)
-        single_layout.addWidget(self.stop_injection_btn, 6, 2)
+        single_layout.addWidget(QLabel("Protocol progress"), 4, 0)
+        single_layout.addWidget(self.injection_progress, 4, 1, 1, 3)
+        single_layout.addWidget(QLabel("Injection progress"), 5, 0)
+        single_layout.addWidget(self.injection_site_progress, 5, 1, 1, 3)
+        single_layout.addWidget(self.injection_status_label, 6, 0, 1, 4)
+        single_layout.addWidget(self.start_injection_btn, 7, 0)
+        single_layout.addWidget(self.pause_injection_btn, 7, 1)
+        single_layout.addWidget(self.stop_injection_btn, 7, 2)
 
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
@@ -938,6 +946,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_pause_requested.clear()
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
+            self.injection_site_progress.setValue(0)
             self.injection_status_label.setText(f"Protocol: {len(sites)} site(s), {volume_nl} nl over {duration_s:.1f}s")
             self.start_injection_btn.setEnabled(False)
             self.pause_injection_btn.setText("Pause")
@@ -1082,6 +1091,7 @@ class CraniotomyWindow(QMainWindow):
                 int(total_fraction * 100),
                 f"Site {site_index}/{site_count}: {delivered}/{total_volume_nl} nl",
             )
+            self.injection_site_progress_signal.emit(int(site_fraction * 100))
             time.sleep(0.02)
 
     def _scheduled_injection_events(self, plan: list[int], duration_s: float) -> list[tuple[float, int]]:
@@ -1156,12 +1166,16 @@ class CraniotomyWindow(QMainWindow):
         self.injection_progress.setValue(max(0, min(100, percent)))
         self.injection_status_label.setText(message)
 
+    def set_injection_site_progress(self, percent: int) -> None:
+        self.injection_site_progress.setValue(max(0, min(100, percent)))
+
     def finish_injection(self, message: str) -> None:
         self.injection_status_label.setText(message)
         self.start_injection_btn.setEnabled(True)
         self.pause_injection_btn.setText("Pause")
         if message in ("Injection complete", "Injection protocol complete"):
             self.injection_progress.setValue(100)
+            self.injection_site_progress.setValue(100)
         self.injection_pause_requested.clear()
         self.injection_stop_requested.clear()
         self.injection_thread = None
