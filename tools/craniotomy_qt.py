@@ -1600,73 +1600,21 @@ class CraniotomyWindow(QMainWindow):
 
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:
-            rect = self.controller.get_mmc_depth_gauge_rect()
-            if rect is None:
-                return None
-            left, top, width, height = rect
             screen = QApplication.primaryScreen()
             if screen is None:
                 return None
+            geometry = screen.geometry()
+            width = max(1, int(geometry.width() * 0.20))
+            height = max(1, int(geometry.height() * 0.20))
+            left = geometry.x() + geometry.width() - width
+            top = geometry.y() + geometry.height() - height
             pixmap = screen.grabWindow(0, left, top, width, height)
             if pixmap.isNull():
                 return None
             image = pixmap.toImage()
-            image_width = image.width()
-            image_height = image.height()
-            if image_width <= 1 or image_height <= 1:
+            if image.width() <= 1 or image.height() <= 1:
                 return None
-
-            text_value = self._read_plunger_text_from_image(image)
-            if text_value is not None:
-                return text_value
-
-            x_start = max(0, int(image_width * 0.08))
-            x_end = min(image_width - 1, int(image_width * 0.42))
-            y_start = max(0, int(image_height * 0.02))
-            y_end = min(image_height - 1, int(image_height * 0.98))
-            blue_rows: list[int] = []
-            for y in range(y_start, y_end):
-                blue_hits = 0
-                for x in range(x_start, x_end):
-                    color = image.pixelColor(x, y)
-                    red = color.red()
-                    green = color.green()
-                    blue = color.blue()
-                    if blue > 130 and blue > red * 1.6 and blue > green * 1.3:
-                        blue_hits += 1
-                if blue_hits >= 2:
-                    blue_rows.append(y)
-            if not blue_rows:
-                return None
-            axis_x_start = max(0, int(image_width * 0.25))
-            axis_x_end = min(image_width - 1, int(image_width * 0.58))
-            axis_column = None
-            axis_dark_count = 0
-            for x in range(axis_x_start, axis_x_end):
-                dark_count = 0
-                for y in range(y_start, y_end):
-                    color = image.pixelColor(x, y)
-                    if color.red() < 90 and color.green() < 90 and color.blue() < 90:
-                        dark_count += 1
-                if dark_count > axis_dark_count:
-                    axis_dark_count = dark_count
-                    axis_column = x
-
-            scale_top = y_start
-            scale_bottom = y_end
-            if axis_column is not None and axis_dark_count > image_height * 0.25:
-                axis_rows: list[int] = []
-                for y in range(y_start, y_end):
-                    color = image.pixelColor(axis_column, y)
-                    if color.red() < 120 and color.green() < 120 and color.blue() < 120:
-                        axis_rows.append(y)
-                if axis_rows:
-                    scale_top = min(axis_rows)
-                    scale_bottom = max(axis_rows)
-
-            blue_bottom = max(blue_rows)
-            ratio = 1.0 - ((blue_bottom - scale_top) / max(1, scale_bottom - scale_top))
-            return max(0.0, min(5000.0, ratio * 5000.0))
+            return self._read_plunger_text_from_image(image)
         except Exception:
             return None
 
@@ -1677,10 +1625,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
             if hasattr(self, "plunger_gauge"):
-                plunger_position = self.read_plunger_gauge_from_screen()
-                if plunger_position is None:
-                    plunger_position = self.controller.get_injection_plunger_position_nl()
-                self.plunger_gauge.set_position(plunger_position)
+                self.plunger_gauge.set_position(self.read_plunger_gauge_from_screen())
             if self.seeds:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
