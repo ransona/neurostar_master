@@ -1,4 +1,5 @@
 import math
+import ctypes
 import sys
 import threading
 import time
@@ -32,6 +33,66 @@ from PySide6.QtWidgets import (
 )
 
 from stereodrive_controller import StereoDriveController, StereoDriveError
+
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+SRCCOPY = 0x00CC0020
+BI_RGB = 0
+DIB_RGB_COLORS = 0
+PW_RENDERFULLCONTENT = 0x00000002
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.c_uint32),
+        ("biWidth", ctypes.c_int32),
+        ("biHeight", ctypes.c_int32),
+        ("biPlanes", ctypes.c_uint16),
+        ("biBitCount", ctypes.c_uint16),
+        ("biCompression", ctypes.c_uint32),
+        ("biSizeImage", ctypes.c_uint32),
+        ("biXPelsPerMeter", ctypes.c_int32),
+        ("biYPelsPerMeter", ctypes.c_int32),
+        ("biClrUsed", ctypes.c_uint32),
+        ("biClrImportant", ctypes.c_uint32),
+    ]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [
+        ("bmiHeader", BITMAPINFOHEADER),
+        ("bmiColors", ctypes.c_uint32 * 3),
+    ]
+
+
+user32.GetDC.argtypes = [ctypes.c_void_p]
+user32.GetDC.restype = ctypes.c_void_p
+user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+user32.ReleaseDC.restype = ctypes.c_int
+user32.PrintWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+user32.PrintWindow.restype = ctypes.c_bool
+gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+gdi32.DeleteDC.restype = ctypes.c_bool
+gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+gdi32.DeleteObject.restype = ctypes.c_bool
+gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+gdi32.SelectObject.restype = ctypes.c_void_p
+gdi32.GetDIBits.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_uint,
+    ctypes.c_uint,
+    ctypes.c_void_p,
+    ctypes.POINTER(BITMAPINFO),
+    ctypes.c_uint,
+]
+gdi32.GetDIBits.restype = ctypes.c_int
 
 
 MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
@@ -1624,11 +1685,21 @@ class CraniotomyWindow(QMainWindow):
         logical_top = int(round(top / dpr))
         logical_width = max(1, int(round(width / dpr)))
         logical_height = max(1, int(round(height / dpr)))
+        image = None
+        capture_method = "screen"
         pixmap = screen.grabWindow(0, logical_left, logical_top, logical_width, logical_height)
-        if pixmap.isNull():
-            return None
-        image = pixmap.toImage()
-        if image.width() <= 1 or image.height() <= 1:
+        if not pixmap.isNull():
+            screen_image = pixmap.toImage()
+            if screen_image.width() > 1 and screen_image.height() > 1 and self._blue_digit_groups(screen_image):
+                image = screen_image
+
+        if image is None:
+            hwnd = self.controller.get_mmc_depth_gauge_handle()
+            if hwnd is not None:
+                image = self._capture_window_with_print_window(hwnd, width, height)
+                capture_method = "print_window"
+
+        if image is None or image.width() <= 1 or image.height() <= 1:
             return None
         return (
             image,
@@ -1643,6 +1714,7 @@ class CraniotomyWindow(QMainWindow):
                     screen.geometry().height(),
                 ),
                 "device_pixel_ratio": dpr,
+                "capture_method": capture_method,
             },
         )
 
@@ -1652,6 +1724,52 @@ class CraniotomyWindow(QMainWindow):
             return None
         image, _metadata = context
         return image
+
+    def _capture_window_with_print_window(self, hwnd: int, width: int, height: int) -> QImage | None:
+        window_dc = user32.GetDC(hwnd)
+        if not window_dc:
+            return None
+        memory_dc = gdi32.CreateCompatibleDC(window_dc)
+        bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+        if not memory_dc or not bitmap:
+            if bitmap:
+                gdi32.DeleteObject(bitmap)
+            if memory_dc:
+                gdi32.DeleteDC(memory_dc)
+            user32.ReleaseDC(hwnd, window_dc)
+            return None
+        old_object = gdi32.SelectObject(memory_dc, bitmap)
+        try:
+            if not user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT):
+                return None
+            bitmap_info = BITMAPINFO()
+            bitmap_info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bitmap_info.bmiHeader.biWidth = width
+            bitmap_info.bmiHeader.biHeight = -height
+            bitmap_info.bmiHeader.biPlanes = 1
+            bitmap_info.bmiHeader.biBitCount = 32
+            bitmap_info.bmiHeader.biCompression = BI_RGB
+            buffer_size = width * height * 4
+            buffer = (ctypes.c_ubyte * buffer_size)()
+            rows = gdi32.GetDIBits(
+                memory_dc,
+                bitmap,
+                0,
+                height,
+                ctypes.cast(buffer, ctypes.c_void_p),
+                ctypes.byref(bitmap_info),
+                DIB_RGB_COLORS,
+            )
+            if rows == 0:
+                return None
+            image = QImage(bytes(buffer), width, height, QImage.Format_BGRA8888)
+            return image.copy()
+        finally:
+            if old_object:
+                gdi32.SelectObject(memory_dc, old_object)
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(memory_dc)
+            user32.ReleaseDC(hwnd, window_dc)
 
     def _blue_filtered_plunger_image(self, image: QImage) -> QImage:
         filtered = QImage(image.size(), QImage.Format_ARGB32)
@@ -1686,6 +1804,7 @@ class CraniotomyWindow(QMainWindow):
                         f"screen_name={metadata['screen_name']}",
                         f"screen_geometry={metadata['screen_geometry']}",
                         f"device_pixel_ratio={metadata['device_pixel_ratio']}",
+                        f"capture_method={metadata['capture_method']}",
                         f"digit_groups={self._blue_digit_groups(image)}",
                         f"capture_size={image.width()}x{image.height()}",
                     ]

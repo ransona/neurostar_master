@@ -385,6 +385,20 @@ class StereoDriveController:
         return candidates
 
     def get_mmc_depth_gauge_rect(self) -> tuple[int, int, int, int] | None:
+        gauge = self._mmc_depth_gauge_control()
+        if gauge is None:
+            return None
+        width = max(1, gauge.right - gauge.left)
+        height = max(1, gauge.bottom - gauge.top)
+        return (gauge.left, gauge.top, width, height)
+
+    def get_mmc_depth_gauge_handle(self) -> int | None:
+        gauge = self._mmc_depth_gauge_control()
+        if gauge is None:
+            return None
+        return int(gauge.hwnd)
+
+    def _mmc_depth_gauge_control(self) -> ChildControl | None:
         gauge_controls = [
             control
             for control in self._child_controls()
@@ -392,10 +406,7 @@ class StereoDriveController:
         ]
         if not gauge_controls:
             return None
-        gauge = max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
-        width = max(1, gauge.right - gauge.left)
-        height = max(1, gauge.bottom - gauge.top)
-        return (gauge.left, gauge.top, width, height)
+        return max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
 
     def set_current_location_to_bregma(self) -> None:
         self._click(ACTIVE_DRILL_ID)
