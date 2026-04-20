@@ -589,8 +589,11 @@ class CraniotomyWindow(QMainWindow):
         try:
             self.controller.set_nudge_step(axis, step_mm)
             self.controller.nudge_axis(axis, positive)
-            self.refresh_live_position()
             self.set_status(f"Keyboard nudge: {label} {step_mm:.2f} mm")
+            try:
+                self.refresh_live_position()
+            except Exception:
+                pass
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
