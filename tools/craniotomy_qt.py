@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractSpinBox,
@@ -1472,6 +1472,132 @@ class CraniotomyWindow(QMainWindow):
         if self.block_prompt_event is not None:
             self.block_prompt_event.set()
 
+    def _is_blue_plunger_pixel(self, image: QImage, x: int, y: int) -> bool:
+        color = image.pixelColor(x, y)
+        red = color.red()
+        green = color.green()
+        blue = color.blue()
+        return blue > 120 and blue > red * 1.5 and blue > green * 1.2
+
+    def _normalized_blue_mask(
+        self, image: QImage, x_start: int, x_end: int, y_start: int, y_end: int
+    ) -> set[tuple[int, int]]:
+        source_width = max(1, x_end - x_start + 1)
+        source_height = max(1, y_end - y_start + 1)
+        mask: set[tuple[int, int]] = set()
+        for y in range(y_start, y_end + 1):
+            for x in range(x_start, x_end + 1):
+                if self._is_blue_plunger_pixel(image, x, y):
+                    nx = min(11, int((x - x_start) * 12 / source_width))
+                    ny = min(17, int((y - y_start) * 18 / source_height))
+                    mask.add((nx, ny))
+        return mask
+
+    def _plunger_digit_templates(self) -> list[tuple[str, set[tuple[int, int]]]]:
+        templates = getattr(self, "_cached_plunger_digit_templates", None)
+        if templates is not None:
+            return templates
+
+        templates = []
+        for family in ("Segoe UI", "Arial", "Tahoma", "MS Sans Serif"):
+            for point_size in range(18, 31, 2):
+                for weight in (QFont.Normal, QFont.Bold):
+                    font = QFont(family, point_size, weight)
+                    for digit in "0123456789":
+                        image = QImage(48, 58, QImage.Format_ARGB32)
+                        image.fill(QColor("#ffffff"))
+                        painter = QPainter(image)
+                        painter.setFont(font)
+                        painter.setPen(QColor("#0000ff"))
+                        painter.drawText(QRectF(0, 0, 48, 58), Qt.AlignCenter, digit)
+                        painter.end()
+
+                        xs: list[int] = []
+                        ys: list[int] = []
+                        for y in range(image.height()):
+                            for x in range(image.width()):
+                                if self._is_blue_plunger_pixel(image, x, y):
+                                    xs.append(x)
+                                    ys.append(y)
+                        if not xs or not ys:
+                            continue
+                        mask = self._normalized_blue_mask(image, min(xs), max(xs), min(ys), max(ys))
+                        if mask:
+                            templates.append((digit, mask))
+
+        self._cached_plunger_digit_templates = templates
+        return templates
+
+    def _recognize_plunger_digit(self, image: QImage, x_start: int, x_end: int, y_start: int, y_end: int) -> str | None:
+        mask = self._normalized_blue_mask(image, x_start, x_end, y_start, y_end)
+        if not mask:
+            return None
+
+        best_digit = None
+        best_score = 0.0
+        for digit, template in self._plunger_digit_templates():
+            overlap = len(mask & template)
+            total = len(mask | template)
+            if total <= 0:
+                continue
+            score = overlap / total
+            if score > best_score:
+                best_score = score
+                best_digit = digit
+        if best_score < 0.22:
+            return None
+        return best_digit
+
+    def _read_plunger_text_from_image(self, image: QImage) -> float | None:
+        image_width = image.width()
+        image_height = image.height()
+        y_start = max(0, int(image_height * 0.92))
+        y_end = image_height - 1
+
+        blue_columns: list[int] = []
+        for x in range(image_width):
+            hits = 0
+            for y in range(y_start, y_end + 1):
+                if self._is_blue_plunger_pixel(image, x, y):
+                    hits += 1
+            if hits >= 2:
+                blue_columns.append(x)
+        if not blue_columns:
+            return None
+
+        groups: list[tuple[int, int]] = []
+        group_start = blue_columns[0]
+        previous = blue_columns[0]
+        for x in blue_columns[1:]:
+            if x - previous > 2:
+                groups.append((group_start, previous))
+                group_start = x
+            previous = x
+        groups.append((group_start, previous))
+
+        digits: list[str] = []
+        for x0, x1 in groups:
+            if x1 - x0 < 2:
+                continue
+            ys: list[int] = []
+            for y in range(y_start, y_end + 1):
+                for x in range(x0, x1 + 1):
+                    if self._is_blue_plunger_pixel(image, x, y):
+                        ys.append(y)
+            if not ys:
+                continue
+            digit = self._recognize_plunger_digit(image, x0, x1, min(ys), max(ys))
+            if digit is None:
+                return None
+            digits.append(digit)
+
+        if not digits:
+            return None
+        value = int("".join(digits))
+        if 0 <= value <= 5000:
+            return float(value)
+        return None
+
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:
             rect = self.controller.get_mmc_depth_gauge_rect()
@@ -1489,6 +1615,10 @@ class CraniotomyWindow(QMainWindow):
             image_height = image.height()
             if image_width <= 1 or image_height <= 1:
                 return None
+
+            text_value = self._read_plunger_text_from_image(image)
+            if text_value is not None:
+                return text_value
 
             x_start = max(0, int(image_width * 0.08))
             x_end = min(image_width - 1, int(image_width * 0.42))
