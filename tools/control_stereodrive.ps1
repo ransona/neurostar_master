@@ -20,6 +20,8 @@ param(
         "probe-injectomate-calibrate",
         "probe-scale-control",
         "probe-plunger-gauge-control",
+        "read-scale-popup-api",
+        "scan-process-memory-value",
         "scan-open-windows",
         "set-injection-volume",
         "set-syringe-type",
@@ -70,6 +72,7 @@ public static class StereoDriveWin32
     public const uint MF_BYPOSITION = 0x00000400;
     public const uint MN_GETHMENU = 0x01E1;
     public const uint WM_COMMAND = 0x0111;
+    public const uint WM_CLOSE = 0x0010;
     public const uint WM_GETTEXT = 0x000D;
     public const uint WM_GETTEXTLENGTH = 0x000E;
     public const uint WM_SETTEXT = 0x000C;
@@ -79,6 +82,11 @@ public static class StereoDriveWin32
     public const uint CB_GETLBTEXTLEN = 0x0149;
     public const uint CB_GETLBTEXT = 0x0148;
     public const uint CB_SETCURSEL = 0x014E;
+    public const uint PROCESS_QUERY_INFORMATION = 0x0400;
+    public const uint PROCESS_VM_READ = 0x0010;
+    public const uint MEM_COMMIT = 0x1000;
+    public const uint PAGE_NOACCESS = 0x01;
+    public const uint PAGE_GUARD = 0x100;
 
     public delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
 
@@ -89,6 +97,18 @@ public static class StereoDriveWin32
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MEMORY_BASIC_INFORMATION
+    {
+        public IntPtr BaseAddress;
+        public IntPtr AllocationBase;
+        public uint AllocationProtect;
+        public UIntPtr RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -153,6 +173,18 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, UIntPtr nSize, out UIntPtr lpNumberOfBytesRead);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern UIntPtr VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, UIntPtr dwLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr hObject);
 }
 "@
 
@@ -628,6 +660,217 @@ function Write-ScaleControlProbe {
         }
 }
 
+function Wait-ScaleControl {
+    param(
+        [int]$ProcessId,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $probe = Find-ScaleControl -ProcessId $ProcessId
+        if ($probe) {
+            return $probe
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $null
+}
+
+function Read-ScaleViaPopupApi {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
+        [string]$ClickMode
+    )
+
+    Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    $probe = Wait-ScaleControl -ProcessId $ProcessId -TimeoutMilliseconds 5000
+    if (-not $probe) {
+        throw "Scale popup/control 3242 was not found after opening calibrate."
+    }
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(5000)
+    $lastText = ""
+    do {
+        $lastText = Get-ControlText -Handle $probe.Control.Handle
+        if ($lastText -match "^-?\d+(?:\.\d+)?$") {
+            [void][StereoDriveWin32]::SendMessage($probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+            return [pscustomobject]@{
+                Value = [double]$lastText
+                Text = $lastText
+                PopupHandle = $probe.Window.Handle
+                ControlHandle = $probe.Control.Handle
+                ControlId = $probe.Control.ControlId
+                ClassName = $probe.Control.ClassName
+                Rect = $probe.Control.Rect
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    [void][StereoDriveWin32]::SendMessage($probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    throw "Scale control was found but did not expose a numeric value. Last text='$lastText'."
+}
+
+function Find-BytePattern {
+    param(
+        [byte[]]$Buffer,
+        [int]$Length,
+        [byte[]]$Pattern
+    )
+
+    $matches = @()
+    if ($Pattern.Count -eq 0 -or $Length -lt $Pattern.Count) {
+        return $matches
+    }
+    $last = $Length - $Pattern.Count
+    for ($i = 0; $i -le $last; $i++) {
+        if ($Buffer[$i] -ne $Pattern[0]) {
+            continue
+        }
+        $ok = $true
+        for ($j = 1; $j -lt $Pattern.Count; $j++) {
+            if ($Buffer[$i + $j] -ne $Pattern[$j]) {
+                $ok = $false
+                break
+            }
+        }
+        if ($ok) {
+            $matches += $i
+        }
+    }
+    return $matches
+}
+
+function Get-MemorySearchPatterns {
+    param([double]$NumericValue, [string]$OriginalText)
+
+    $patterns = @()
+    $patterns += [pscustomobject]@{ Name = "double"; Bytes = [BitConverter]::GetBytes([double]$NumericValue) }
+    $patterns += [pscustomobject]@{ Name = "float"; Bytes = [BitConverter]::GetBytes([single]$NumericValue) }
+    foreach ($scale in @(1, 10, 100, 1000, 10000)) {
+        $scaled = [int64][Math]::Round($NumericValue * $scale)
+        if ($scaled -ge [int32]::MinValue -and $scaled -le [int32]::MaxValue) {
+            $patterns += [pscustomobject]@{ Name = "int32_x$scale"; Bytes = [BitConverter]::GetBytes([int32]$scaled) }
+        }
+        $patterns += [pscustomobject]@{ Name = "int64_x$scale"; Bytes = [BitConverter]::GetBytes([int64]$scaled) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OriginalText)) {
+        $patterns += [pscustomobject]@{ Name = "ascii"; Bytes = [System.Text.Encoding]::ASCII.GetBytes($OriginalText) }
+        $patterns += [pscustomobject]@{ Name = "utf16le"; Bytes = [System.Text.Encoding]::Unicode.GetBytes($OriginalText) }
+    }
+    return $patterns
+}
+
+function Scan-ProcessMemoryForValue {
+    param(
+        [int]$ProcessId,
+        [string]$Needle,
+        [int]$MaxMatches = 80
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Needle)) {
+        throw "scan-process-memory-value requires -Value, for example -Value 3071.057."
+    }
+    $numericValue = [double]$Needle
+    $patterns = @(Get-MemorySearchPatterns -NumericValue $numericValue -OriginalText $Needle)
+    $access = [StereoDriveWin32]::PROCESS_QUERY_INFORMATION -bor [StereoDriveWin32]::PROCESS_VM_READ
+    $processHandle = [StereoDriveWin32]::OpenProcess($access, $false, $ProcessId)
+    if ($processHandle -eq [IntPtr]::Zero) {
+        throw "OpenProcess failed for PID $ProcessId. Try running PowerShell as administrator."
+    }
+
+    $matches = @()
+    $regionCount = 0
+    $readableRegionCount = 0
+    $bytesScanned = [uint64]0
+    $address = [uint64]0
+    $maxAddress = if ([IntPtr]::Size -eq 8) { [uint64]0x7FFFFFFF0000 } else { [uint64]0x7FFF0000 }
+    $chunkSize = 1048576
+    try {
+        while ($address -lt $maxAddress -and $matches.Count -lt $MaxMatches) {
+            $mbi = New-Object StereoDriveWin32+MEMORY_BASIC_INFORMATION
+            $result = [StereoDriveWin32]::VirtualQueryEx(
+                $processHandle,
+                [IntPtr]::new([int64]$address),
+                [ref]$mbi,
+                [UIntPtr][uint64][System.Runtime.InteropServices.Marshal]::SizeOf($mbi)
+            )
+            if ($result -eq [UIntPtr]::Zero) {
+                break
+            }
+
+            $regionCount++
+            $base = [uint64]$mbi.BaseAddress.ToInt64()
+            $size = [uint64]$mbi.RegionSize.ToUInt64()
+            $next = $base + [Math]::Max($size, [uint64]4096)
+            $isReadable = (
+                $mbi.State -eq [StereoDriveWin32]::MEM_COMMIT -and
+                (($mbi.Protect -band [StereoDriveWin32]::PAGE_NOACCESS) -eq 0) -and
+                (($mbi.Protect -band [StereoDriveWin32]::PAGE_GUARD) -eq 0)
+            )
+            if ($isReadable) {
+                $readableRegionCount++
+                $offset = [uint64]0
+                while ($offset -lt $size -and $matches.Count -lt $MaxMatches) {
+                    $toRead = [int][Math]::Min([uint64]$chunkSize, $size - $offset)
+                    $buffer = New-Object byte[] $toRead
+                    $bytesRead = [UIntPtr]::Zero
+                    $ok = [StereoDriveWin32]::ReadProcessMemory(
+                        $processHandle,
+                        [IntPtr]::new([int64]($base + $offset)),
+                        $buffer,
+                        [UIntPtr][uint64]$toRead,
+                        [ref]$bytesRead
+                    )
+                    $actual = [int]$bytesRead.ToUInt64()
+                    if ($ok -and $actual -gt 0) {
+                        $bytesScanned += [uint64]$actual
+                        foreach ($pattern in $patterns) {
+                            foreach ($hit in @(Find-BytePattern -Buffer $buffer -Length $actual -Pattern $pattern.Bytes)) {
+                                $matches += [pscustomobject]@{
+                                    Address = ("0x{0:X}" -f ($base + $offset + [uint64]$hit))
+                                    Pattern = $pattern.Name
+                                    RegionBase = ("0x{0:X}" -f $base)
+                                    RegionSize = $size
+                                    Protect = ("0x{0:X}" -f $mbi.Protect)
+                                    Type = ("0x{0:X}" -f $mbi.Type)
+                                }
+                                if ($matches.Count -ge $MaxMatches) {
+                                    break
+                                }
+                            }
+                            if ($matches.Count -ge $MaxMatches) {
+                                break
+                            }
+                        }
+                    }
+                    $offset += [uint64]$toRead
+                }
+            }
+            if ($next -le $address) {
+                break
+            }
+            $address = $next
+        }
+    } finally {
+        [void][StereoDriveWin32]::CloseHandle($processHandle)
+    }
+
+    return [pscustomobject]@{
+        ProcessId = $ProcessId
+        Needle = $Needle
+        Patterns = ($patterns | ForEach-Object { $_.Name }) -join ", "
+        RegionsVisited = $regionCount
+        ReadableRegions = $readableRegionCount
+        BytesScanned = $bytesScanned
+        MatchCount = $matches.Count
+        Matches = $matches
+    }
+}
+
 function Find-PlungerGaugeControl {
     param([IntPtr]$MainWindowHandle)
 
@@ -920,6 +1163,10 @@ function Open-ReferencePanel {
 function Show-Injectomate {
     param([IntPtr]$MainWindowHandle)
 
+    $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    if ($map.ContainsKey("10030") -or $map.ContainsKey("10001")) {
+        return
+    }
     [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new(32815), [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300
 }
@@ -1226,6 +1473,16 @@ if ($Action -eq "probe-scale-control") {
 
 if ($Action -eq "probe-plunger-gauge-control") {
     Write-PlungerGaugeProbe -MainWindowHandle $mainHandle
+    return
+}
+
+if ($Action -eq "read-scale-popup-api") {
+    Read-ScaleViaPopupApi -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ClickMode $ClickMode
+    return
+}
+
+if ($Action -eq "scan-process-memory-value") {
+    Scan-ProcessMemoryForValue -ProcessId $mainProcessId -Needle $Value
     return
 }
 
