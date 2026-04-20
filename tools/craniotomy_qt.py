@@ -60,6 +60,7 @@ class InjectionSite:
 class InjectionMovementStep:
     dv_offset_mm: float
     duration_s: float
+    overshoot_mm: float = 0.0
 
 
 class ProjectionWidget(QWidget):
@@ -657,6 +658,8 @@ class CraniotomyWindow(QMainWindow):
 
         self.movement_offset_mm = self._double_spinbox(value=0.2, minimum=-10.0, maximum=10.0)
         self.movement_offset_mm.setDecimals(3)
+        self.movement_overshoot_mm = self._double_spinbox(value=0.0, minimum=0.0, maximum=10.0)
+        self.movement_overshoot_mm.setDecimals(3)
         self.movement_duration_s = self._double_spinbox(value=60.0, minimum=0.1, maximum=3600.0)
         self.movement_duration_s.setDecimals(1)
         self.movement_steps_list = QListWidget()
@@ -672,8 +675,10 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.movement_offset_mm, 1, 1)
         single_layout.addWidget(QLabel("Move duration (s)"), 1, 2)
         single_layout.addWidget(self.movement_duration_s, 1, 3)
-        single_layout.addWidget(add_movement_btn, 2, 0, 1, 2)
-        single_layout.addWidget(remove_movement_btn, 2, 2, 1, 2)
+        single_layout.addWidget(QLabel("Overshoot (mm)"), 2, 0)
+        single_layout.addWidget(self.movement_overshoot_mm, 2, 1)
+        single_layout.addWidget(add_movement_btn, 2, 2)
+        single_layout.addWidget(remove_movement_btn, 2, 3)
         single_layout.addWidget(self.movement_steps_list, 3, 0, 1, 4)
         single_layout.addWidget(QLabel("Overall sequence progress"), 4, 0)
         single_layout.addWidget(self.injection_progress, 4, 1, 1, 3)
@@ -887,6 +892,7 @@ class CraniotomyWindow(QMainWindow):
         step = InjectionMovementStep(
             dv_offset_mm=self.movement_offset_mm.value(),
             duration_s=max(0.1, self.movement_duration_s.value()),
+            overshoot_mm=max(0.0, self.movement_overshoot_mm.value()),
         )
         self.injection_movement_steps.append(step)
         self.refresh_movement_steps_list()
@@ -900,8 +906,9 @@ class CraniotomyWindow(QMainWindow):
     def refresh_movement_steps_list(self) -> None:
         self.movement_steps_list.clear()
         for index, step in enumerate(self.injection_movement_steps, start=1):
+            overshoot = f", overshoot {step.overshoot_mm:.3f} mm" if step.overshoot_mm > 0 else ""
             self.movement_steps_list.addItem(
-                f"{index}. DV offset {step.dv_offset_mm:.3f} mm over {step.duration_s:.1f}s"
+                f"{index}. DV offset {step.dv_offset_mm:.3f} mm{overshoot} over {step.duration_s:.1f}s"
             )
 
     def add_injection_site(self) -> None:
@@ -1111,7 +1118,12 @@ class CraniotomyWindow(QMainWindow):
         elapsed = 0.0
         targets = [(0.0, surface_dv)]
         for step in steps:
-            elapsed += step.duration_s
+            if step.overshoot_mm > 0:
+                elapsed += step.duration_s / 2.0
+                targets.append((elapsed, surface_dv + step.dv_offset_mm + step.overshoot_mm))
+                elapsed += step.duration_s / 2.0
+            else:
+                elapsed += step.duration_s
             targets.append((elapsed, surface_dv + step.dv_offset_mm))
         return targets
 
