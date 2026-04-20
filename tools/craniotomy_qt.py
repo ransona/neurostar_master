@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractSpinBox,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGridLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -45,6 +47,19 @@ class SeedPoint:
     dv: float | None = None
     sampled_ap: float | None = None
     sampled_ml: float | None = None
+
+
+@dataclass
+class InjectionSite:
+    ap: float
+    ml: float
+    dv: float
+
+
+@dataclass
+class InjectionMovementStep:
+    dv_offset_mm: float
+    duration_s: float
 
 
 class ProjectionWidget(QWidget):
@@ -302,6 +317,7 @@ class CraniotomyWindow(QMainWindow):
     drill_progress_signal = Signal(int)
     injection_progress_signal = Signal(int, str)
     injection_finished_signal = Signal(str)
+    block_prompt_signal = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -323,9 +339,13 @@ class CraniotomyWindow(QMainWindow):
         self.active_depth_ratio: float | None = None
         self.active_drill_depth_mm: float | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
+        self.injection_sites: list[InjectionSite] = []
+        self.injection_movement_steps: list[InjectionMovementStep] = []
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
+        self.block_prompt_event: threading.Event | None = None
+        self.block_prompt_continue = True
         self.setWindowTitle("Craniotomy Planner")
         self.setFocusPolicy(Qt.StrongFocus)
         self.resize(1120, 760)
@@ -334,6 +354,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_progress_signal.connect(self.set_drill_completed_points)
         self.injection_progress_signal.connect(self.set_injection_progress)
         self.injection_finished_signal.connect(self.finish_injection)
+        self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
@@ -599,7 +620,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.inject_up_btn, 3, 0)
         status_layout.addWidget(self.inject_down_btn, 3, 1)
 
-        single_box = QGroupBox("Single Injection")
+        single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
         single_layout.setContentsMargins(10, 10, 10, 10)
         single_layout.setHorizontalSpacing(8)
@@ -638,6 +659,51 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.stop_injection_btn, 1, 2)
         single_layout.addWidget(self.injection_progress, 2, 0, 1, 4)
         single_layout.addWidget(self.injection_status_label, 3, 0, 1, 4)
+
+        movement_box = QGroupBox("DV Movement Sequence")
+        movement_layout = QGridLayout(movement_box)
+        movement_layout.setContentsMargins(10, 10, 10, 10)
+        movement_layout.setHorizontalSpacing(8)
+        movement_layout.setVerticalSpacing(6)
+        layout.addWidget(movement_box)
+
+        self.movement_offset_mm = self._double_spinbox(value=0.2, minimum=-10.0, maximum=10.0)
+        self.movement_offset_mm.setDecimals(3)
+        self.movement_duration_s = self._double_spinbox(value=60.0, minimum=0.1, maximum=3600.0)
+        self.movement_duration_s.setDecimals(1)
+        self.movement_steps_list = QListWidget()
+        add_movement_btn = QPushButton("Add Movement Step")
+        add_movement_btn.clicked.connect(self.add_movement_step)
+        remove_movement_btn = QPushButton("Remove Selected Step")
+        remove_movement_btn.clicked.connect(self.remove_selected_movement_step)
+        movement_layout.addWidget(QLabel("Target DV offset from surface (mm)"), 0, 0)
+        movement_layout.addWidget(self.movement_offset_mm, 0, 1)
+        movement_layout.addWidget(QLabel("Duration (s)"), 0, 2)
+        movement_layout.addWidget(self.movement_duration_s, 0, 3)
+        movement_layout.addWidget(add_movement_btn, 1, 0, 1, 2)
+        movement_layout.addWidget(remove_movement_btn, 1, 2, 1, 2)
+        movement_layout.addWidget(self.movement_steps_list, 2, 0, 1, 4)
+
+        sites_box = QGroupBox("Injection Sites")
+        sites_layout = QGridLayout(sites_box)
+        sites_layout.setContentsMargins(10, 10, 10, 10)
+        sites_layout.setHorizontalSpacing(8)
+        sites_layout.setVerticalSpacing(6)
+        layout.addWidget(sites_box)
+
+        self.injection_sites_list = QListWidget()
+        add_site_btn = QPushButton("Add Injection Site")
+        add_site_btn.clicked.connect(self.add_injection_site)
+        remove_site_btn = QPushButton("Remove Selected Site")
+        remove_site_btn.clicked.connect(self.remove_selected_injection_site)
+        self.block_check = QCheckBox("Check blockage after each site")
+        self.block_test_volume_nl = self._spinbox(value=50, minimum=10, maximum=2000)
+        sites_layout.addWidget(add_site_btn, 0, 0)
+        sites_layout.addWidget(remove_site_btn, 0, 1)
+        sites_layout.addWidget(self.block_check, 0, 2, 1, 2)
+        sites_layout.addWidget(QLabel("Test volume (nl)"), 1, 0)
+        sites_layout.addWidget(self.block_test_volume_nl, 1, 1)
+        sites_layout.addWidget(self.injection_sites_list, 2, 0, 1, 4)
         layout.addStretch(1)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
@@ -699,6 +765,9 @@ class CraniotomyWindow(QMainWindow):
             return True
         if key == Qt.Key.Key_F4:
             self.manual_syringe_step(up=False)
+            return True
+        if key == Qt.Key.Key_Escape:
+            self.stop_injection()
             return True
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
@@ -814,27 +883,88 @@ class CraniotomyWindow(QMainWindow):
             plan.append(10)
         return plan
 
+    def add_movement_step(self) -> None:
+        step = InjectionMovementStep(
+            dv_offset_mm=self.movement_offset_mm.value(),
+            duration_s=max(0.1, self.movement_duration_s.value()),
+        )
+        self.injection_movement_steps.append(step)
+        self.refresh_movement_steps_list()
+
+    def remove_selected_movement_step(self) -> None:
+        row = self.movement_steps_list.currentRow()
+        if 0 <= row < len(self.injection_movement_steps):
+            del self.injection_movement_steps[row]
+            self.refresh_movement_steps_list()
+
+    def refresh_movement_steps_list(self) -> None:
+        self.movement_steps_list.clear()
+        for index, step in enumerate(self.injection_movement_steps, start=1):
+            self.movement_steps_list.addItem(
+                f"{index}. DV offset {step.dv_offset_mm:.3f} mm over {step.duration_s:.1f}s"
+            )
+
+    def add_injection_site(self) -> None:
+        try:
+            ap, ml, dv = self.controller.get_current_position()
+            self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=dv))
+            self.refresh_injection_sites_list()
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def remove_selected_injection_site(self) -> None:
+        row = self.injection_sites_list.currentRow()
+        if 0 <= row < len(self.injection_sites):
+            del self.injection_sites[row]
+            self.refresh_injection_sites_list()
+
+    def refresh_injection_sites_list(self) -> None:
+        self.injection_sites_list.clear()
+        for index, site in enumerate(self.injection_sites, start=1):
+            self.injection_sites_list.addItem(
+                f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}"
+            )
+
+    def _active_injection_sites(self) -> list[InjectionSite]:
+        if self.injection_sites:
+            return list(self.injection_sites)
+        ap, ml, dv = self.controller.get_current_position()
+        return [InjectionSite(ap=ap, ml=ml, dv=dv)]
+
     def start_single_injection(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
-        volume_nl = self._rounded_single_injection_volume()
-        self.single_injection_volume_nl.setValue(volume_nl)
-        duration_s = max(self.single_injection_time_s.value(), 0.1)
-        plan = self._injection_step_plan(volume_nl)
-        if not plan:
-            return
-        self.injection_pause_requested.clear()
-        self.injection_stop_requested.clear()
-        self.injection_progress.setValue(0)
-        self.injection_status_label.setText(f"Injecting {volume_nl} nl over {duration_s:.1f}s")
-        self.start_injection_btn.setEnabled(False)
-        self.pause_injection_btn.setText("Pause")
-        self.injection_thread = threading.Thread(
-            target=self._run_single_injection,
-            args=(plan, duration_s, volume_nl),
-            daemon=True,
-        )
-        self.injection_thread.start()
+        try:
+            sites = self._active_injection_sites()
+            volume_nl = self._rounded_single_injection_volume()
+            self.single_injection_volume_nl.setValue(volume_nl)
+            duration_s = max(self.single_injection_time_s.value(), 0.1)
+            injection_plan = self._injection_step_plan(volume_nl)
+            movement_steps = list(self.injection_movement_steps)
+            if not injection_plan and not movement_steps:
+                return
+            self.injection_pause_requested.clear()
+            self.injection_stop_requested.clear()
+            self.injection_progress.setValue(0)
+            self.injection_status_label.setText(f"Protocol: {len(sites)} site(s), {volume_nl} nl over {duration_s:.1f}s")
+            self.start_injection_btn.setEnabled(False)
+            self.pause_injection_btn.setText("Pause")
+            self.injection_thread = threading.Thread(
+                target=self._run_injection_protocol,
+                args=(
+                    sites,
+                    movement_steps,
+                    injection_plan,
+                    duration_s,
+                    volume_nl,
+                    self.block_check.isChecked(),
+                    self._rounded_test_volume(),
+                ),
+                daemon=True,
+            )
+            self.injection_thread.start()
+        except Exception as exc:
+            QMessageBox.critical(self, "Injection", str(exc))
 
     def pause_resume_injection(self) -> None:
         if self.injection_thread is None or not self.injection_thread.is_alive():
@@ -852,42 +982,183 @@ class CraniotomyWindow(QMainWindow):
         self.injection_stop_requested.set()
         self.injection_status_label.setText("Stopping injection")
 
-    def _run_single_injection(self, plan: list[int], duration_s: float, total_volume_nl: int) -> None:
-        delivered = 0
-        interval_s = duration_s / max(1, len(plan))
+    def _rounded_test_volume(self) -> int:
+        return max(10, int(round(self.block_test_volume_nl.value() / 10.0) * 10))
+
+    def _run_injection_protocol(
+        self,
+        sites: list[InjectionSite],
+        movement_steps: list[InjectionMovementStep],
+        injection_plan: list[int],
+        injection_duration_s: float,
+        total_volume_nl: int,
+        check_blocked: bool,
+        test_volume_nl: int,
+    ) -> None:
         try:
-            for index, step_nl in enumerate(plan, start=1):
+            total_units = max(1, len(sites))
+            for site_index, site in enumerate(sites, start=1):
                 if self.injection_stop_requested.is_set():
                     break
-                while self.injection_pause_requested.is_set() and not self.injection_stop_requested.is_set():
-                    time.sleep(0.05)
+                if self.injection_sites:
+                    self.injection_progress_signal.emit(
+                        int(((site_index - 1) / total_units) * 100),
+                        f"Moving to injection site {site_index}/{len(sites)}",
+                    )
+                    self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
+                    self.controller.wait_for_position(
+                        site.ap,
+                        site.ml,
+                        -1.0,
+                        tolerance_mm=0.02,
+                        timeout_seconds=60.0,
+                        poll_seconds=0.1,
+                        stop_requested=self.injection_stop_requested.is_set,
+                    )
+                    self.controller.goto_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
+                    self.controller.wait_for_position(
+                        site.ap,
+                        site.ml,
+                        site.dv,
+                        tolerance_mm=0.02,
+                        timeout_seconds=60.0,
+                        poll_seconds=0.1,
+                        stop_requested=self.injection_stop_requested.is_set,
+                    )
                 if self.injection_stop_requested.is_set():
                     break
-                started_at = time.monotonic()
-                self.injection_progress_signal.emit(
-                    int((delivered / max(1, total_volume_nl)) * 100),
-                    f"Step {index}/{len(plan)}: {step_nl} nl",
+                self._run_protocol_at_site(
+                    site,
+                    movement_steps,
+                    injection_plan,
+                    injection_duration_s,
+                    total_volume_nl,
+                    site_index,
+                    len(sites),
                 )
-                self.controller.syringe_step(f"{step_nl} nl", up=True)
-                delivered += step_nl
-                self.injection_progress_signal.emit(
-                    min(100, int((delivered / max(1, total_volume_nl)) * 100)),
-                    f"Delivered {delivered}/{total_volume_nl} nl",
-                )
-                remaining = interval_s - (time.monotonic() - started_at)
-                while remaining > 0 and not self.injection_stop_requested.is_set():
-                    if self.injection_pause_requested.is_set():
-                        time.sleep(0.05)
-                        continue
-                    sleep_window = min(0.05, remaining)
-                    time.sleep(sleep_window)
-                    remaining -= sleep_window
+                if check_blocked and not self.injection_stop_requested.is_set():
+                    self._run_block_test(site, test_volume_nl)
             if self.injection_stop_requested.is_set():
                 self.injection_finished_signal.emit("Injection stopped")
             else:
-                self.injection_finished_signal.emit("Injection complete")
+                self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
             self.injection_finished_signal.emit(str(exc))
+
+    def _run_protocol_at_site(
+        self,
+        site: InjectionSite,
+        movement_steps: list[InjectionMovementStep],
+        injection_plan: list[int],
+        injection_duration_s: float,
+        total_volume_nl: int,
+        site_index: int,
+        site_count: int,
+    ) -> None:
+        movement_total_s = sum(step.duration_s for step in movement_steps)
+        protocol_duration_s = max(injection_duration_s, movement_total_s, 0.1)
+        injection_events = self._scheduled_injection_events(injection_plan, injection_duration_s)
+        movement_targets = self._movement_targets(movement_steps, site.dv)
+        delivered = 0
+        event_index = 0
+        start_time = time.monotonic()
+        last_move_at = 0.0
+        while not self.injection_stop_requested.is_set():
+            start_time += self._wait_while_injection_paused()
+            elapsed = time.monotonic() - start_time
+            if elapsed >= protocol_duration_s and event_index >= len(injection_events):
+                break
+            while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
+                step_nl = injection_events[event_index][1]
+                self.controller.syringe_step(f"{step_nl} nl", up=True)
+                delivered += step_nl
+                event_index += 1
+            if movement_targets and elapsed - last_move_at >= 0.05:
+                target_dv = self._interpolated_movement_dv(movement_targets, elapsed)
+                self.controller.move_axis_to_target(
+                    "DV",
+                    target_dv,
+                    step_mm=5.0,
+                    stop_requested=self.injection_stop_requested.is_set,
+                    status_callback=None,
+                    dwell_seconds=0.002,
+                )
+                last_move_at = elapsed
+            site_fraction = min(1.0, elapsed / protocol_duration_s)
+            total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
+            self.injection_progress_signal.emit(
+                int(total_fraction * 100),
+                f"Site {site_index}/{site_count}: {delivered}/{total_volume_nl} nl",
+            )
+            time.sleep(0.02)
+
+    def _scheduled_injection_events(self, plan: list[int], duration_s: float) -> list[tuple[float, int]]:
+        total_volume = max(1, sum(plan))
+        delivered = 0
+        events: list[tuple[float, int]] = []
+        for step_nl in plan:
+            delivered += step_nl
+            events.append(((delivered / total_volume) * duration_s, step_nl))
+        return events
+
+    def _movement_targets(
+        self,
+        steps: list[InjectionMovementStep],
+        surface_dv: float,
+    ) -> list[tuple[float, float]]:
+        elapsed = 0.0
+        targets = [(0.0, surface_dv)]
+        for step in steps:
+            elapsed += step.duration_s
+            targets.append((elapsed, surface_dv + step.dv_offset_mm))
+        return targets
+
+    def _interpolated_movement_dv(self, targets: list[tuple[float, float]], elapsed_s: float) -> float:
+        if elapsed_s <= targets[0][0]:
+            return targets[0][1]
+        for (start_t, start_dv), (end_t, end_dv) in zip(targets[:-1], targets[1:]):
+            if start_t <= elapsed_s <= end_t:
+                fraction = 1.0 if math.isclose(start_t, end_t) else (elapsed_s - start_t) / (end_t - start_t)
+                return start_dv + fraction * (end_dv - start_dv)
+        return targets[-1][1]
+
+    def _wait_while_injection_paused(self) -> float:
+        if not self.injection_pause_requested.is_set():
+            return 0.0
+        paused_at = time.monotonic()
+        while self.injection_pause_requested.is_set() and not self.injection_stop_requested.is_set():
+            time.sleep(0.05)
+        return time.monotonic() - paused_at
+
+    def _run_block_test(self, site: InjectionSite, test_volume_nl: int) -> None:
+        self.injection_progress_signal.emit(100, "Retracting to DV -1.00 before blockage test")
+        self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
+        self.controller.wait_for_position(
+            site.ap,
+            site.ml,
+            -1.0,
+            tolerance_mm=0.02,
+            timeout_seconds=60.0,
+            poll_seconds=0.1,
+            stop_requested=self.injection_stop_requested.is_set,
+        )
+        QApplication.beep()
+        for remaining in range(5, 0, -1):
+            if self.injection_stop_requested.is_set():
+                return
+            self.injection_progress_signal.emit(100, f"Blockage test in {remaining}s")
+            time.sleep(1.0)
+        for step_nl in self._injection_step_plan(test_volume_nl):
+            if self.injection_stop_requested.is_set():
+                return
+            self.controller.syringe_step(f"{step_nl} nl", up=True)
+        self.block_prompt_event = threading.Event()
+        self.block_prompt_continue = True
+        self.block_prompt_signal.emit()
+        self.block_prompt_event.wait(timeout=6.0)
+        if not self.block_prompt_continue:
+            self.injection_pause_requested.set()
+            self.injection_progress_signal.emit(100, "Paused after blockage test")
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
@@ -897,11 +1168,24 @@ class CraniotomyWindow(QMainWindow):
         self.injection_status_label.setText(message)
         self.start_injection_btn.setEnabled(True)
         self.pause_injection_btn.setText("Pause")
-        if message == "Injection complete":
+        if message in ("Injection complete", "Injection protocol complete"):
             self.injection_progress.setValue(100)
         self.injection_pause_requested.clear()
         self.injection_stop_requested.clear()
         self.injection_thread = None
+
+    def show_block_prompt(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Blockage Check")
+        box.setText("Test injection complete. Continue protocol?")
+        continue_button = box.addButton("Continue", QMessageBox.AcceptRole)
+        pause_button = box.addButton("Pause", QMessageBox.RejectRole)
+        box.setDefaultButton(continue_button)
+        QTimer.singleShot(5000, continue_button.click)
+        box.exec()
+        self.block_prompt_continue = box.clickedButton() != pause_button
+        if self.block_prompt_event is not None:
+            self.block_prompt_event.set()
 
     def refresh_live_position(self) -> None:
         try:
