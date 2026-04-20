@@ -670,7 +670,6 @@ function Get-ParentChain {
 function Write-PlungerGaugeProbe {
     param([IntPtr]$MainWindowHandle)
 
-    Show-Injectomate -MainWindowHandle $MainWindowHandle
     $probe = Find-PlungerGaugeControl -MainWindowHandle $MainWindowHandle
     if (-not $probe.Control) {
         Write-Output "MMCDepth plunger gauge control was not found."
