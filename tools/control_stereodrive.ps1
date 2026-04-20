@@ -174,6 +174,9 @@ public static class StereoDriveWin32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
 
@@ -385,6 +388,38 @@ function Invoke-ControlMouseClick {
     Start-Sleep -Milliseconds 40
     [StereoDriveWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 350
+}
+
+function Invoke-ButtonPostClick {
+    param(
+        [hashtable]$ControlMap,
+        [int]$ControlId,
+        [IntPtr]$MainWindowHandle
+    )
+
+    $control = $ControlMap[[string]$ControlId]
+    if (-not $control) {
+        throw "Control ID $ControlId was not found."
+    }
+
+    [void][StereoDriveWin32]::PostMessage($control.Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 250
+}
+
+function Close-ScalePopup {
+    param([pscustomobject]$Probe)
+
+    $okButton = @($Probe.Children | Where-Object {
+        $_.ClassName -eq "Button" -and ($_.Text -match "OK|Close|Cancel" -or $_.Caption -match "OK|Close|Cancel")
+    } | Select-Object -First 1)
+    if ($okButton.Count -gt 0) {
+        [void][StereoDriveWin32]::PostMessage($okButton[0].Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 200
+        return
+    }
+
+    [void][StereoDriveWin32]::PostMessage($Probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 200
 }
 
 function Invoke-DirectCommand {
@@ -773,7 +808,7 @@ function Read-ScaleViaPopupApi {
     do {
         $lastText = Get-ControlText -Handle $probe.Control.Handle
         if ($lastText -match "^-?\d+(?:\.\d+)?$") {
-            [void][StereoDriveWin32]::SendMessage($probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+            Close-ScalePopup -Probe $probe
             return [pscustomobject]@{
                 Value = [double]$lastText
                 Text = $lastText
@@ -787,7 +822,7 @@ function Read-ScaleViaPopupApi {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
 
-    [void][StereoDriveWin32]::SendMessage($probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    Close-ScalePopup -Probe $probe
     throw "Scale control was found but did not expose a numeric value. Last text='$lastText'."
 }
 
@@ -1399,8 +1434,7 @@ function Open-InjectomateCalibrate {
 
     Show-Injectomate -MainWindowHandle $MainWindowHandle
     $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
-    Invoke-ButtonClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    Start-Sleep -Milliseconds 500
+    Invoke-ButtonPostClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
     $probe = Wait-ScaleControl -ProcessId $mainProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 1000
     if (-not ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false)) {
         return
