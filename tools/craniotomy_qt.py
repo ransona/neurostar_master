@@ -680,11 +680,11 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(add_movement_btn, 2, 2)
         single_layout.addWidget(remove_movement_btn, 2, 3)
         single_layout.addWidget(self.movement_steps_list, 3, 0, 1, 4)
-        single_layout.addWidget(QLabel("Overall sequence progress"), 4, 0)
-        single_layout.addWidget(self.injection_progress, 4, 1, 1, 3)
-        single_layout.addWidget(QLabel("Current injection/movement"), 5, 0)
-        single_layout.addWidget(self.injection_site_progress, 5, 1, 1, 3)
-        single_layout.addWidget(self.injection_status_label, 6, 0, 1, 4)
+        single_layout.addWidget(self.injection_status_label, 4, 0, 1, 4)
+        single_layout.addWidget(QLabel("Overall sequence progress"), 5, 0)
+        single_layout.addWidget(self.injection_progress, 5, 1, 1, 3)
+        single_layout.addWidget(QLabel("Current injection/movement"), 6, 0)
+        single_layout.addWidget(self.injection_site_progress, 6, 1, 1, 3)
         single_layout.addWidget(self.start_injection_btn, 7, 0)
         single_layout.addWidget(self.pause_injection_btn, 7, 1)
         single_layout.addWidget(self.stop_injection_btn, 7, 2)
@@ -954,7 +954,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
             self.injection_site_progress.setValue(0)
-            self.injection_status_label.setText(f"Protocol: {len(sites)} site(s), {volume_nl} nl over {duration_s:.1f}s")
+            self.injection_status_label.setText(f"Ready: {len(sites)} site(s), {volume_nl} nl over {duration_s:.1f}s")
             self.start_injection_btn.setEnabled(False)
             self.pause_injection_btn.setText("Pause")
             self.injection_thread = threading.Thread(
@@ -1011,7 +1011,7 @@ class CraniotomyWindow(QMainWindow):
                 if self.injection_sites:
                     self.injection_progress_signal.emit(
                         int(((site_index - 1) / total_units) * 100),
-                        f"Moving to injection site {site_index}/{len(sites)}",
+                        f"Moving to site {site_index}/{len(sites)}",
                     )
                     self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
                     self.controller.wait_for_position(
@@ -1094,9 +1094,18 @@ class CraniotomyWindow(QMainWindow):
                 last_move_at = elapsed
             site_fraction = min(1.0, elapsed / protocol_duration_s)
             total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
+            current_volume = min(delivered, total_volume_nl)
+            if movement_targets and elapsed < movement_total_s and current_volume < total_volume_nl:
+                message = f"Inserting pipette while injecting (current volume = {current_volume} nl)"
+            elif current_volume < total_volume_nl:
+                message = f"Injecting (current volume = {current_volume} nl)"
+            elif movement_targets and elapsed < movement_total_s:
+                message = "Inserting pipette"
+            else:
+                message = f"Injection/movement complete at site {site_index}/{site_count}"
             self.injection_progress_signal.emit(
                 int(total_fraction * 100),
-                f"Site {site_index}/{site_count}: {delivered}/{total_volume_nl} nl",
+                message,
             )
             self.injection_site_progress_signal.emit(int(site_fraction * 100))
             time.sleep(0.02)
@@ -1145,7 +1154,7 @@ class CraniotomyWindow(QMainWindow):
         return time.monotonic() - paused_at
 
     def _run_block_test(self, site: InjectionSite, test_volume_nl: int) -> None:
-        self.injection_progress_signal.emit(100, "Retracting to DV -1.00 before blockage test")
+        self.injection_progress_signal.emit(100, "Retracting pipette")
         self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
@@ -1160,11 +1169,12 @@ class CraniotomyWindow(QMainWindow):
         for remaining in range(5, 0, -1):
             if self.injection_stop_requested.is_set():
                 return
-            self.injection_progress_signal.emit(100, f"Blockage test in {remaining}s")
+            self.injection_progress_signal.emit(100, f"Verifying no blockage in {remaining}s")
             time.sleep(1.0)
         for step_nl in self._injection_step_plan(test_volume_nl):
             if self.injection_stop_requested.is_set():
                 return
+            self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
             self.controller.syringe_step(f"{step_nl} nl", up=True)
         self.block_prompt_event = threading.Event()
         self.block_prompt_continue = True
@@ -1182,7 +1192,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_site_progress.setValue(max(0, min(100, percent)))
 
     def finish_injection(self, message: str) -> None:
-        self.injection_status_label.setText(message)
+        display_message = "Sequence complete" if message == "Injection protocol complete" else message
+        self.injection_status_label.setText(display_message)
         self.start_injection_btn.setEnabled(True)
         self.pause_injection_btn.setText("Pause")
         if message in ("Injection complete", "Injection protocol complete"):
