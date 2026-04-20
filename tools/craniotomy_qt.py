@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -1603,15 +1603,16 @@ class CraniotomyWindow(QMainWindow):
         return None
 
     def _capture_stereodrive_bottom_right_image(self) -> QImage | None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            return None
-        _window_left, _window_top, window_width, window_height = self.controller.get_main_window_rect()
+        window_left, window_top, window_width, window_height = self.controller.get_main_window_rect()
         width = max(1, int(window_width * 0.20))
         height = max(1, int(window_height * 0.20))
-        left = window_width - width
-        top = window_height - height
-        pixmap = screen.grabWindow(self.controller.get_main_window_handle(), left, top, width, height)
+        left = window_left + window_width - width
+        top = window_top + window_height - height
+        center = QPoint(left + width // 2, top + height // 2)
+        screen = QApplication.screenAt(center) or QApplication.primaryScreen()
+        if screen is None:
+            return None
+        pixmap = screen.grabWindow(0, left, top, width, height)
         if pixmap.isNull():
             return None
         image = pixmap.toImage()
@@ -1642,7 +1643,18 @@ class CraniotomyWindow(QMainWindow):
             image.save(str(raw_path))
             filtered.save(str(filtered_path))
             value_text = "--" if value is None else f"{value:.0f}"
-            value_path.write_text(f"detected_value_nl={value_text}\n", encoding="utf-8")
+            win_left, win_top, win_width, win_height = self.controller.get_main_window_rect()
+            value_path.write_text(
+                "\n".join(
+                    [
+                        f"detected_value_nl={value_text}",
+                        f"window_rect={win_left},{win_top},{win_width},{win_height}",
+                        f"capture_size={image.width()}x{image.height()}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             self.set_status(
                 f"Saved plunger debug capture: {raw_path.name}, {filtered_path.name}; detected {value_text} nl."
             )
