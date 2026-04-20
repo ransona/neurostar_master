@@ -316,6 +316,7 @@ class CraniotomyWindow(QMainWindow):
         self.active_depth_ratio: float | None = None
         self.active_drill_depth_mm: float | None = None
         self.setWindowTitle("Craniotomy Planner")
+        self.setFocusPolicy(Qt.StrongFocus)
         self.resize(1120, 760)
         self.status_signal.connect(self.set_status)
         self.redraw_signal.connect(self.redraw_views)
@@ -583,9 +584,17 @@ class CraniotomyWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
+            focus_widget = QApplication.focusWidget()
+            if isinstance(focus_widget, QAbstractSpinBox):
+                focus_widget.interpretText()
+            if focus_widget is not None:
+                focus_widget.clearFocus()
+            self.setFocus(Qt.OtherFocusReason)
+            return True
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
-        key = event.key()
         if key == Qt.Key.Key_Shift:
             self.adjust_move_speed(1)
             return True
