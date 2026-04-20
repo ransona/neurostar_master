@@ -25,6 +25,7 @@ CURRENT_ML_ID = 1145
 CURRENT_DV_ID = 1146
 GOTO_ID = 1014
 STOP_ID = 1018
+SHOW_INJECTOMATE_COMMAND_ID = 32815
 REFERENCE_SELECTOR_ID = 1387
 STEP_AP_ID = 1132
 STEP_ML_ID = 1133
@@ -35,6 +36,11 @@ BUTTON_ML_NEGATIVE_ID = 1104
 BUTTON_ML_POSITIVE_ID = 1105
 BUTTON_DV_NEGATIVE_ID = 1106
 BUTTON_DV_POSITIVE_ID = 1107
+INJECTION_VOLUME_ID = 10001
+SYRINGE_TYPE_ID = 10006
+INJECT_BUTTON_ID = 10018
+FILL_BUTTON_ID = 10032
+CLOSE_INJECTOMATE_ID = 10031
 NUDGE_STEP_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
 
@@ -139,6 +145,9 @@ class StereoDriveController:
         wparam = (notify_code << 16) | (control_id & 0xFFFF)
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, wparam, hwnd)
 
+    def _send_command(self, command_id: int) -> None:
+        user32.SendMessageW(self.main_hwnd, WM_COMMAND, command_id, 0)
+
     def _combo_select_exact(self, control_id: int, text: str) -> None:
         hwnd = self._control_handle(control_id)
         text_buffer = ctypes.create_unicode_buffer(text)
@@ -201,6 +210,39 @@ class StereoDriveController:
             return self._get_text(self._control_handle(REFERENCE_SELECTOR_ID))
         except StereoDriveError:
             return ""
+
+    def show_injectomate(self) -> None:
+        self._send_command(SHOW_INJECTOMATE_COMMAND_ID)
+        time.sleep(0.3)
+
+    def set_injection_volume(self, volume_label: str) -> None:
+        self.show_injectomate()
+        self._combo_select_exact(INJECTION_VOLUME_ID, volume_label)
+        actual = self._combo_selected_text(INJECTION_VOLUME_ID)
+        if actual != volume_label:
+            raise StereoDriveError(f"Failed to set injection volume to {volume_label}. Got '{actual}'.")
+
+    def get_injection_volume(self) -> str:
+        self.show_injectomate()
+        return self._combo_selected_text(INJECTION_VOLUME_ID)
+
+    def set_syringe_type(self, syringe_label: str) -> None:
+        self.show_injectomate()
+        self._combo_select_exact(SYRINGE_TYPE_ID, syringe_label)
+        actual = self._combo_selected_text(SYRINGE_TYPE_ID)
+        if actual != syringe_label:
+            raise StereoDriveError(f"Failed to set syringe type to {syringe_label}. Got '{actual}'.")
+
+    def inject(self) -> None:
+        self.show_injectomate()
+        self._click(INJECT_BUTTON_ID)
+
+    def fill_injectomate(self) -> None:
+        self.show_injectomate()
+        self._click(FILL_BUTTON_ID)
+
+    def close_injectomate(self) -> None:
+        self._click(CLOSE_INJECTOMATE_ID)
 
     def get_current_position(self) -> tuple[float, float, float]:
         return (

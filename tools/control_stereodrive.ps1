@@ -14,6 +14,11 @@ param(
         "show-injectomate",
         "hide-injectomate",
         "injectomate-map",
+        "set-injection-volume",
+        "set-syringe-type",
+        "inject",
+        "fill",
+        "close-injectomate",
         "dump-tools-menu",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
@@ -580,12 +585,17 @@ $buttonIds = @{
     "jog-ml-right" = 1105
     "jog-dv-sup" = 1106
     "jog-dv-inf" = 1107
+    "inject" = 10018
+    "fill" = 10032
+    "close-injectomate" = 10031
 }
 
 $comboIds = @{
     "set-step-ap" = 1132
     "set-step-ml" = 1133
     "set-step-dv" = 1134
+    "set-injection-volume" = 10001
+    "set-syringe-type" = 10006
 }
 
 if ($Action -eq "show-map") {
@@ -691,8 +701,16 @@ if ($comboIds.ContainsKey($Action)) {
     if (-not $Value) {
         throw "Action '$Action' requires -Value, for example -Value '0.1 mm'."
     }
+    if ($Action -like "set-injection-*" -or $Action -eq "set-syringe-type") {
+        Show-Injectomate -MainWindowHandle $mainHandle
+        $controlMap = Get-ControlMap -MainWindowHandle $mainHandle
+    }
     Set-ComboByText -ControlMap $controlMap -ControlId $comboIds[$Action] -WantedText $Value
-    Get-Coords -ControlMap $controlMap
+    if ($Action -like "set-injection-*" -or $Action -eq "set-syringe-type") {
+        Get-InjectomateMap -MainWindowHandle $mainHandle
+    } else {
+        Get-Coords -ControlMap $controlMap
+    }
     return
 }
 
@@ -700,7 +718,15 @@ if ($buttonIds.ContainsKey($Action)) {
     if ($Action -like "set-reference-*" -or $Action -like "set-*-to-bregma" -or $Action -eq "close-reference-panel") {
         $controlMap = Ensure-ReferencePanel -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap $controlMap
     }
+    if ($Action -eq "inject" -or $Action -eq "fill" -or $Action -eq "close-injectomate") {
+        Show-Injectomate -MainWindowHandle $mainHandle
+        $controlMap = Get-ControlMap -MainWindowHandle $mainHandle
+    }
     Invoke-ButtonClick -ControlMap $controlMap -ControlId $buttonIds[$Action] -MainWindowHandle $mainHandle -ClickMode $ClickMode
+    if ($Action -eq "inject" -or $Action -eq "fill" -or $Action -eq "close-injectomate") {
+        Get-InjectomateMap -MainWindowHandle $mainHandle
+        return
+    }
     [pscustomobject]@{
         Coords = Get-Coords -ControlMap $controlMap
         Reference = Get-ReferenceStatus -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ControlMap (Get-ControlMap -MainWindowHandle $mainHandle)
