@@ -72,6 +72,7 @@ public static class StereoDriveWin32
     public const uint WM_GETTEXTLENGTH = 0x000E;
     public const uint WM_SETTEXT = 0x000C;
     public const uint BM_CLICK = 0x00F5;
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
     public const uint CB_GETCOUNT = 0x0146;
     public const uint CB_GETLBTEXTLEN = 0x0149;
     public const uint CB_GETLBTEXT = 0x0148;
@@ -132,6 +133,12 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
 }
 "@
 
@@ -154,9 +161,20 @@ function Get-MainWindowHandle {
 function Get-ControlText {
     param([IntPtr]$Handle)
 
-    $length = [StereoDriveWin32]::SendMessage($Handle, [StereoDriveWin32]::WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero).ToInt32()
-    $buffer = New-Object System.Text.StringBuilder ($length + 1)
-    [void][StereoDriveWin32]::SendMessage($Handle, [StereoDriveWin32]::WM_GETTEXT, [IntPtr]$buffer.Capacity, $buffer)
+    $buffer = New-Object System.Text.StringBuilder 1024
+    $result = [IntPtr]::Zero
+    $sent = [StereoDriveWin32]::SendMessageTimeout(
+        $Handle,
+        [StereoDriveWin32]::WM_GETTEXT,
+        [IntPtr]$buffer.Capacity,
+        $buffer,
+        [StereoDriveWin32]::SMTO_ABORTIFHUNG,
+        100,
+        [ref]$result
+    )
+    if ($sent -eq [IntPtr]::Zero) {
+        return ""
+    }
     return $buffer.ToString()
 }
 
@@ -229,7 +247,7 @@ function Get-TopLevelWindows {
             ProcessId = [int]$windowPid
             ClassName = Get-ClassName -Handle $hwnd
             Caption = Get-WindowCaption -Handle $hwnd
-            Text = Get-ControlText -Handle $hwnd
+            Text = ""
             Rect = Get-WindowRectObject -Handle $hwnd
         }) | Out-Null
         return $true
@@ -360,15 +378,7 @@ function Get-WindowTreeSnapshot {
             Where-Object { $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 }
     )
     $processWindows = @($allWindows | Where-Object { $_.ProcessId -eq $ProcessId })
-    $candidateWindows = @(
-        $allWindows |
-            Where-Object {
-                $_.ProcessId -eq $ProcessId -or
-                $_.ClassName -eq "#32770" -or
-                $_.Caption -match "Calib|Inject|Syringe|Position|Piston|StereoDrive" -or
-                $_.Text -match "Calib|Inject|Syringe|Position|Piston|StereoDrive"
-            }
-    )
+    $candidateWindows = @($processWindows)
 
     $windowTrees = @()
     $allRows = @()
