@@ -409,6 +409,56 @@ function Get-WindowTreeSnapshot {
     }
 }
 
+function Write-WindowTreeReport {
+    param([pscustomobject]$Snapshot)
+
+    Write-Output "StereoDrive open-window scan"
+    if ($Snapshot.MainWindow) {
+        Write-Output ("MainWindow handle={0} class={1} caption='{2}' rect=({3},{4},{5},{6})" -f `
+            $Snapshot.MainWindow.Handle,
+            $Snapshot.MainWindow.ClassName,
+            $Snapshot.MainWindow.Caption,
+            $Snapshot.MainWindow.Rect.Left,
+            $Snapshot.MainWindow.Rect.Top,
+            $Snapshot.MainWindow.Rect.Right,
+            $Snapshot.MainWindow.Rect.Bottom)
+    }
+
+    Write-Output ""
+    Write-Output ("Process windows: {0}" -f @($Snapshot.ProcessWindows).Count)
+    foreach ($window in @($Snapshot.ProcessWindows)) {
+        Write-Output ("  handle={0} class={1} caption='{2}' rect=({3},{4},{5},{6})" -f `
+            $window.Handle,
+            $window.ClassName,
+            $window.Caption,
+            $window.Rect.Left,
+            $window.Rect.Top,
+            $window.Rect.Right,
+            $window.Rect.Bottom)
+    }
+
+    Write-Output ""
+    Write-Output ("Numeric candidates: {0}" -f @($Snapshot.NumericCandidates).Count)
+    foreach ($candidate in @($Snapshot.NumericCandidates)) {
+        $rectText = ""
+        if ($candidate.Rect) {
+            $rectText = " rect=({0},{1},{2},{3})" -f $candidate.Rect.Left, $candidate.Rect.Top, $candidate.Rect.Right, $candidate.Rect.Bottom
+        }
+        Write-Output ("  value={0} source={1} handle={2} control_id={3} class={4}{5} text='{6}' caption='{7}'" -f `
+            $candidate.Value,
+            $candidate.SourceField,
+            $candidate.Handle,
+            $candidate.ControlId,
+            $candidate.ClassName,
+            $rectText,
+            $candidate.Text,
+            $candidate.Caption)
+    }
+
+    Write-Output ""
+    Write-Output "Tip: if the precise plunger value is visible in the calibrate popup but missing above, the popup is probably not a Win32 child/control. In that case we need OCR on the popup rectangle."
+}
+
 function Set-EditText {
     param(
         [hashtable]$ControlMap,
@@ -882,7 +932,12 @@ if ($Action -eq "scan-open-windows") {
     if ($DelaySeconds -gt 0) {
         Start-Sleep -Seconds $DelaySeconds
     }
-    Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    $snapshot = Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    if ($Value -eq "json") {
+        $snapshot
+    } else {
+        Write-WindowTreeReport -Snapshot $snapshot
+    }
     return
 }
 
