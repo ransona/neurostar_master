@@ -526,24 +526,38 @@ function Find-InjectomateValueControls {
         return @()
     }
 
-    $numericPattern = if ($WantedValue) {
-        [regex]::Escape($WantedValue)
-    } else {
-        "^-?\d+(\.\d+)?$"
+    $numericPattern = "-?\d+(\.\d+)?"
+    $numericControls = @(
+        $controls |
+            Where-Object {
+                $_.Text -match $numericPattern -or $_.Caption -match $numericPattern
+            }
+    )
+
+    $exactControls = @()
+    if ($WantedValue) {
+        $wantedPattern = [regex]::Escape($WantedValue)
+        $exactControls = @(
+            $numericControls |
+                Where-Object {
+                    $_.Text -match $wantedPattern -or $_.Caption -match $wantedPattern
+                }
+        )
     }
 
-    return $controls |
-        Where-Object {
-            ($_.Text -match $numericPattern -or $_.Caption -match $numericPattern)
-        } |
+    $outputControls = if ($exactControls.Count -gt 0) { $exactControls } else { $numericControls }
+    return $outputControls |
         Sort-Object ControlId, ClassName |
         ForEach-Object {
+            $textMatches = if ($WantedValue) { $_.Text -match ([regex]::Escape($WantedValue)) } else { $false }
+            $captionMatches = if ($WantedValue) { $_.Caption -match ([regex]::Escape($WantedValue)) } else { $false }
             [pscustomobject]@{
                 Handle = $_.Handle
                 ControlId = $_.ControlId
                 ClassName = $_.ClassName
                 Caption = $_.Caption
                 Text = $_.Text
+                ExactMatch = ($textMatches -or $captionMatches)
             }
         }
 }
