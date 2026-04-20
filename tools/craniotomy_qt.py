@@ -1472,6 +1472,48 @@ class CraniotomyWindow(QMainWindow):
         if self.block_prompt_event is not None:
             self.block_prompt_event.set()
 
+    def read_plunger_gauge_from_screen(self) -> float | None:
+        try:
+            rect = self.controller.get_mmc_depth_gauge_rect()
+            if rect is None:
+                return None
+            left, top, width, height = rect
+            screen = QApplication.primaryScreen()
+            if screen is None:
+                return None
+            pixmap = screen.grabWindow(0, left, top, width, height)
+            if pixmap.isNull():
+                return None
+            image = pixmap.toImage()
+            image_width = image.width()
+            image_height = image.height()
+            if image_width <= 1 or image_height <= 1:
+                return None
+
+            x_start = max(0, int(image_width * 0.08))
+            x_end = min(image_width - 1, int(image_width * 0.42))
+            y_start = max(0, int(image_height * 0.02))
+            y_end = min(image_height - 1, int(image_height * 0.98))
+            blue_rows: list[int] = []
+            for y in range(y_start, y_end):
+                blue_hits = 0
+                for x in range(x_start, x_end):
+                    color = image.pixelColor(x, y)
+                    red = color.red()
+                    green = color.green()
+                    blue = color.blue()
+                    if blue > 130 and blue > red * 1.6 and blue > green * 1.3:
+                        blue_hits += 1
+                if blue_hits >= 2:
+                    blue_rows.append(y)
+            if not blue_rows:
+                return None
+            blue_bottom = max(blue_rows)
+            ratio = 1.0 - ((blue_bottom - y_start) / max(1, y_end - y_start))
+            return max(0.0, min(5000.0, ratio * 5000.0))
+        except Exception:
+            return None
+
     def refresh_live_position(self) -> None:
         try:
             ap, ml, dv = self.controller.get_current_position()
@@ -1479,7 +1521,10 @@ class CraniotomyWindow(QMainWindow):
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
             if hasattr(self, "plunger_gauge"):
-                self.plunger_gauge.set_position(self.controller.get_injection_plunger_position_nl())
+                plunger_position = self.read_plunger_gauge_from_screen()
+                if plunger_position is None:
+                    plunger_position = self.controller.get_injection_plunger_position_nl()
+                self.plunger_gauge.set_position(plunger_position)
             if self.seeds:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
