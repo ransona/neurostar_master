@@ -301,6 +301,7 @@ class CraniotomyWindow(QMainWindow):
         self.frozen_points: list[bool] = []
         self.current_seed_index: int | None = None
         self.current_action = "No trajectory yet"
+        self.move_speed_step_mm = 0.05
         self.drill_pause_requested = threading.Event()
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
@@ -502,17 +503,27 @@ class CraniotomyWindow(QMainWindow):
         button_layout.addWidget(self.stop_drill_btn, 3, 1, 1, 2)
         setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
-        views_box = QGroupBox("Trajectory View")
+        views_box = QGroupBox()
         views_layout = QGridLayout(views_box)
         views_layout.setContentsMargins(10, 10, 10, 10)
         content.addWidget(views_box, 1)
+
+        views_header = QHBoxLayout()
+        views_header.setSpacing(8)
+        views_title = QLabel("Trajectory View")
+        views_title.setProperty("role", "muted")
+        self.move_speed_label = QLabel()
+        views_header.addWidget(views_title)
+        views_header.addWidget(self.move_speed_label)
+        views_header.addStretch(1)
+        views_layout.addLayout(views_header, 0, 0, 1, 2)
 
         self.top_view = ProjectionWidget(self.current_action, "ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
-        views_layout.addWidget(self.top_view, 0, 0)
+        views_layout.addWidget(self.top_view, 1, 0)
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(6)
         self.depth_legend = DepthLegendWidget()
@@ -528,7 +539,8 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addWidget(self.round_remaining_label)
         legend_layout.addWidget(self.round_percent_label)
         legend_layout.addStretch(1)
-        views_layout.addLayout(legend_layout, 0, 1)
+        views_layout.addLayout(legend_layout, 1, 1)
+        self.update_move_speed_label()
 
     def _bind_shortcuts(self) -> None:
         bindings = [
@@ -538,18 +550,18 @@ class CraniotomyWindow(QMainWindow):
             ("Down", "AP", False, "AP posterior", 0.05),
             ("PgUp", "DV", False, "DV up", 0.05),
             ("PgDown", "DV", True, "DV down", 0.05),
-            ("Shift+Left", "ML", False, "ML left", 0.01),
-            ("Shift+Right", "ML", True, "ML right", 0.01),
-            ("Shift+Up", "AP", True, "AP anterior", 0.01),
-            ("Shift+Down", "AP", False, "AP posterior", 0.01),
-            ("Shift+PgUp", "DV", False, "DV up", 0.01),
-            ("Shift+PgDown", "DV", True, "DV down", 0.01),
-            ("Ctrl+Left", "ML", False, "ML left", 0.5),
-            ("Ctrl+Right", "ML", True, "ML right", 0.5),
-            ("Ctrl+Up", "AP", True, "AP anterior", 0.5),
-            ("Ctrl+Down", "AP", False, "AP posterior", 0.5),
-            ("Ctrl+PgUp", "DV", False, "DV up", 0.5),
-            ("Ctrl+PgDown", "DV", True, "DV down", 0.5),
+            ("Shift+Left", "ML", False, "ML left", 0.5),
+            ("Shift+Right", "ML", True, "ML right", 0.5),
+            ("Shift+Up", "AP", True, "AP anterior", 0.5),
+            ("Shift+Down", "AP", False, "AP posterior", 0.5),
+            ("Shift+PgUp", "DV", False, "DV up", 0.5),
+            ("Shift+PgDown", "DV", True, "DV down", 0.5),
+            ("Ctrl+Left", "ML", False, "ML left", 0.01),
+            ("Ctrl+Right", "ML", True, "ML right", 0.01),
+            ("Ctrl+Up", "AP", True, "AP anterior", 0.01),
+            ("Ctrl+Down", "AP", False, "AP posterior", 0.01),
+            ("Ctrl+PgUp", "DV", False, "DV up", 0.01),
+            ("Ctrl+PgDown", "DV", True, "DV down", 0.01),
         ]
         self.shortcuts: list[QShortcut] = []
         for key, axis, positive, label, step_mm in bindings:
@@ -580,6 +592,16 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.title = self.current_action
         self.top_view.update()
 
+    def update_move_speed_label(self) -> None:
+        if self.move_speed_step_mm <= 0.011:
+            color = "#2563eb"
+        elif self.move_speed_step_mm >= 0.49:
+            color = "#dc2626"
+        else:
+            color = "#b45309"
+        self.move_speed_label.setText(f"Move speed = {self.move_speed_step_mm:g} mm")
+        self.move_speed_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+
     def keyboard_nudge(self, axis: str, positive: bool, label: str, step_mm: float) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             return
@@ -587,6 +609,8 @@ class CraniotomyWindow(QMainWindow):
         if isinstance(focus_widget, (QLineEdit, QAbstractSpinBox)):
             return
         try:
+            self.move_speed_step_mm = step_mm
+            self.update_move_speed_label()
             self.controller.set_nudge_step(axis, step_mm)
             self.controller.nudge_axis(axis, positive)
             self.set_status(f"Keyboard nudge: {label} {step_mm:.2f} mm")
