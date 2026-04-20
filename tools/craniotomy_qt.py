@@ -417,6 +417,14 @@ class CraniotomyWindow(QMainWindow):
             QLabel[role="muted"] {
                 color: #5e7064;
             }
+            QLabel[role="coord"] {
+                background: rgba(255,255,255,0.92);
+                border: 1px solid #d4ded3;
+                border-radius: 8px;
+                font-size: 110%;
+                font-weight: 700;
+                padding: 4px 10px;
+            }
             QDoubleSpinBox, QSpinBox {
                 border: 1px solid #cfdbcf;
                 border-radius: 8px;
@@ -430,6 +438,28 @@ class CraniotomyWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
+
+        self.current_ap_label = QLabel("-")
+        self.current_ml_label = QLabel("-")
+        self.current_dv_label = QLabel("-")
+        for label in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setProperty("role", "coord")
+            label.setMinimumWidth(82)
+
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+        set_bregma_btn = QPushButton("Set Bregma")
+        set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        header_layout.addWidget(set_bregma_btn)
+        header_layout.addWidget(QLabel("Current AP"))
+        header_layout.addWidget(self.current_ap_label)
+        header_layout.addWidget(QLabel("Current ML"))
+        header_layout.addWidget(self.current_ml_label)
+        header_layout.addWidget(QLabel("Current DV"))
+        header_layout.addWidget(self.current_dv_label)
+        header_layout.addStretch(1)
+        layout.addLayout(header_layout)
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
@@ -448,9 +478,6 @@ class CraniotomyWindow(QMainWindow):
 
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
-        self.current_ap_label = QLabel("-")
-        self.current_ml_label = QLabel("-")
-        self.current_dv_label = QLabel("-")
         self.diameter = self._double_spinbox(value=3.0, minimum=0.1, maximum=20.0)
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
@@ -465,41 +492,31 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_coords.setWordWrap(True)
         self.current_seed_coords.setProperty("role", "muted")
 
-        set_bregma_btn = QPushButton("Set Bregma")
-        set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
-        setup_layout.addWidget(set_bregma_btn, 0, 0)
-        setup_layout.addWidget(QLabel("Current AP"), 0, 1)
-        setup_layout.addWidget(self.current_ap_label, 0, 2)
-        setup_layout.addWidget(QLabel("Current ML"), 0, 3)
-        setup_layout.addWidget(self.current_ml_label, 0, 4)
-        setup_layout.addWidget(QLabel("Current DV"), 0, 5)
-        setup_layout.addWidget(self.current_dv_label, 0, 6)
+        setup_layout.addWidget(QLabel("Mid AP"), 0, 0)
+        setup_layout.addWidget(self.mid_ap, 0, 1)
+        setup_layout.addWidget(QLabel("Mid ML"), 0, 2)
+        setup_layout.addWidget(self.mid_ml, 0, 3)
 
-        setup_layout.addWidget(QLabel("Mid AP"), 1, 0)
-        setup_layout.addWidget(self.mid_ap, 1, 1)
-        setup_layout.addWidget(QLabel("Mid ML"), 1, 2)
-        setup_layout.addWidget(self.mid_ml, 1, 3)
+        setup_layout.addWidget(QLabel("Diameter (mm)"), 1, 0)
+        setup_layout.addWidget(self.diameter, 1, 1)
+        setup_layout.addWidget(QLabel("Seed Points"), 1, 2)
+        setup_layout.addWidget(self.seed_count, 1, 3)
+        setup_layout.addWidget(QLabel("Trajectory Points"), 1, 4)
+        setup_layout.addWidget(self.trajectory_points, 1, 5)
 
-        setup_layout.addWidget(QLabel("Diameter (mm)"), 2, 0)
-        setup_layout.addWidget(self.diameter, 2, 1)
-        setup_layout.addWidget(QLabel("Seed Points"), 2, 2)
-        setup_layout.addWidget(self.seed_count, 2, 3)
-        setup_layout.addWidget(QLabel("Trajectory Points"), 2, 4)
-        setup_layout.addWidget(self.trajectory_points, 2, 5)
+        setup_layout.addWidget(QLabel("Cut Offset DV"), 2, 0)
+        setup_layout.addWidget(self.cut_offset, 2, 1)
+        setup_layout.addWidget(QLabel("Drill Depth"), 2, 2)
+        setup_layout.addWidget(self.drill_depth, 2, 3)
+        setup_layout.addWidget(QLabel("Skull Thickness (mm)"), 2, 4)
+        setup_layout.addWidget(self.skull_thickness_mm, 2, 5)
 
-        setup_layout.addWidget(QLabel("Cut Offset DV"), 3, 0)
-        setup_layout.addWidget(self.cut_offset, 3, 1)
-        setup_layout.addWidget(QLabel("Drill Depth"), 3, 2)
-        setup_layout.addWidget(self.drill_depth, 3, 3)
-        setup_layout.addWidget(QLabel("Skull Thickness (mm)"), 3, 4)
-        setup_layout.addWidget(self.skull_thickness_mm, 3, 5)
-
-        setup_layout.addWidget(QLabel("Current Seed"), 4, 0)
-        setup_layout.addWidget(self.current_seed_spin, 4, 1)
-        setup_layout.addWidget(QLabel("Drill Rate (mm/s)"), 4, 2)
-        setup_layout.addWidget(self.drill_rate_mm_per_s, 4, 3)
-        setup_layout.addWidget(QLabel("Round Time (s)"), 4, 4)
-        setup_layout.addWidget(self.round_time_seconds, 4, 5)
+        setup_layout.addWidget(QLabel("Current Seed"), 3, 0)
+        setup_layout.addWidget(self.current_seed_spin, 3, 1)
+        setup_layout.addWidget(QLabel("Drill Rate (mm/s)"), 3, 2)
+        setup_layout.addWidget(self.drill_rate_mm_per_s, 3, 3)
+        setup_layout.addWidget(QLabel("Round Time (s)"), 3, 4)
+        setup_layout.addWidget(self.round_time_seconds, 3, 5)
 
         generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
@@ -537,7 +554,7 @@ class CraniotomyWindow(QMainWindow):
         self.unfreeze_draw_btn.toggled.connect(self.toggle_unfreeze_mode)
         self.clear_freeze_btn = QPushButton("Clear Freeze")
         self.clear_freeze_btn.clicked.connect(self.clear_frozen_points)
-        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 7)
+        setup_layout.addWidget(self.current_seed_coords, 4, 0, 1, 6)
 
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
@@ -553,7 +570,7 @@ class CraniotomyWindow(QMainWindow):
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
         button_layout.addWidget(self.pause_round_btn, 3, 0)
         button_layout.addWidget(self.stop_drill_btn, 3, 1, 1, 2)
-        setup_layout.addLayout(button_layout, 6, 0, 1, 7)
+        setup_layout.addLayout(button_layout, 5, 0, 1, 6)
 
         views_box = QGroupBox()
         views_layout = QGridLayout(views_box)
@@ -621,8 +638,6 @@ class CraniotomyWindow(QMainWindow):
         self.inject_up_btn.clicked.connect(lambda: self.manual_syringe_step(up=True))
         self.inject_down_btn = QPushButton("Step Syringe Down (F4)")
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
-        inject_set_bregma_btn = QPushButton("Set Bregma")
-        inject_set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
 
@@ -630,10 +645,9 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.manual_volume_label, 0, 1, 1, 3)
         status_layout.addWidget(self.injection_rate_label, 1, 0, 1, 4)
         status_layout.addWidget(self.manual_volume_combo, 2, 0, 1, 4)
-        status_layout.addWidget(inject_set_bregma_btn, 3, 0)
-        status_layout.addWidget(self.inject_up_btn, 3, 1)
-        status_layout.addWidget(self.inject_down_btn, 3, 2)
-        status_layout.addWidget(test_blockage_btn, 3, 3)
+        status_layout.addWidget(self.inject_up_btn, 3, 0)
+        status_layout.addWidget(self.inject_down_btn, 3, 1)
+        status_layout.addWidget(test_blockage_btn, 3, 2, 1, 2)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
