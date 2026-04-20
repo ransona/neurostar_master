@@ -198,12 +198,13 @@ class StereoDriveController:
     def _top_level_windows_for_process(self) -> list[ChildControl]:
         self._refresh_main_window()
         wanted_pid = self._window_process_id(self.main_hwnd)
+        return [window for window in self._top_level_windows() if self._window_process_id(window.hwnd) == wanted_pid]
+
+    def _top_level_windows(self) -> list[ChildControl]:
         windows: list[ChildControl] = []
 
         @WNDENUMPROC
         def callback(hwnd: int, _lparam: int) -> bool:
-            if self._window_process_id(hwnd) != wanted_pid:
-                return True
             rect = RECT()
             if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                 return True
@@ -223,6 +224,29 @@ class StereoDriveController:
 
         user32.EnumWindows(callback, 0)
         return windows
+
+    def _control_row(self, control: ChildControl) -> dict[str, object]:
+        return {
+            "handle": control.hwnd,
+            "process_id": self._window_process_id(control.hwnd),
+            "control_id": control.control_id,
+            "class_name": control.class_name,
+            "text": control.text,
+            "left": control.left,
+            "top": control.top,
+            "right": control.right,
+            "bottom": control.bottom,
+        }
+
+    def _numeric_candidates_from_rows(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        numeric_candidates: list[dict[str, object]] = []
+        for row in rows:
+            text = str(row.get("text", ""))
+            for match in re.finditer(r"-?\d+(?:\.\d+)?", text.replace(",", "")):
+                value = float(match.group(0))
+                if 0.0 <= value <= 5000.0:
+                    numeric_candidates.append(row | {"value": value})
+        return numeric_candidates
 
     def _control_handle(self, control_id: int, timeout_seconds: float = 5.0, poll_seconds: float = 0.2) -> int:
         deadline = time.monotonic() + timeout_seconds
@@ -467,39 +491,39 @@ class StereoDriveController:
 
     def open_injectomate_calibrate(self) -> None:
         self.show_injectomate()
-        self._click(CALIBRATE_INJECTOMATE_ID)
-        time.sleep(0.3)
+        calibrate_hwnd = self._control_handle(CALIBRATE_INJECTOMATE_ID)
+        self._send_command(CALIBRATE_INJECTOMATE_ID)
+        self._notify_command(CALIBRATE_INJECTOMATE_ID, 0, calibrate_hwnd)
+        time.sleep(0.8)
 
     def get_injectomate_calibrate_snapshot(self) -> dict[str, object]:
+        before_windows = [self._control_row(window) for window in self._top_level_windows()]
         self.open_injectomate_calibrate()
+        after_windows = [window for window in self._top_level_windows() if window.right > window.left and window.bottom > window.top]
         windows = [
             window
-            for window in self._top_level_windows_for_process()
-            if window.hwnd != self.main_hwnd and window.right > window.left and window.bottom > window.top
+            for window in after_windows
+            if window.hwnd != self.main_hwnd
+            and (
+                self._window_process_id(window.hwnd) == self._window_process_id(self.main_hwnd)
+                or window.class_name in {"#32770", "Afx:00400000:0"}
+                or "calib" in window.text.lower()
+                or "inject" in window.text.lower()
+                or "syringe" in window.text.lower()
+            )
         ]
         window_rows: list[dict[str, object]] = []
-        numeric_candidates: list[dict[str, object]] = []
+        all_child_rows: list[dict[str, object]] = []
         for window in windows:
             child_rows: list[dict[str, object]] = []
             for control in self._child_controls_for_window(window.hwnd):
-                row = {
-                    "handle": control.hwnd,
-                    "control_id": control.control_id,
-                    "class_name": control.class_name,
-                    "text": control.text,
-                    "left": control.left,
-                    "top": control.top,
-                    "right": control.right,
-                    "bottom": control.bottom,
-                }
+                row = self._control_row(control)
                 child_rows.append(row)
-                for match in re.finditer(r"-?\d+(?:\.\d+)?", control.text.replace(",", "")):
-                    value = float(match.group(0))
-                    if 0.0 <= value <= 5000.0:
-                        numeric_candidates.append(row | {"value": value})
+                all_child_rows.append(row)
             window_rows.append(
                 {
                     "handle": window.hwnd,
+                    "process_id": self._window_process_id(window.hwnd),
                     "class_name": window.class_name,
                     "text": window.text,
                     "left": window.left,
@@ -509,7 +533,15 @@ class StereoDriveController:
                     "children": child_rows,
                 }
             )
-        return {"windows": window_rows, "numeric_candidates": numeric_candidates}
+        main_child_rows = [self._control_row(control) for control in self._child_controls()]
+        all_rows = all_child_rows + main_child_rows
+        return {
+            "before_windows": before_windows,
+            "after_windows": [self._control_row(window) for window in after_windows],
+            "candidate_windows": window_rows,
+            "main_children_after": main_child_rows,
+            "numeric_candidates": self._numeric_candidates_from_rows(all_rows),
+        }
 
     def close_injectomate(self) -> None:
         self._click(CLOSE_INJECTOMATE_ID)
