@@ -315,6 +315,55 @@ class DepthLegendWidget(QWidget):
             painter.drawLine(QPointF(bar_rect.left() - 6, y), QPointF(bar_rect.right() + 6, y))
 
 
+class PlungerGaugeWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.position_nl: float | None = None
+        self.maximum_nl = 5000.0
+        self.setMinimumWidth(92)
+        self.setMaximumWidth(92)
+        self.setMinimumHeight(520)
+
+    def set_position(self, position_nl: float | None) -> None:
+        self.position_nl = position_nl
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+
+        top = 28.0
+        bottom = max(top + 120.0, self.height() - 48.0)
+        axis_x = 36.0
+        painter.setPen(QPen(QColor("#1f2937"), 1))
+        painter.drawLine(QPointF(axis_x, top), QPointF(axis_x, bottom))
+
+        for value in range(0, int(self.maximum_nl) + 1, 100):
+            ratio = value / self.maximum_nl
+            y = bottom - ratio * (bottom - top)
+            is_major = value % 500 == 0
+            tick_length = 10 if is_major else 5
+            painter.setPen(QPen(QColor("#1f2937"), 1))
+            painter.drawLine(QPointF(axis_x, y), QPointF(axis_x + tick_length, y))
+            if is_major:
+                painter.drawText(QRectF(axis_x + 14, y - 8, 40, 16), Qt.AlignLeft | Qt.AlignVCenter, str(value))
+
+        painter.drawText(QRectF(axis_x + 12, 4, 42, 18), Qt.AlignRight | Qt.AlignVCenter, "nl")
+
+        if self.position_nl is not None:
+            value = max(0.0, min(self.maximum_nl, self.position_nl))
+            ratio = value / self.maximum_nl
+            y = bottom - ratio * (bottom - top)
+            painter.setPen(QPen(QColor("#1d4ed8"), 6))
+            painter.drawLine(QPointF(axis_x - 6, bottom), QPointF(axis_x - 6, y))
+            painter.setPen(QColor("#1d4ed8"))
+            painter.drawText(QRectF(4, self.height() - 28, self.width() - 8, 24), Qt.AlignCenter, f"{self.position_nl:.0f}")
+        else:
+            painter.setPen(QColor("#6b7280"))
+            painter.drawText(QRectF(4, self.height() - 28, self.width() - 8, 24), Qt.AlignCenter, "--")
+
+
 class CraniotomyWindow(QMainWindow):
     status_signal = Signal(str)
     redraw_signal = Signal()
@@ -626,9 +675,15 @@ class CraniotomyWindow(QMainWindow):
 
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
-        layout = QVBoxLayout(injection_tab)
+        outer_layout = QHBoxLayout(injection_tab)
+        outer_layout.setContentsMargins(10, 10, 10, 10)
+        outer_layout.setSpacing(10)
+        layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
+        outer_layout.addLayout(layout, 1)
+        self.plunger_gauge = PlungerGaugeWidget()
+        outer_layout.addWidget(self.plunger_gauge, 0, Qt.AlignTop)
         self.tabs.addTab(injection_tab, "Injection")
 
         status_box = QGroupBox("Manual Control")
@@ -1389,6 +1444,8 @@ class CraniotomyWindow(QMainWindow):
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
+            if hasattr(self, "plunger_gauge"):
+                self.plunger_gauge.set_position(self.controller.get_injection_plunger_position_nl())
             if self.seeds:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:

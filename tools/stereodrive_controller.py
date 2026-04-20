@@ -1,4 +1,5 @@
 import ctypes
+import re
 import time
 
 
@@ -42,6 +43,7 @@ BUTTON_DV_POSITIVE_ID = 1107
 INJECTION_VOLUME_ID = 10001
 INJECTION_GOTO_TEXT_ID = 10004
 INJECTION_GOTO_BUTTON_ID = 10005
+INJECTION_PLUNGER_POSITION_IDS = (10014, 10015, 10017, 10004)
 SYRINGE_TYPE_ID = 10006
 SYRINGE_STEP_UP_ID = 10000
 SYRINGE_STEP_DOWN_ID = 10002
@@ -271,6 +273,22 @@ class StereoDriveController:
         self._set_text(hwnd, "0")
         time.sleep(0.1)
         self._click(INJECTION_GOTO_BUTTON_ID)
+
+    def get_injection_plunger_position_nl(self) -> float | None:
+        if not self.injectomate_visible():
+            return None
+        controls = self._control_map()
+        for control_id in INJECTION_PLUNGER_POSITION_IDS:
+            hwnd = controls.get(control_id)
+            if not hwnd:
+                continue
+            text = self._get_text(hwnd)
+            if not text:
+                continue
+            match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+            if match:
+                return float(match.group(0))
+        return None
 
     def set_current_location_to_bregma(self) -> None:
         self._click(ACTIVE_DRILL_ID)
