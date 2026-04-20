@@ -22,6 +22,8 @@ param(
         "probe-plunger-gauge-control",
         "read-scale-popup-api",
         "scan-process-memory-value",
+        "refine-process-memory-value",
+        "clear-process-memory-candidates",
         "scan-open-windows",
         "set-injection-volume",
         "set-syringe-type",
@@ -61,6 +63,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$MemoryCandidatesPath = Join-Path $PSScriptRoot "stereodrive_memory_candidates.json"
 
 $signature = @"
 using System;
@@ -791,7 +794,7 @@ function Scan-ProcessMemoryForValue {
     $chunkSize = 1048576
     $startTime = [DateTime]::UtcNow
     $lastProgress = [DateTime]::UtcNow.AddSeconds(-10)
-    Write-Output ("Starting memory scan for {0}. Patterns: {1}" -f $Needle, (($patterns | ForEach-Object { $_.Name }) -join ", "))
+    Write-Host ("Starting memory scan for {0}. Patterns: {1}" -f $Needle, (($patterns | ForEach-Object { $_.Name }) -join ", "))
     try {
         while ($address -lt $maxAddress -and $matches.Count -lt $MaxMatches) {
             $mbi = New-Object StereoDriveWin32+MEMORY_BASIC_INFORMATION
@@ -837,13 +840,14 @@ function Scan-ProcessMemoryForValue {
                             $rate = [Math]::Round(($bytesScanned / 1MB) / $elapsed, 1)
                             $status = "{0} MB scanned, {1} regions, {2} matches, {3} MB/s" -f $mb, $readableRegionCount, $matches.Count, $rate
                             Write-Progress -Activity "Scanning StereoDrive process memory" -Status $status -PercentComplete -1
-                            Write-Output ("progress: {0}" -f $status)
+                            Write-Host ("progress: {0}" -f $status)
                             $lastProgress = [DateTime]::UtcNow
                         }
                         foreach ($pattern in $patterns) {
                             foreach ($hit in @(Find-BytePattern -Buffer $buffer -Length $actual -Pattern $pattern.Bytes)) {
                                 $matches += [pscustomobject]@{
                                     Address = ("0x{0:X}" -f ($base + $offset + [uint64]$hit))
+                                    AddressValue = ($base + $offset + [uint64]$hit)
                                     Pattern = $pattern.Name
                                     RegionBase = ("0x{0:X}" -f $base)
                                     RegionSize = $size
@@ -881,6 +885,135 @@ function Scan-ProcessMemoryForValue {
         BytesScanned = $bytesScanned
         MatchCount = $matches.Count
         Matches = $matches
+    }
+}
+
+function Read-ProcessBytes {
+    param(
+        [IntPtr]$ProcessHandle,
+        [uint64]$Address,
+        [int]$Length
+    )
+
+    $buffer = New-Object byte[] $Length
+    $bytesRead = [UIntPtr]::Zero
+    $ok = [StereoDriveWin32]::ReadProcessMemory(
+        $ProcessHandle,
+        [IntPtr]::new([int64]$Address),
+        $buffer,
+        [UIntPtr][uint64]$Length,
+        [ref]$bytesRead
+    )
+    if (-not $ok -or $bytesRead.ToUInt64() -lt [uint64]$Length) {
+        return $null
+    }
+    return $buffer
+}
+
+function Test-ByteArrayEqual {
+    param([byte[]]$Left, [byte[]]$Right)
+
+    if ($Left.Count -ne $Right.Count) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Left.Count; $i++) {
+        if ($Left[$i] -ne $Right[$i]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Convert-HexAddressToUInt64 {
+    param([string]$Address)
+
+    $text = $Address.Trim()
+    if ($text.StartsWith("0x", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $text = $text.Substring(2)
+    }
+    return [Convert]::ToUInt64($text, 16)
+}
+
+function Refine-ProcessMemoryCandidates {
+    param(
+        [int]$ProcessId,
+        [string]$Needle,
+        [string]$CandidatePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Needle)) {
+        throw "refine-process-memory-value requires -Value, for example -Value 3072.123."
+    }
+    if (-not (Test-Path -LiteralPath $CandidatePath)) {
+        throw "No saved memory candidate file exists at $CandidatePath. Run -Action scan-process-memory-value first."
+    }
+
+    $previous = Get-Content -LiteralPath $CandidatePath -Raw | ConvertFrom-Json
+    $previousMatches = @($previous.Matches)
+    if ($previousMatches.Count -eq 0) {
+        throw "Saved candidate file has no matches to refine."
+    }
+
+    $patterns = @(Get-MemorySearchPatterns -NumericValue ([double]$Needle) -OriginalText $Needle)
+    $patternByName = @{}
+    foreach ($pattern in $patterns) {
+        $patternByName[$pattern.Name] = $pattern
+    }
+
+    $access = [StereoDriveWin32]::PROCESS_QUERY_INFORMATION -bor [StereoDriveWin32]::PROCESS_VM_READ
+    $processHandle = [StereoDriveWin32]::OpenProcess($access, $false, $ProcessId)
+    if ($processHandle -eq [IntPtr]::Zero) {
+        throw "OpenProcess failed for PID $ProcessId. Try running PowerShell as administrator."
+    }
+
+    $kept = @()
+    $checked = 0
+    try {
+        foreach ($candidate in $previousMatches) {
+            $checked++
+            $address = if ($candidate.PSObject.Properties["AddressValue"] -and $null -ne $candidate.AddressValue) {
+                [uint64]$candidate.AddressValue
+            } else {
+                Convert-HexAddressToUInt64 -Address ([string]$candidate.Address)
+            }
+
+            $patternsToTry = @()
+            if ($patternByName.ContainsKey([string]$candidate.Pattern)) {
+                $patternsToTry = @($patternByName[[string]$candidate.Pattern])
+            } else {
+                $patternsToTry = $patterns
+            }
+
+            foreach ($pattern in $patternsToTry) {
+                $bytes = Read-ProcessBytes -ProcessHandle $processHandle -Address $address -Length $pattern.Bytes.Count
+                if ($bytes -and (Test-ByteArrayEqual -Left $bytes -Right $pattern.Bytes)) {
+                    $kept += [pscustomobject]@{
+                        Address = ("0x{0:X}" -f $address)
+                        AddressValue = $address
+                        Pattern = $pattern.Name
+                        PreviousPattern = $candidate.Pattern
+                        MatchedPattern = $pattern.Name
+                        RegionBase = if ($candidate.PSObject.Properties["RegionBase"]) { $candidate.RegionBase } elseif ($candidate.PSObject.Properties["PreviousRegionBase"]) { $candidate.PreviousRegionBase } else { $null }
+                        Protect = if ($candidate.PSObject.Properties["Protect"]) { $candidate.Protect } elseif ($candidate.PSObject.Properties["PreviousProtect"]) { $candidate.PreviousProtect } else { $null }
+                        Type = if ($candidate.PSObject.Properties["Type"]) { $candidate.Type } elseif ($candidate.PSObject.Properties["PreviousType"]) { $candidate.PreviousType } else { $null }
+                    }
+                    break
+                }
+            }
+        }
+    } finally {
+        [void][StereoDriveWin32]::CloseHandle($processHandle)
+    }
+
+    return [pscustomobject]@{
+        ProcessId = $ProcessId
+        PreviousNeedle = $previous.Needle
+        Needle = $Needle
+        CandidatePath = $CandidatePath
+        PreviousMatchCount = $previousMatches.Count
+        CheckedCount = $checked
+        MatchCount = $kept.Count
+        Matches = $kept
     }
 }
 
@@ -1495,7 +1628,28 @@ if ($Action -eq "read-scale-popup-api") {
 }
 
 if ($Action -eq "scan-process-memory-value") {
-    Scan-ProcessMemoryForValue -ProcessId $mainProcessId -Needle $Value
+    $result = Scan-ProcessMemoryForValue -ProcessId $mainProcessId -Needle $Value
+    $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $MemoryCandidatesPath -Encoding UTF8
+    Write-Host "Saved memory candidates to $MemoryCandidatesPath"
+    $result
+    return
+}
+
+if ($Action -eq "refine-process-memory-value") {
+    $result = Refine-ProcessMemoryCandidates -ProcessId $mainProcessId -Needle $Value -CandidatePath $MemoryCandidatesPath
+    $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $MemoryCandidatesPath -Encoding UTF8
+    Write-Host "Updated memory candidates at $MemoryCandidatesPath"
+    $result
+    return
+}
+
+if ($Action -eq "clear-process-memory-candidates") {
+    if (Test-Path -LiteralPath $MemoryCandidatesPath) {
+        Remove-Item -LiteralPath $MemoryCandidatesPath -Force
+        Write-Output "Deleted $MemoryCandidatesPath"
+    } else {
+        Write-Output "No memory candidate file exists at $MemoryCandidatesPath"
+    }
     return
 }
 
