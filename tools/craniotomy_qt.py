@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
@@ -714,6 +715,8 @@ class CraniotomyWindow(QMainWindow):
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
+        debug_plunger_btn = QPushButton("Debug Plunger Capture")
+        debug_plunger_btn.clicked.connect(self.save_plunger_debug_capture)
 
         status_layout.addWidget(QLabel("Current manual injection volume"), 0, 0)
         status_layout.addWidget(self.manual_volume_label, 0, 1, 1, 3)
@@ -722,6 +725,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.inject_up_btn, 3, 0)
         status_layout.addWidget(self.inject_down_btn, 3, 1)
         status_layout.addWidget(test_blockage_btn, 3, 2, 1, 2)
+        status_layout.addWidget(debug_plunger_btn, 4, 0, 1, 4)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -1598,21 +1602,57 @@ class CraniotomyWindow(QMainWindow):
             return float(value)
         return None
 
+    def _capture_bottom_right_screen_image(self) -> QImage | None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return None
+        geometry = screen.geometry()
+        width = max(1, int(geometry.width() * 0.20))
+        height = max(1, int(geometry.height() * 0.20))
+        left = geometry.x() + geometry.width() - width
+        top = geometry.y() + geometry.height() - height
+        pixmap = screen.grabWindow(0, left, top, width, height)
+        if pixmap.isNull():
+            return None
+        image = pixmap.toImage()
+        if image.width() <= 1 or image.height() <= 1:
+            return None
+        return image
+
+    def _blue_filtered_plunger_image(self, image: QImage) -> QImage:
+        filtered = QImage(image.size(), QImage.Format_ARGB32)
+        filtered.fill(QColor("#ffffff"))
+        for y in range(image.height()):
+            for x in range(image.width()):
+                if self._is_blue_plunger_pixel(image, x, y):
+                    filtered.setPixelColor(x, y, image.pixelColor(x, y))
+        return filtered
+
+    def save_plunger_debug_capture(self) -> None:
+        try:
+            image = self._capture_bottom_right_screen_image()
+            if image is None:
+                raise StereoDriveError("Could not capture bottom-right screen region.")
+            filtered = self._blue_filtered_plunger_image(image)
+            value = self._read_plunger_text_from_image(image)
+            output_dir = Path(__file__).resolve().parent
+            raw_path = output_dir / "plunger_debug_raw.png"
+            filtered_path = output_dir / "plunger_debug_filtered.png"
+            value_path = output_dir / "plunger_debug_value.txt"
+            image.save(str(raw_path))
+            filtered.save(str(filtered_path))
+            value_text = "--" if value is None else f"{value:.0f}"
+            value_path.write_text(f"detected_value_nl={value_text}\n", encoding="utf-8")
+            self.set_status(
+                f"Saved plunger debug capture: {raw_path.name}, {filtered_path.name}; detected {value_text} nl."
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Plunger Debug", str(exc))
+
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:
-            screen = QApplication.primaryScreen()
-            if screen is None:
-                return None
-            geometry = screen.geometry()
-            width = max(1, int(geometry.width() * 0.20))
-            height = max(1, int(geometry.height() * 0.20))
-            left = geometry.x() + geometry.width() - width
-            top = geometry.y() + geometry.height() - height
-            pixmap = screen.grabWindow(0, left, top, width, height)
-            if pixmap.isNull():
-                return None
-            image = pixmap.toImage()
-            if image.width() <= 1 or image.height() <= 1:
+            image = self._capture_bottom_right_screen_image()
+            if image is None:
                 return None
             return self._read_plunger_text_from_image(image)
         except Exception:
