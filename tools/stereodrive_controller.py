@@ -1,6 +1,7 @@
 import ctypes
 import re
 import time
+from dataclasses import dataclass
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -73,6 +74,31 @@ user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
 user32.SendMessageW.restype = ctypes.c_ssize_t
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
+user32.GetWindowRect.restype = ctypes.c_bool
+
+
+@dataclass
+class ChildControl:
+    hwnd: int
+    control_id: int
+    class_name: str
+    text: str
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
 class StereoDriveError(RuntimeError):
     pass
 
@@ -119,6 +145,31 @@ class StereoDriveController:
             ctrl_id = user32.GetDlgCtrlID(hwnd)
             if ctrl_id > 0:
                 controls[ctrl_id] = hwnd
+            return True
+
+        user32.EnumChildWindows(self.main_hwnd, callback, 0)
+        return controls
+
+    def _child_controls(self) -> list[ChildControl]:
+        controls: list[ChildControl] = []
+
+        @WNDENUMPROC
+        def callback(hwnd: int, _lparam: int) -> bool:
+            rect = RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            controls.append(
+                ChildControl(
+                    hwnd=hwnd,
+                    control_id=user32.GetDlgCtrlID(hwnd),
+                    class_name=self._class_name(hwnd),
+                    text=self._get_text(hwnd),
+                    left=rect.left,
+                    top=rect.top,
+                    right=rect.right,
+                    bottom=rect.bottom,
+                )
+            )
             return True
 
         user32.EnumChildWindows(self.main_hwnd, callback, 0)
@@ -277,17 +328,52 @@ class StereoDriveController:
     def get_injection_plunger_position_nl(self) -> float | None:
         if not self.injectomate_visible():
             return None
-        controls = self._control_map()
-        hwnd = controls.get(INJECTION_PLUNGER_POSITION_ID)
-        if not hwnd:
+        candidates = self.get_injection_numeric_readouts()
+        if not candidates:
             return None
-        text = self._get_text(hwnd)
-        if not text:
-            return None
-        match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
-        if match:
-            return float(match.group(0))
-        return None
+        gauge_candidates = [candidate for candidate in candidates if candidate["control_id"] <= 0]
+        if gauge_candidates:
+            return float(max(gauge_candidates, key=lambda candidate: candidate["top"])["value"])
+        return float(max(candidates, key=lambda candidate: candidate["top"])["value"])
+
+    def get_injection_numeric_readouts(self) -> list[dict[str, float | int | str]]:
+        all_controls = self._child_controls()
+        injection_controls = [control for control in all_controls if control.control_id >= 10000]
+        if not injection_controls:
+            return []
+        left = min(control.left for control in injection_controls)
+        right = max(control.right for control in injection_controls)
+        top = min(control.top for control in injection_controls)
+        bottom = max(control.bottom for control in injection_controls)
+        candidates: list[dict[str, float | int | str]] = []
+        for control in all_controls:
+            if control.right < left - 20 or control.left > right + 20 or control.bottom < top - 20 or control.top > bottom + 20:
+                continue
+            if control.control_id in {INJECTION_VOLUME_ID, INJECTION_GOTO_TEXT_ID, SYRINGE_TYPE_ID}:
+                continue
+            if control.control_id in {CURRENT_AP_ID, CURRENT_ML_ID, CURRENT_DV_ID, TARGET_AP_ID, TARGET_ML_ID, TARGET_DV_ID}:
+                continue
+            text = control.text.strip()
+            if not text or re.search(r"[A-Za-z]", text):
+                continue
+            match = re.fullmatch(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+            if not match:
+                continue
+            value = float(match.group(0))
+            if 0.0 <= value <= 5000.0:
+                candidates.append(
+                    {
+                        "control_id": control.control_id,
+                        "class_name": control.class_name,
+                        "text": text,
+                        "value": value,
+                        "left": control.left,
+                        "top": control.top,
+                        "right": control.right,
+                        "bottom": control.bottom,
+                    }
+                )
+        return candidates
 
     def set_current_location_to_bregma(self) -> None:
         self._click(ACTIVE_DRILL_ID)
