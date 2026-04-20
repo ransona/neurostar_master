@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractSpinBox,
+    QComboBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
@@ -17,9 +18,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +32,8 @@ from stereodrive_controller import StereoDriveController, StereoDriveError
 
 MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 DEFAULT_MOVE_SPEED_MM = 0.05
+INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100, 200, 500, 1000, 2000]
+DEFAULT_INJECTION_VOLUME_NL = 100
 
 
 @dataclass
@@ -295,6 +300,8 @@ class CraniotomyWindow(QMainWindow):
     status_signal = Signal(str)
     redraw_signal = Signal()
     drill_progress_signal = Signal(int)
+    injection_progress_signal = Signal(int, str)
+    injection_finished_signal = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -315,12 +322,18 @@ class CraniotomyWindow(QMainWindow):
         self.active_surface_dv: float | None = None
         self.active_depth_ratio: float | None = None
         self.active_drill_depth_mm: float | None = None
+        self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
+        self.injection_thread: threading.Thread | None = None
+        self.injection_pause_requested = threading.Event()
+        self.injection_stop_requested = threading.Event()
         self.setWindowTitle("Craniotomy Planner")
         self.setFocusPolicy(Qt.StrongFocus)
         self.resize(1120, 760)
         self.status_signal.connect(self.set_status)
         self.redraw_signal.connect(self.redraw_views)
         self.drill_progress_signal.connect(self.set_drill_completed_points)
+        self.injection_progress_signal.connect(self.set_injection_progress)
+        self.injection_finished_signal.connect(self.finish_injection)
         self._build_ui()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
@@ -391,9 +404,13 @@ class CraniotomyWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        content = QVBoxLayout()
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+
+        craniotomy_tab = QWidget()
+        content = QVBoxLayout(craniotomy_tab)
         content.setSpacing(8)
-        layout.addLayout(content, 1)
+        self.tabs.addTab(craniotomy_tab, "Craniotomy")
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
@@ -546,6 +563,84 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addStretch(1)
         views_layout.addLayout(legend_layout, 1, 1)
         self.update_move_speed_label()
+        self._build_injection_tab()
+
+    def _build_injection_tab(self) -> None:
+        injection_tab = QWidget()
+        layout = QVBoxLayout(injection_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        self.tabs.addTab(injection_tab, "Injection")
+
+        status_box = QGroupBox("Manual Control")
+        status_layout = QGridLayout(status_box)
+        status_layout.setContentsMargins(10, 10, 10, 10)
+        status_layout.setHorizontalSpacing(8)
+        status_layout.setVerticalSpacing(6)
+        layout.addWidget(status_box)
+
+        self.manual_volume_label = QLabel()
+        self.injection_rate_label = QLabel("Current volume rate = -- nl/s")
+        self.injection_rate_label.setProperty("role", "muted")
+        self.manual_volume_combo = QComboBox()
+        for volume in INJECTION_VOLUME_OPTIONS_NL:
+            self.manual_volume_combo.addItem(f"{volume} nl", volume)
+        self.manual_volume_combo.setCurrentIndex(INJECTION_VOLUME_OPTIONS_NL.index(self.manual_injection_volume_nl))
+        self.manual_volume_combo.currentIndexChanged.connect(self.on_manual_volume_combo_changed)
+        self.inject_up_btn = QPushButton("Step Syringe Up (F3)")
+        self.inject_up_btn.clicked.connect(lambda: self.manual_syringe_step(up=True))
+        self.inject_down_btn = QPushButton("Step Syringe Down (F4)")
+        self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
+
+        status_layout.addWidget(QLabel("Current manual injection volume"), 0, 0)
+        status_layout.addWidget(self.manual_volume_label, 0, 1)
+        status_layout.addWidget(self.injection_rate_label, 1, 0, 1, 2)
+        status_layout.addWidget(self.manual_volume_combo, 2, 0, 1, 2)
+        status_layout.addWidget(self.inject_up_btn, 3, 0)
+        status_layout.addWidget(self.inject_down_btn, 3, 1)
+
+        single_box = QGroupBox("Single Injection")
+        single_layout = QGridLayout(single_box)
+        single_layout.setContentsMargins(10, 10, 10, 10)
+        single_layout.setHorizontalSpacing(8)
+        single_layout.setVerticalSpacing(6)
+        layout.addWidget(single_box)
+
+        self.single_injection_volume_nl = self._spinbox(value=100, minimum=10, maximum=100000)
+        self.single_injection_time_s = self._double_spinbox(value=10.0, minimum=0.1, maximum=3600.0)
+        self.single_injection_time_s.setDecimals(1)
+        self.single_injection_volume_nl.valueChanged.connect(self.update_injection_rate_label)
+        self.single_injection_time_s.valueChanged.connect(self.update_injection_rate_label)
+        self.injection_progress = QProgressBar()
+        self.injection_progress.setRange(0, 100)
+        self.injection_progress.setValue(0)
+        self.injection_status_label = QLabel("Idle")
+        self.injection_status_label.setProperty("role", "muted")
+        self.start_injection_btn = QPushButton("Go")
+        self.start_injection_btn.setProperty("variant", "primary")
+        self.start_injection_btn.style().unpolish(self.start_injection_btn)
+        self.start_injection_btn.style().polish(self.start_injection_btn)
+        self.start_injection_btn.clicked.connect(self.start_single_injection)
+        self.pause_injection_btn = QPushButton("Pause")
+        self.pause_injection_btn.clicked.connect(self.pause_resume_injection)
+        self.stop_injection_btn = QPushButton("Stop")
+        self.stop_injection_btn.setProperty("variant", "danger")
+        self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
+        self.stop_injection_btn.style().polish(self.stop_injection_btn)
+        self.stop_injection_btn.clicked.connect(self.stop_injection)
+
+        single_layout.addWidget(QLabel("Volume (nl, rounded to 10)"), 0, 0)
+        single_layout.addWidget(self.single_injection_volume_nl, 0, 1)
+        single_layout.addWidget(QLabel("Time (s)"), 0, 2)
+        single_layout.addWidget(self.single_injection_time_s, 0, 3)
+        single_layout.addWidget(self.start_injection_btn, 1, 0)
+        single_layout.addWidget(self.pause_injection_btn, 1, 1)
+        single_layout.addWidget(self.stop_injection_btn, 1, 2)
+        single_layout.addWidget(self.injection_progress, 2, 0, 1, 4)
+        single_layout.addWidget(self.injection_status_label, 3, 0, 1, 4)
+        layout.addStretch(1)
+        self.update_manual_volume_label()
+        self.update_injection_rate_label()
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
@@ -593,6 +688,18 @@ class CraniotomyWindow(QMainWindow):
                 focus_widget.clearFocus()
             self.setFocus(Qt.OtherFocusReason)
             return True
+        if key == Qt.Key.Key_F1:
+            self.adjust_manual_injection_volume(-1)
+            return True
+        if key == Qt.Key.Key_F2:
+            self.adjust_manual_injection_volume(1)
+            return True
+        if key == Qt.Key.Key_F3:
+            self.manual_syringe_step(up=True)
+            return True
+        if key == Qt.Key.Key_F4:
+            self.manual_syringe_step(up=False)
+            return True
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
         if key == Qt.Key.Key_Shift:
@@ -617,7 +724,7 @@ class CraniotomyWindow(QMainWindow):
 
     def _focus_is_editable(self) -> bool:
         focus_widget = QApplication.focusWidget()
-        return isinstance(focus_widget, (QLineEdit, QAbstractSpinBox))
+        return isinstance(focus_widget, (QLineEdit, QAbstractSpinBox, QComboBox))
 
     def adjust_move_speed(self, direction: int) -> None:
         current_index = min(
@@ -645,6 +752,156 @@ class CraniotomyWindow(QMainWindow):
                 pass
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def update_manual_volume_label(self) -> None:
+        try:
+            volume_index = INJECTION_VOLUME_OPTIONS_NL.index(self.manual_injection_volume_nl)
+        except ValueError:
+            volume_index = 0
+        ratio = volume_index / max(1, len(INJECTION_VOLUME_OPTIONS_NL) - 1)
+        red = int(37 + ratio * 183)
+        green = int(99 - ratio * 61)
+        blue = int(235 - ratio * 197)
+        color = f"#{red:02x}{green:02x}{blue:02x}"
+        self.manual_volume_label.setText(f"{self.manual_injection_volume_nl} nl")
+        self.manual_volume_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        if self.manual_volume_combo.currentData() != self.manual_injection_volume_nl:
+            index = self.manual_volume_combo.findData(self.manual_injection_volume_nl)
+            if index >= 0:
+                self.manual_volume_combo.blockSignals(True)
+                self.manual_volume_combo.setCurrentIndex(index)
+                self.manual_volume_combo.blockSignals(False)
+
+    def update_injection_rate_label(self) -> None:
+        volume_nl = self._rounded_single_injection_volume()
+        duration_s = max(self.single_injection_time_s.value(), 0.1)
+        self.injection_rate_label.setText(f"Current volume rate = {volume_nl / duration_s:.1f} nl/s")
+
+    def on_manual_volume_combo_changed(self) -> None:
+        value = self.manual_volume_combo.currentData()
+        if value is not None:
+            self.manual_injection_volume_nl = int(value)
+            self.update_manual_volume_label()
+
+    def adjust_manual_injection_volume(self, direction: int) -> None:
+        current_index = INJECTION_VOLUME_OPTIONS_NL.index(self.manual_injection_volume_nl)
+        next_index = max(0, min(len(INJECTION_VOLUME_OPTIONS_NL) - 1, current_index + direction))
+        self.manual_injection_volume_nl = INJECTION_VOLUME_OPTIONS_NL[next_index]
+        self.update_manual_volume_label()
+        self.set_status(f"Manual injection volume set to {self.manual_injection_volume_nl} nl")
+
+    def manual_syringe_step(self, up: bool) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        try:
+            self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl", up=up)
+            direction = "up" if up else "down"
+            self.set_status(f"Syringe step {direction}: {self.manual_injection_volume_nl} nl")
+        except Exception as exc:
+            QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def _rounded_single_injection_volume(self) -> int:
+        return max(10, int(round(self.single_injection_volume_nl.value() / 10.0) * 10))
+
+    def _injection_step_plan(self, volume_nl: int) -> list[int]:
+        remaining = volume_nl
+        plan: list[int] = []
+        for option in sorted(INJECTION_VOLUME_OPTIONS_NL, reverse=True):
+            while remaining >= option:
+                plan.append(option)
+                remaining -= option
+        if remaining > 0:
+            plan.append(10)
+        return plan
+
+    def start_single_injection(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        volume_nl = self._rounded_single_injection_volume()
+        self.single_injection_volume_nl.setValue(volume_nl)
+        duration_s = max(self.single_injection_time_s.value(), 0.1)
+        plan = self._injection_step_plan(volume_nl)
+        if not plan:
+            return
+        self.injection_pause_requested.clear()
+        self.injection_stop_requested.clear()
+        self.injection_progress.setValue(0)
+        self.injection_status_label.setText(f"Injecting {volume_nl} nl over {duration_s:.1f}s")
+        self.start_injection_btn.setEnabled(False)
+        self.pause_injection_btn.setText("Pause")
+        self.injection_thread = threading.Thread(
+            target=self._run_single_injection,
+            args=(plan, duration_s, volume_nl),
+            daemon=True,
+        )
+        self.injection_thread.start()
+
+    def pause_resume_injection(self) -> None:
+        if self.injection_thread is None or not self.injection_thread.is_alive():
+            return
+        if self.injection_pause_requested.is_set():
+            self.injection_pause_requested.clear()
+            self.pause_injection_btn.setText("Pause")
+            self.injection_status_label.setText("Injection resumed")
+        else:
+            self.injection_pause_requested.set()
+            self.pause_injection_btn.setText("Resume")
+            self.injection_status_label.setText("Injection paused")
+
+    def stop_injection(self) -> None:
+        self.injection_stop_requested.set()
+        self.injection_status_label.setText("Stopping injection")
+
+    def _run_single_injection(self, plan: list[int], duration_s: float, total_volume_nl: int) -> None:
+        delivered = 0
+        interval_s = duration_s / max(1, len(plan))
+        try:
+            for index, step_nl in enumerate(plan, start=1):
+                if self.injection_stop_requested.is_set():
+                    break
+                while self.injection_pause_requested.is_set() and not self.injection_stop_requested.is_set():
+                    time.sleep(0.05)
+                if self.injection_stop_requested.is_set():
+                    break
+                started_at = time.monotonic()
+                self.injection_progress_signal.emit(
+                    int((delivered / max(1, total_volume_nl)) * 100),
+                    f"Step {index}/{len(plan)}: {step_nl} nl",
+                )
+                self.controller.syringe_step(f"{step_nl} nl", up=True)
+                delivered += step_nl
+                self.injection_progress_signal.emit(
+                    min(100, int((delivered / max(1, total_volume_nl)) * 100)),
+                    f"Delivered {delivered}/{total_volume_nl} nl",
+                )
+                remaining = interval_s - (time.monotonic() - started_at)
+                while remaining > 0 and not self.injection_stop_requested.is_set():
+                    if self.injection_pause_requested.is_set():
+                        time.sleep(0.05)
+                        continue
+                    sleep_window = min(0.05, remaining)
+                    time.sleep(sleep_window)
+                    remaining -= sleep_window
+            if self.injection_stop_requested.is_set():
+                self.injection_finished_signal.emit("Injection stopped")
+            else:
+                self.injection_finished_signal.emit("Injection complete")
+        except Exception as exc:
+            self.injection_finished_signal.emit(str(exc))
+
+    def set_injection_progress(self, percent: int, message: str) -> None:
+        self.injection_progress.setValue(max(0, min(100, percent)))
+        self.injection_status_label.setText(message)
+
+    def finish_injection(self, message: str) -> None:
+        self.injection_status_label.setText(message)
+        self.start_injection_btn.setEnabled(True)
+        self.pause_injection_btn.setText("Pause")
+        if message == "Injection complete":
+            self.injection_progress.setValue(100)
+        self.injection_pause_requested.clear()
+        self.injection_stop_requested.clear()
+        self.injection_thread = None
 
     def refresh_live_position(self) -> None:
         try:

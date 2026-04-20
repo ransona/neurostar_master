@@ -38,6 +38,8 @@ BUTTON_DV_NEGATIVE_ID = 1106
 BUTTON_DV_POSITIVE_ID = 1107
 INJECTION_VOLUME_ID = 10001
 SYRINGE_TYPE_ID = 10006
+SYRINGE_STEP_UP_ID = 10000
+SYRINGE_STEP_DOWN_ID = 10002
 INJECT_BUTTON_ID = 10018
 FILL_BUTTON_ID = 10032
 CLOSE_INJECTOMATE_ID = 10031
@@ -211,9 +213,13 @@ class StereoDriveController:
         except StereoDriveError:
             return ""
 
+    def injectomate_visible(self) -> bool:
+        return INJECTION_VOLUME_ID in self._control_map()
+
     def show_injectomate(self) -> None:
-        self._send_command(SHOW_INJECTOMATE_COMMAND_ID)
-        time.sleep(0.3)
+        if not self.injectomate_visible():
+            self._send_command(SHOW_INJECTOMATE_COMMAND_ID)
+            time.sleep(0.3)
 
     def set_injection_volume(self, volume_label: str) -> None:
         self.show_injectomate()
@@ -236,6 +242,21 @@ class StereoDriveController:
     def inject(self) -> None:
         self.show_injectomate()
         self._click(INJECT_BUTTON_ID)
+
+    def syringe_step_up(self) -> None:
+        self.show_injectomate()
+        self._click(SYRINGE_STEP_UP_ID)
+
+    def syringe_step_down(self) -> None:
+        self.show_injectomate()
+        self._click(SYRINGE_STEP_DOWN_ID)
+
+    def syringe_step(self, volume_label: str, up: bool = True) -> None:
+        self.set_injection_volume(volume_label)
+        if up:
+            self.syringe_step_up()
+        else:
+            self.syringe_step_down()
 
     def fill_injectomate(self) -> None:
         self.show_injectomate()
