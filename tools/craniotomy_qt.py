@@ -712,8 +712,6 @@ class CraniotomyWindow(QMainWindow):
         remove_movement_btn.clicked.connect(self.remove_selected_movement_step)
         add_pause_btn = QPushButton("Add Pause")
         add_pause_btn.clicked.connect(self.add_timed_movement_pause)
-        pause_until_done_btn = QPushButton("Pause Until Injection Complete")
-        pause_until_done_btn.clicked.connect(self.add_injection_complete_pause)
         single_layout.addWidget(QLabel("Volume (nl, rounded to 10)"), 0, 0)
         single_layout.addWidget(self.single_injection_volume_nl, 0, 1)
         single_layout.addWidget(QLabel("Time (s)"), 0, 2)
@@ -728,8 +726,7 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.block_test_volume_nl, 2, 3)
         single_layout.addWidget(add_movement_btn, 3, 0)
         single_layout.addWidget(remove_movement_btn, 3, 1)
-        single_layout.addWidget(add_pause_btn, 3, 2)
-        single_layout.addWidget(pause_until_done_btn, 3, 3)
+        single_layout.addWidget(add_pause_btn, 3, 2, 1, 2)
         single_layout.addWidget(self.movement_steps_list, 4, 0, 1, 4)
         single_layout.addWidget(self.injection_status_label, 5, 0, 1, 4)
         single_layout.addWidget(QLabel("Overall sequence progress"), 6, 0)
@@ -997,6 +994,21 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_movement_steps_list()
 
     def add_timed_movement_pause(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Add Pause")
+        box.setText("Add movement pause")
+        timed_button = box.addButton("Timed pause", QMessageBox.AcceptRole)
+        until_done_button = box.addButton("Until injection complete", QMessageBox.ActionRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(timed_button)
+        box.exec()
+        clicked_button = box.clickedButton()
+        if clicked_button is cancel_button:
+            return
+        if clicked_button is until_done_button:
+            self.add_injection_complete_pause()
+            return
+
         duration_s, accepted = QInputDialog.getDouble(
             self,
             "Add Pause",
