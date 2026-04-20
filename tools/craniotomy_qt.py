@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -61,6 +62,8 @@ class InjectionMovementStep:
     dv_offset_mm: float
     duration_s: float
     overshoot_mm: float = 0.0
+    is_pause: bool = False
+    pause_until_injection_complete: bool = False
 
 
 class ProjectionWidget(QWidget):
@@ -462,12 +465,15 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_coords.setWordWrap(True)
         self.current_seed_coords.setProperty("role", "muted")
 
-        setup_layout.addWidget(QLabel("Current AP"), 0, 0)
-        setup_layout.addWidget(self.current_ap_label, 0, 1)
-        setup_layout.addWidget(QLabel("Current ML"), 0, 2)
-        setup_layout.addWidget(self.current_ml_label, 0, 3)
-        setup_layout.addWidget(QLabel("Current DV"), 0, 4)
-        setup_layout.addWidget(self.current_dv_label, 0, 5)
+        set_bregma_btn = QPushButton("Set Bregma")
+        set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        setup_layout.addWidget(set_bregma_btn, 0, 0)
+        setup_layout.addWidget(QLabel("Current AP"), 0, 1)
+        setup_layout.addWidget(self.current_ap_label, 0, 2)
+        setup_layout.addWidget(QLabel("Current ML"), 0, 3)
+        setup_layout.addWidget(self.current_ml_label, 0, 4)
+        setup_layout.addWidget(QLabel("Current DV"), 0, 5)
+        setup_layout.addWidget(self.current_dv_label, 0, 6)
 
         setup_layout.addWidget(QLabel("Mid AP"), 1, 0)
         setup_layout.addWidget(self.mid_ap, 1, 1)
@@ -531,7 +537,7 @@ class CraniotomyWindow(QMainWindow):
         self.unfreeze_draw_btn.toggled.connect(self.toggle_unfreeze_mode)
         self.clear_freeze_btn = QPushButton("Clear Freeze")
         self.clear_freeze_btn.clicked.connect(self.clear_frozen_points)
-        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 6)
+        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 7)
 
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
@@ -547,7 +553,7 @@ class CraniotomyWindow(QMainWindow):
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
         button_layout.addWidget(self.pause_round_btn, 3, 0)
         button_layout.addWidget(self.stop_drill_btn, 3, 1, 1, 2)
-        setup_layout.addLayout(button_layout, 6, 0, 1, 6)
+        setup_layout.addLayout(button_layout, 6, 0, 1, 7)
 
         views_box = QGroupBox()
         views_layout = QGridLayout(views_box)
@@ -615,13 +621,19 @@ class CraniotomyWindow(QMainWindow):
         self.inject_up_btn.clicked.connect(lambda: self.manual_syringe_step(up=True))
         self.inject_down_btn = QPushButton("Step Syringe Down (F4)")
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
+        inject_set_bregma_btn = QPushButton("Set Bregma")
+        inject_set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        test_blockage_btn = QPushButton("Test for Blockage")
+        test_blockage_btn.clicked.connect(self.test_for_blockage)
 
         status_layout.addWidget(QLabel("Current manual injection volume"), 0, 0)
-        status_layout.addWidget(self.manual_volume_label, 0, 1)
-        status_layout.addWidget(self.injection_rate_label, 1, 0, 1, 2)
-        status_layout.addWidget(self.manual_volume_combo, 2, 0, 1, 2)
-        status_layout.addWidget(self.inject_up_btn, 3, 0)
-        status_layout.addWidget(self.inject_down_btn, 3, 1)
+        status_layout.addWidget(self.manual_volume_label, 0, 1, 1, 3)
+        status_layout.addWidget(self.injection_rate_label, 1, 0, 1, 4)
+        status_layout.addWidget(self.manual_volume_combo, 2, 0, 1, 4)
+        status_layout.addWidget(inject_set_bregma_btn, 3, 0)
+        status_layout.addWidget(self.inject_up_btn, 3, 1)
+        status_layout.addWidget(self.inject_down_btn, 3, 2)
+        status_layout.addWidget(test_blockage_btn, 3, 3)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -631,10 +643,13 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(single_box)
 
         self.single_injection_volume_nl = self._spinbox(value=100, minimum=10, maximum=100000)
+        self.single_injection_volume_nl.editingFinished.connect(self.round_single_injection_volume_up)
         self.single_injection_time_s = self._double_spinbox(value=10.0, minimum=0.1, maximum=3600.0)
         self.single_injection_time_s.setDecimals(1)
         self.single_injection_volume_nl.valueChanged.connect(self.update_injection_rate_label)
         self.single_injection_time_s.valueChanged.connect(self.update_injection_rate_label)
+        self.block_test_volume_nl = self._spinbox(value=50, minimum=10, maximum=2000)
+        self.block_test_volume_nl.editingFinished.connect(self.round_test_volume_to_supported)
         self.injection_progress = QProgressBar()
         self.injection_progress.setRange(0, 100)
         self.injection_progress.setValue(0)
@@ -655,6 +670,8 @@ class CraniotomyWindow(QMainWindow):
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
         self.stop_injection_btn.style().polish(self.stop_injection_btn)
         self.stop_injection_btn.clicked.connect(self.stop_injection)
+        self.empty_syringe_btn = QPushButton("Empty Syringe")
+        self.empty_syringe_btn.clicked.connect(self.empty_syringe)
 
         self.movement_offset_mm = self._double_spinbox(value=0.2, minimum=-10.0, maximum=10.0)
         self.movement_offset_mm.setDecimals(3)
@@ -667,6 +684,10 @@ class CraniotomyWindow(QMainWindow):
         add_movement_btn.clicked.connect(self.add_movement_step)
         remove_movement_btn = QPushButton("Remove Selected Step")
         remove_movement_btn.clicked.connect(self.remove_selected_movement_step)
+        add_pause_btn = QPushButton("Add Pause")
+        add_pause_btn.clicked.connect(self.add_timed_movement_pause)
+        pause_until_done_btn = QPushButton("Pause Until Injection Complete")
+        pause_until_done_btn.clicked.connect(self.add_injection_complete_pause)
         single_layout.addWidget(QLabel("Volume (nl, rounded to 10)"), 0, 0)
         single_layout.addWidget(self.single_injection_volume_nl, 0, 1)
         single_layout.addWidget(QLabel("Time (s)"), 0, 2)
@@ -677,17 +698,22 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.movement_duration_s, 1, 3)
         single_layout.addWidget(QLabel("Overshoot (mm)"), 2, 0)
         single_layout.addWidget(self.movement_overshoot_mm, 2, 1)
-        single_layout.addWidget(add_movement_btn, 2, 2)
-        single_layout.addWidget(remove_movement_btn, 2, 3)
-        single_layout.addWidget(self.movement_steps_list, 3, 0, 1, 4)
-        single_layout.addWidget(self.injection_status_label, 4, 0, 1, 4)
-        single_layout.addWidget(QLabel("Overall sequence progress"), 5, 0)
-        single_layout.addWidget(self.injection_progress, 5, 1, 1, 3)
-        single_layout.addWidget(QLabel("Current injection/movement"), 6, 0)
-        single_layout.addWidget(self.injection_site_progress, 6, 1, 1, 3)
-        single_layout.addWidget(self.start_injection_btn, 7, 0)
-        single_layout.addWidget(self.pause_injection_btn, 7, 1)
-        single_layout.addWidget(self.stop_injection_btn, 7, 2)
+        single_layout.addWidget(QLabel("Test volume (nl)"), 2, 2)
+        single_layout.addWidget(self.block_test_volume_nl, 2, 3)
+        single_layout.addWidget(add_movement_btn, 3, 0)
+        single_layout.addWidget(remove_movement_btn, 3, 1)
+        single_layout.addWidget(add_pause_btn, 3, 2)
+        single_layout.addWidget(pause_until_done_btn, 3, 3)
+        single_layout.addWidget(self.movement_steps_list, 4, 0, 1, 4)
+        single_layout.addWidget(self.injection_status_label, 5, 0, 1, 4)
+        single_layout.addWidget(QLabel("Overall sequence progress"), 6, 0)
+        single_layout.addWidget(self.injection_progress, 6, 1, 1, 3)
+        single_layout.addWidget(QLabel("Current injection/movement"), 7, 0)
+        single_layout.addWidget(self.injection_site_progress, 7, 1, 1, 3)
+        single_layout.addWidget(self.start_injection_btn, 8, 0)
+        single_layout.addWidget(self.pause_injection_btn, 8, 1)
+        single_layout.addWidget(self.stop_injection_btn, 8, 2)
+        single_layout.addWidget(self.empty_syringe_btn, 8, 3)
 
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
@@ -702,13 +728,10 @@ class CraniotomyWindow(QMainWindow):
         remove_site_btn = QPushButton("Remove Selected Site")
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
         self.block_check = QCheckBox("Check blockage after each site")
-        self.block_test_volume_nl = self._spinbox(value=50, minimum=10, maximum=2000)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
         sites_layout.addWidget(self.block_check, 0, 2, 1, 2)
-        sites_layout.addWidget(QLabel("Test volume (nl)"), 1, 0)
-        sites_layout.addWidget(self.block_test_volume_nl, 1, 1)
-        sites_layout.addWidget(self.injection_sites_list, 2, 0, 1, 4)
+        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 4)
         layout.addStretch(1)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
@@ -851,6 +874,12 @@ class CraniotomyWindow(QMainWindow):
         duration_s = max(self.single_injection_time_s.value(), 0.1)
         self.injection_rate_label.setText(f"Current volume rate = {(volume_nl / duration_s) * 60.0:.1f} nl/min")
 
+    def round_single_injection_volume_up(self) -> None:
+        self.single_injection_volume_nl.setValue(self._rounded_single_injection_volume())
+
+    def round_test_volume_to_supported(self) -> None:
+        self.block_test_volume_nl.setValue(self._nearest_supported_injection_volume(self.block_test_volume_nl.value()))
+
     def on_manual_volume_combo_changed(self) -> None:
         value = self.manual_volume_combo.currentData()
         if value is not None:
@@ -874,8 +903,38 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
 
+    def test_for_blockage(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        try:
+            volume_nl = self._nearest_supported_injection_volume(self.block_test_volume_nl.value())
+            self.block_test_volume_nl.setValue(volume_nl)
+            self.controller.syringe_step(f"{volume_nl} nl", up=True)
+            self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
+        except Exception as exc:
+            QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def empty_syringe(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        try:
+            self.controller.empty_syringe()
+            self.injection_status_label.setText("Emptying syringe to 0")
+        except Exception as exc:
+            QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def set_current_location_to_bregma(self) -> None:
+        try:
+            self.controller.set_current_location_to_bregma()
+            self.set_status("Current location set to Bregma.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
     def _rounded_single_injection_volume(self) -> int:
-        return max(10, int(round(self.single_injection_volume_nl.value() / 10.0) * 10))
+        return max(10, int(math.ceil(self.single_injection_volume_nl.value() / 10.0) * 10))
+
+    def _nearest_supported_injection_volume(self, volume_nl: int) -> int:
+        return min(INJECTION_VOLUME_OPTIONS_NL, key=lambda option: (abs(option - volume_nl), option))
 
     def _injection_step_plan(self, volume_nl: int) -> list[int]:
         remaining = volume_nl
@@ -897,6 +956,34 @@ class CraniotomyWindow(QMainWindow):
         self.injection_movement_steps.append(step)
         self.refresh_movement_steps_list()
 
+    def add_timed_movement_pause(self) -> None:
+        duration_s, accepted = QInputDialog.getDouble(
+            self,
+            "Add Pause",
+            "Pause duration (s)",
+            self.movement_duration_s.value(),
+            0.1,
+            3600.0,
+            1,
+        )
+        if not accepted:
+            return
+        self.injection_movement_steps.append(
+            InjectionMovementStep(dv_offset_mm=0.0, duration_s=duration_s, is_pause=True)
+        )
+        self.refresh_movement_steps_list()
+
+    def add_injection_complete_pause(self) -> None:
+        self.injection_movement_steps.append(
+            InjectionMovementStep(
+                dv_offset_mm=0.0,
+                duration_s=0.0,
+                is_pause=True,
+                pause_until_injection_complete=True,
+            )
+        )
+        self.refresh_movement_steps_list()
+
     def remove_selected_movement_step(self) -> None:
         row = self.movement_steps_list.currentRow()
         if 0 <= row < len(self.injection_movement_steps):
@@ -906,6 +993,12 @@ class CraniotomyWindow(QMainWindow):
     def refresh_movement_steps_list(self) -> None:
         self.movement_steps_list.clear()
         for index, step in enumerate(self.injection_movement_steps, start=1):
+            if step.pause_until_injection_complete:
+                self.movement_steps_list.addItem(f"{index}. Pause until injection complete")
+                continue
+            if step.is_pause:
+                self.movement_steps_list.addItem(f"{index}. Pause for {step.duration_s:.1f}s")
+                continue
             overshoot = f", overshoot {step.overshoot_mm:.3f} mm" if step.overshoot_mm > 0 else ""
             self.movement_steps_list.addItem(
                 f"{index}. DV offset {step.dv_offset_mm:.3f} mm{overshoot} over {step.duration_s:.1f}s"
@@ -991,7 +1084,9 @@ class CraniotomyWindow(QMainWindow):
         self.injection_status_label.setText("Stopping injection")
 
     def _rounded_test_volume(self) -> int:
-        return max(10, int(round(self.block_test_volume_nl.value() / 10.0) * 10))
+        volume_nl = self._nearest_supported_injection_volume(self.block_test_volume_nl.value())
+        self.block_test_volume_nl.setValue(volume_nl)
+        return volume_nl
 
     def _run_injection_protocol(
         self,
@@ -1063,10 +1158,10 @@ class CraniotomyWindow(QMainWindow):
         site_index: int,
         site_count: int,
     ) -> None:
-        movement_total_s = sum(step.duration_s for step in movement_steps)
+        movement_total_s = self._movement_total_duration(movement_steps, injection_duration_s)
         protocol_duration_s = max(injection_duration_s, movement_total_s, 0.1)
         injection_events = self._scheduled_injection_events(injection_plan, injection_duration_s)
-        movement_targets = self._movement_targets(movement_steps, site.dv)
+        movement_targets = self._movement_targets(movement_steps, site.dv, injection_duration_s)
         delivered = 0
         event_index = 0
         start_time = time.monotonic()
@@ -1119,21 +1214,41 @@ class CraniotomyWindow(QMainWindow):
             events.append(((delivered / total_volume) * duration_s, step_nl))
         return events
 
+    def _movement_total_duration(self, steps: list[InjectionMovementStep], injection_duration_s: float) -> float:
+        elapsed = 0.0
+        for step in steps:
+            if step.pause_until_injection_complete:
+                elapsed = max(elapsed, injection_duration_s)
+            else:
+                elapsed += step.duration_s
+        return elapsed
+
     def _movement_targets(
         self,
         steps: list[InjectionMovementStep],
         surface_dv: float,
+        injection_duration_s: float,
     ) -> list[tuple[float, float]]:
         elapsed = 0.0
-        targets = [(0.0, surface_dv)]
+        current_dv = surface_dv
+        targets = [(0.0, current_dv)]
         for step in steps:
+            if step.pause_until_injection_complete:
+                elapsed = max(elapsed, injection_duration_s)
+                targets.append((elapsed, current_dv))
+                continue
+            if step.is_pause:
+                elapsed += step.duration_s
+                targets.append((elapsed, current_dv))
+                continue
             if step.overshoot_mm > 0:
                 elapsed += step.duration_s / 2.0
                 targets.append((elapsed, surface_dv + step.dv_offset_mm + step.overshoot_mm))
                 elapsed += step.duration_s / 2.0
             else:
                 elapsed += step.duration_s
-            targets.append((elapsed, surface_dv + step.dv_offset_mm))
+            current_dv = surface_dv + step.dv_offset_mm
+            targets.append((elapsed, current_dv))
         return targets
 
     def _interpolated_movement_dv(self, targets: list[tuple[float, float]], elapsed_s: float) -> float:

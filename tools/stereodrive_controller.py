@@ -37,9 +37,12 @@ BUTTON_ML_POSITIVE_ID = 1105
 BUTTON_DV_NEGATIVE_ID = 1106
 BUTTON_DV_POSITIVE_ID = 1107
 INJECTION_VOLUME_ID = 10001
+INJECTION_GOTO_TEXT_ID = 10004
+INJECTION_GOTO_BUTTON_ID = 10005
 SYRINGE_TYPE_ID = 10006
 SYRINGE_STEP_UP_ID = 10000
 SYRINGE_STEP_DOWN_ID = 10002
+SET_REFERENCE_BREGMA_COMMAND_ID = 1095
 INJECT_BUTTON_ID = 10018
 FILL_BUTTON_ID = 10032
 CLOSE_INJECTOMATE_ID = 10031
@@ -257,6 +260,16 @@ class StereoDriveController:
             self.syringe_step_up()
         else:
             self.syringe_step_down()
+
+    def empty_syringe(self) -> None:
+        self.show_injectomate()
+        hwnd = self._control_handle(INJECTION_GOTO_TEXT_ID)
+        self._set_text(hwnd, "0")
+        time.sleep(0.1)
+        self._click(INJECTION_GOTO_BUTTON_ID)
+
+    def set_current_location_to_bregma(self) -> None:
+        self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
 
     def fill_injectomate(self) -> None:
         self.show_injectomate()
