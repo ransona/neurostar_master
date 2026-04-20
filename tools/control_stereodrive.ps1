@@ -165,6 +165,9 @@ public static class StereoDriveWin32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
@@ -420,6 +423,15 @@ function Close-ScalePopup {
 
     [void][StereoDriveWin32]::PostMessage($Probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 200
+}
+
+function Move-ScalePopupOffscreen {
+    param([pscustomobject]$Probe)
+
+    $width = [Math]::Max(1, [int]$Probe.Window.Rect.Width)
+    $height = [Math]::Max(1, [int]$Probe.Window.Rect.Height)
+    [void][StereoDriveWin32]::SetWindowPos($Probe.Window.Handle, [IntPtr]::Zero, -32000, -32000, $width, $height, 0x0014)
+    Start-Sleep -Milliseconds 80
 }
 
 function Invoke-DirectCommand {
@@ -801,6 +813,11 @@ function Read-ScaleViaPopupApi {
             "handle=$($_.Handle) pid=$($_.ProcessId) class=$($_.ClassName) caption='$($_.Caption)' rect=($($_.Rect.Left),$($_.Rect.Top),$($_.Rect.Right),$($_.Rect.Bottom))"
         }) -join "; "
         throw "Scale popup/control 3242 was not found after opening calibrate. Visible windows: $windowSummary"
+    }
+    Move-ScalePopupOffscreen -Probe $probe
+    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 1500
+    if ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false) {
+        throw "Scale popup/control 3242 was found, moved offscreen, then could not be reacquired."
     }
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds(5000)
