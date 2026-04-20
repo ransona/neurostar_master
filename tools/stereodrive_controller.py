@@ -25,6 +25,8 @@ CURRENT_ML_ID = 1145
 CURRENT_DV_ID = 1146
 GOTO_ID = 1014
 STOP_ID = 1018
+GOTO_HOME_ID = 1540
+GOTO_WORK_ID = 1541
 SHOW_INJECTOMATE_COMMAND_ID = 32815
 REFERENCE_SELECTOR_ID = 1387
 STEP_AP_ID = 1132
@@ -270,6 +272,12 @@ class StereoDriveController:
 
     def set_current_location_to_bregma(self) -> None:
         self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
+
+    def goto_home(self) -> None:
+        self._click(GOTO_HOME_ID)
+
+    def goto_work(self) -> None:
+        self._click(GOTO_WORK_ID)
 
     def fill_injectomate(self) -> None:
         self.show_injectomate()

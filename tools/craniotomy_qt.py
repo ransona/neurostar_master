@@ -451,7 +451,13 @@ class CraniotomyWindow(QMainWindow):
         header_layout.setSpacing(8)
         set_bregma_btn = QPushButton("Set Bregma")
         set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        home_btn = QPushButton("Home")
+        home_btn.clicked.connect(self.goto_home)
+        work_btn = QPushButton("Work")
+        work_btn.clicked.connect(self.goto_work)
         header_layout.addWidget(set_bregma_btn)
+        header_layout.addWidget(home_btn)
+        header_layout.addWidget(work_btn)
         header_layout.addWidget(QLabel("Current AP"))
         header_layout.addWidget(self.current_ap_label)
         header_layout.addWidget(QLabel("Current ML"))
@@ -941,6 +947,20 @@ class CraniotomyWindow(QMainWindow):
         try:
             self.controller.set_current_location_to_bregma()
             self.set_status("Current location set to Bregma.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def goto_home(self) -> None:
+        try:
+            self.controller.goto_home()
+            self.set_status("Sent GoTo 'Home' command.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def goto_work(self) -> None:
+        try:
+            self.controller.goto_work()
+            self.set_status("Sent GoTo 'Work' command.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
