@@ -119,6 +119,9 @@ public static class StereoDriveWin32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
@@ -249,6 +252,7 @@ function Get-TopLevelWindows {
             Caption = Get-WindowCaption -Handle $hwnd
             Text = ""
             Rect = Get-WindowRectObject -Handle $hwnd
+            Visible = [StereoDriveWin32]::IsWindowVisible($hwnd)
         }) | Out-Null
         return $true
     }
@@ -370,15 +374,34 @@ function Get-NumericCandidatesFromControls {
 function Get-WindowTreeSnapshot {
     param(
         [IntPtr]$MainWindowHandle,
-        [int]$ProcessId
+        [int]$ProcessId,
+        [bool]$IncludeNearbyWindows = $false
     )
 
     $allWindows = @(
         Get-TopLevelWindows |
-            Where-Object { $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 }
+            Where-Object { $_.Visible -and $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 }
     )
     $processWindows = @($allWindows | Where-Object { $_.ProcessId -eq $ProcessId })
+    $mainWindow = $allWindows | Where-Object { $_.Handle -eq $MainWindowHandle } | Select-Object -First 1
     $candidateWindows = @($processWindows)
+    if ($IncludeNearbyWindows -and $mainWindow) {
+        $left = $mainWindow.Rect.Left - 80
+        $top = $mainWindow.Rect.Top - 80
+        $right = $mainWindow.Rect.Right + 160
+        $bottom = $mainWindow.Rect.Bottom + 160
+        $nearbyWindows = @(
+            $allWindows |
+                Where-Object {
+                    $_.ProcessId -ne $ProcessId -and
+                    $_.Rect.Right -ge $left -and
+                    $_.Rect.Left -le $right -and
+                    $_.Rect.Bottom -ge $top -and
+                    $_.Rect.Top -le $bottom
+                }
+        )
+        $candidateWindows = @($candidateWindows + $nearbyWindows | Sort-Object Handle -Unique)
+    }
 
     $windowTrees = @()
     $allRows = @()
@@ -397,11 +420,14 @@ function Get-WindowTreeSnapshot {
         }
     }
 
-    $mainChildren = @(Get-ChildControls -ParentHandle $MainWindowHandle)
-    $allRows += $mainChildren
+    $mainChildren = @()
+    if (-not ($candidateWindows | Where-Object { $_.Handle -eq $MainWindowHandle })) {
+        $mainChildren = @(Get-ChildControls -ParentHandle $MainWindowHandle)
+        $allRows += $mainChildren
+    }
 
     return [pscustomobject]@{
-        MainWindow = ($allWindows | Where-Object { $_.Handle -eq $MainWindowHandle } | Select-Object -First 1)
+        MainWindow = $mainWindow
         ProcessWindows = $processWindows
         CandidateWindows = $windowTrees
         MainChildren = $mainChildren
@@ -425,8 +451,8 @@ function Write-WindowTreeReport {
     }
 
     Write-Output ""
-    Write-Output ("Process windows: {0}" -f @($Snapshot.ProcessWindows).Count)
-    foreach ($window in @($Snapshot.ProcessWindows)) {
+    Write-Output ("Scanned windows: {0}" -f @($Snapshot.CandidateWindows).Count)
+    foreach ($window in @($Snapshot.CandidateWindows)) {
         Write-Output ("  handle={0} class={1} caption='{2}' rect=({3},{4},{5},{6})" -f `
             $window.Handle,
             $window.ClassName,
@@ -932,7 +958,8 @@ if ($Action -eq "scan-open-windows") {
     if ($DelaySeconds -gt 0) {
         Start-Sleep -Seconds $DelaySeconds
     }
-    $snapshot = Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId
+    $includeNearby = ($Value -eq "nearby" -or $Value -eq "popups")
+    $snapshot = Get-WindowTreeSnapshot -MainWindowHandle $mainHandle -ProcessId $mainProcessId -IncludeNearbyWindows $includeNearby
     if ($Value -eq "json") {
         $snapshot
     } else {
