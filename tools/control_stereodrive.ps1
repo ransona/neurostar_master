@@ -156,6 +156,15 @@ public static class StereoDriveWin32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetCursorPos(int X, int Y);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
@@ -349,6 +358,33 @@ function Invoke-ButtonClick {
     }
 
     Start-Sleep -Milliseconds 150
+}
+
+function Invoke-ControlMouseClick {
+    param(
+        [hashtable]$ControlMap,
+        [int]$ControlId,
+        [IntPtr]$MainWindowHandle
+    )
+
+    $control = $ControlMap[[string]$ControlId]
+    if (-not $control) {
+        throw "Control ID $ControlId was not found."
+    }
+    if (-not $control.Rect) {
+        throw "Control ID $ControlId has no rectangle."
+    }
+
+    $x = [int](($control.Rect.Left + $control.Rect.Right) / 2)
+    $y = [int](($control.Rect.Top + $control.Rect.Bottom) / 2)
+    [void][StereoDriveWin32]::SetForegroundWindow($MainWindowHandle)
+    Start-Sleep -Milliseconds 150
+    [void][StereoDriveWin32]::SetCursorPos($x, $y)
+    Start-Sleep -Milliseconds 80
+    [StereoDriveWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 40
+    [StereoDriveWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 350
 }
 
 function Invoke-DirectCommand {
@@ -724,7 +760,7 @@ function Read-ScaleViaPopupApi {
     )
 
     Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 5000
+    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 15000
     if ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false) {
         $windowSummary = @($probe.SeenWindows | ForEach-Object {
             "handle=$($_.Handle) pid=$($_.ProcessId) class=$($_.ClassName) caption='$($_.Caption)' rect=($($_.Rect.Left),$($_.Rect.Top),$($_.Rect.Right),$($_.Rect.Bottom))"
@@ -1364,7 +1400,12 @@ function Open-InjectomateCalibrate {
     Show-Injectomate -MainWindowHandle $MainWindowHandle
     $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
     Invoke-ButtonClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    Start-Sleep -Milliseconds 700
+    Start-Sleep -Milliseconds 500
+    $probe = Wait-ScaleControl -ProcessId $mainProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 1000
+    if (-not ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false)) {
+        return
+    }
+    Invoke-ControlMouseClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
 }
 
 function Get-InjectomateMap {
