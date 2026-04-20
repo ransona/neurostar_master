@@ -603,7 +603,7 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(status_box)
 
         self.manual_volume_label = QLabel()
-        self.injection_rate_label = QLabel("Current volume rate = -- nl/s")
+        self.injection_rate_label = QLabel("Current volume rate = -- nl/min")
         self.injection_rate_label.setProperty("role", "muted")
         self.manual_volume_combo = QComboBox()
         for volume in INJECTION_VOLUME_OPTIONS_NL:
@@ -844,7 +844,7 @@ class CraniotomyWindow(QMainWindow):
     def update_injection_rate_label(self) -> None:
         volume_nl = self._rounded_single_injection_volume()
         duration_s = max(self.single_injection_time_s.value(), 0.1)
-        self.injection_rate_label.setText(f"Current volume rate = {volume_nl / duration_s:.1f} nl/s")
+        self.injection_rate_label.setText(f"Current volume rate = {(volume_nl / duration_s) * 60.0:.1f} nl/min")
 
     def on_manual_volume_combo_changed(self) -> None:
         value = self.manual_volume_combo.currentData()
