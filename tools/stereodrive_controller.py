@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 WM_COMMAND = 0x0111
 WM_GETTEXT = 0x000D
@@ -85,6 +86,12 @@ class RECT(ctypes.Structure):
 
 user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
 user32.GetWindowRect.restype = ctypes.c_bool
+user32.GetDC.argtypes = [ctypes.c_void_p]
+user32.GetDC.restype = ctypes.c_void_p
+user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+user32.ReleaseDC.restype = ctypes.c_int
+gdi32.GetPixel.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+gdi32.GetPixel.restype = ctypes.c_uint32
 
 
 @dataclass
@@ -328,6 +335,9 @@ class StereoDriveController:
     def get_injection_plunger_position_nl(self) -> float | None:
         if not self.injectomate_visible():
             return None
+        visual_position = self._read_mmc_depth_gauge_position_nl()
+        if visual_position is not None:
+            return visual_position
         candidates = self.get_injection_numeric_readouts()
         if not candidates:
             return None
@@ -374,6 +384,47 @@ class StereoDriveController:
                     }
                 )
         return candidates
+
+    def _read_mmc_depth_gauge_position_nl(self) -> float | None:
+        gauge_controls = [
+            control
+            for control in self._child_controls()
+            if control.class_name == "AfxWnd140" and (control.text == "MMCDepth" or control.class_name == "MMCDepth")
+        ]
+        if not gauge_controls:
+            return None
+        gauge = max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
+        width = max(1, gauge.right - gauge.left)
+        height = max(1, gauge.bottom - gauge.top)
+        dc = user32.GetDC(gauge.hwnd)
+        if not dc:
+            return None
+        try:
+            x_start = max(0, int(width * 0.08))
+            x_end = min(width - 1, int(width * 0.42))
+            y_start = max(0, int(height * 0.02))
+            y_end = min(height - 1, int(height * 0.98))
+            blue_rows: list[int] = []
+            for y in range(y_start, y_end):
+                blue_hits = 0
+                for x in range(x_start, x_end):
+                    pixel = int(gdi32.GetPixel(dc, x, y))
+                    if pixel < 0:
+                        continue
+                    red = pixel & 0xFF
+                    green = (pixel >> 8) & 0xFF
+                    blue = (pixel >> 16) & 0xFF
+                    if blue > 130 and blue > red * 1.6 and blue > green * 1.3:
+                        blue_hits += 1
+                if blue_hits >= 2:
+                    blue_rows.append(y)
+            if not blue_rows:
+                return None
+            blue_bottom = max(blue_rows)
+            ratio = 1.0 - ((blue_bottom - y_start) / max(1, y_end - y_start))
+            return max(0.0, min(5000.0, ratio * 5000.0))
+        finally:
+            user32.ReleaseDC(gauge.hwnd, dc)
 
     def set_current_location_to_bregma(self) -> None:
         self._click(ACTIVE_DRILL_ID)
