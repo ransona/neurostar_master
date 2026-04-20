@@ -108,6 +108,13 @@ class StereoDriveController:
     def _refresh_main_window(self) -> None:
         self.main_hwnd = self._find_main_window()
 
+    def get_main_window_rect(self) -> tuple[int, int, int, int]:
+        self._refresh_main_window()
+        rect = RECT()
+        if not user32.GetWindowRect(self.main_hwnd, ctypes.byref(rect)):
+            raise StereoDriveError("Could not read StereoDrive window rectangle.")
+        return (rect.left, rect.top, max(1, rect.right - rect.left), max(1, rect.bottom - rect.top))
+
     def _find_main_window(self) -> int:
         matches: list[int] = []
 

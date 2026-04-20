@@ -1602,15 +1602,15 @@ class CraniotomyWindow(QMainWindow):
             return float(value)
         return None
 
-    def _capture_bottom_right_screen_image(self) -> QImage | None:
+    def _capture_stereodrive_bottom_right_image(self) -> QImage | None:
         screen = QApplication.primaryScreen()
         if screen is None:
             return None
-        geometry = screen.geometry()
-        width = max(1, int(geometry.width() * 0.20))
-        height = max(1, int(geometry.height() * 0.20))
-        left = geometry.x() + geometry.width() - width
-        top = geometry.y() + geometry.height() - height
+        window_left, window_top, window_width, window_height = self.controller.get_main_window_rect()
+        width = max(1, int(window_width * 0.20))
+        height = max(1, int(window_height * 0.20))
+        left = window_left + window_width - width
+        top = window_top + window_height - height
         pixmap = screen.grabWindow(0, left, top, width, height)
         if pixmap.isNull():
             return None
@@ -1630,9 +1630,9 @@ class CraniotomyWindow(QMainWindow):
 
     def save_plunger_debug_capture(self) -> None:
         try:
-            image = self._capture_bottom_right_screen_image()
+            image = self._capture_stereodrive_bottom_right_image()
             if image is None:
-                raise StereoDriveError("Could not capture bottom-right screen region.")
+                raise StereoDriveError("Could not capture bottom-right StereoDrive region.")
             filtered = self._blue_filtered_plunger_image(image)
             value = self._read_plunger_text_from_image(image)
             output_dir = Path(__file__).resolve().parent
@@ -1651,7 +1651,7 @@ class CraniotomyWindow(QMainWindow):
 
     def read_plunger_gauge_from_screen(self) -> float | None:
         try:
-            image = self._capture_bottom_right_screen_image()
+            image = self._capture_stereodrive_bottom_right_image()
             if image is None:
                 return None
             return self._read_plunger_text_from_image(image)
