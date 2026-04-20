@@ -789,6 +789,9 @@ function Scan-ProcessMemoryForValue {
     $address = [uint64]0
     $maxAddress = if ([IntPtr]::Size -eq 8) { [uint64]0x7FFFFFFF0000 } else { [uint64]0x7FFF0000 }
     $chunkSize = 1048576
+    $startTime = [DateTime]::UtcNow
+    $lastProgress = [DateTime]::UtcNow.AddSeconds(-10)
+    Write-Output ("Starting memory scan for {0}. Patterns: {1}" -f $Needle, (($patterns | ForEach-Object { $_.Name }) -join ", "))
     try {
         while ($address -lt $maxAddress -and $matches.Count -lt $MaxMatches) {
             $mbi = New-Object StereoDriveWin32+MEMORY_BASIC_INFORMATION
@@ -828,6 +831,15 @@ function Scan-ProcessMemoryForValue {
                     $actual = [int]$bytesRead.ToUInt64()
                     if ($ok -and $actual -gt 0) {
                         $bytesScanned += [uint64]$actual
+                        if ((([DateTime]::UtcNow - $lastProgress).TotalSeconds -ge 1.0)) {
+                            $elapsed = [Math]::Max(0.1, ([DateTime]::UtcNow - $startTime).TotalSeconds)
+                            $mb = [Math]::Round($bytesScanned / 1MB, 1)
+                            $rate = [Math]::Round(($bytesScanned / 1MB) / $elapsed, 1)
+                            $status = "{0} MB scanned, {1} regions, {2} matches, {3} MB/s" -f $mb, $readableRegionCount, $matches.Count, $rate
+                            Write-Progress -Activity "Scanning StereoDrive process memory" -Status $status -PercentComplete -1
+                            Write-Output ("progress: {0}" -f $status)
+                            $lastProgress = [DateTime]::UtcNow
+                        }
                         foreach ($pattern in $patterns) {
                             foreach ($hit in @(Find-BytePattern -Buffer $buffer -Length $actual -Pattern $pattern.Bytes)) {
                                 $matches += [pscustomobject]@{
@@ -856,6 +868,7 @@ function Scan-ProcessMemoryForValue {
             $address = $next
         }
     } finally {
+        Write-Progress -Activity "Scanning StereoDrive process memory" -Completed
         [void][StereoDriveWin32]::CloseHandle($processHandle)
     }
 
