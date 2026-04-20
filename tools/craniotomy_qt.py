@@ -430,23 +430,23 @@ class CraniotomyWindow(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #d4ded3;
-                border-radius: 10px;
-                margin-top: 8px;
+                border-radius: 7px;
+                margin-top: 4px;
                 background: rgba(255,255,255,0.92);
                 font-weight: 600;
-                padding-top: 8px;
+                padding-top: 4px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
+                left: 8px;
+                padding: 0 3px;
             }
             QPushButton {
                 border: none;
-                border-radius: 8px;
-                padding: 4px 8px;
+                border-radius: 6px;
+                padding: 1px 6px;
                 background: #dceae0;
-                min-height: 24px;
+                min-height: 17px;
             }
             QPushButton:hover {
                 background: #cfe3d6;
@@ -472,21 +472,21 @@ class CraniotomyWindow(QMainWindow):
                 border-radius: 8px;
                 font-size: 110%;
                 font-weight: 700;
-                padding: 4px 10px;
+                padding: 2px 8px;
             }
             QDoubleSpinBox, QSpinBox {
                 border: 1px solid #cfdbcf;
-                border-radius: 8px;
-                padding: 2px 4px;
+                border-radius: 6px;
+                padding: 1px 3px;
                 background: white;
-                min-height: 16px;
+                min-height: 14px;
             }
             """
         )
 
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 6, 8, 8)
+        layout.setSpacing(4)
 
         self.current_ap_label = QLabel("-")
         self.current_ml_label = QLabel("-")
@@ -497,7 +497,7 @@ class CraniotomyWindow(QMainWindow):
             label.setMinimumWidth(82)
 
         header_layout = QHBoxLayout()
-        header_layout.setSpacing(8)
+        header_layout.setSpacing(5)
         set_bregma_btn = QPushButton("Set Bregma")
         set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
         home_btn = QPushButton("Home")
@@ -527,14 +527,14 @@ class CraniotomyWindow(QMainWindow):
 
         craniotomy_tab = QWidget()
         content = QVBoxLayout(craniotomy_tab)
-        content.setSpacing(8)
+        content.setSpacing(4)
         self.tabs.addTab(craniotomy_tab, "Craniotomy")
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
-        setup_layout.setContentsMargins(10, 10, 10, 10)
+        setup_layout.setContentsMargins(7, 6, 7, 7)
         setup_layout.setHorizontalSpacing(8)
-        setup_layout.setVerticalSpacing(6)
+        setup_layout.setVerticalSpacing(3)
         content.addWidget(setup_box)
 
         self.mid_ap = self._double_spinbox()
@@ -619,7 +619,7 @@ class CraniotomyWindow(QMainWindow):
 
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
-        button_layout.setVerticalSpacing(6)
+        button_layout.setVerticalSpacing(3)
         button_layout.addWidget(generate_btn, 0, 0)
         button_layout.addWidget(clear_btn, 0, 1)
         button_layout.addWidget(stop_btn, 0, 2)
@@ -635,11 +635,11 @@ class CraniotomyWindow(QMainWindow):
 
         views_box = QGroupBox()
         views_layout = QGridLayout(views_box)
-        views_layout.setContentsMargins(10, 10, 10, 10)
+        views_layout.setContentsMargins(7, 6, 7, 7)
         content.addWidget(views_box, 1)
 
         views_header = QHBoxLayout()
-        views_header.setSpacing(8)
+        views_header.setSpacing(5)
         views_title = QLabel("Trajectory View")
         views_title.setProperty("role", "muted")
         self.move_speed_label = QLabel()
@@ -655,7 +655,7 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 1, 0)
         legend_layout = QVBoxLayout()
-        legend_layout.setSpacing(6)
+        legend_layout.setSpacing(3)
         self.depth_legend = DepthLegendWidget()
         self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         legend_layout.addWidget(self.depth_legend, 0, Qt.AlignTop)
@@ -676,11 +676,11 @@ class CraniotomyWindow(QMainWindow):
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
         outer_layout = QHBoxLayout(injection_tab)
-        outer_layout.setContentsMargins(10, 10, 10, 10)
-        outer_layout.setSpacing(10)
+        outer_layout.setContentsMargins(7, 6, 7, 7)
+        outer_layout.setSpacing(6)
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         outer_layout.addLayout(layout, 1)
         self.plunger_gauge = PlungerGaugeWidget()
         outer_layout.addWidget(self.plunger_gauge, 0, Qt.AlignTop)
@@ -688,9 +688,9 @@ class CraniotomyWindow(QMainWindow):
 
         status_box = QGroupBox("Manual Control")
         status_layout = QGridLayout(status_box)
-        status_layout.setContentsMargins(10, 10, 10, 10)
+        status_layout.setContentsMargins(7, 6, 7, 7)
         status_layout.setHorizontalSpacing(8)
-        status_layout.setVerticalSpacing(6)
+        status_layout.setVerticalSpacing(3)
         layout.addWidget(status_box)
 
         self.manual_volume_label = QLabel()
@@ -718,9 +718,9 @@ class CraniotomyWindow(QMainWindow):
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
-        single_layout.setContentsMargins(10, 10, 10, 10)
+        single_layout.setContentsMargins(7, 6, 7, 7)
         single_layout.setHorizontalSpacing(8)
-        single_layout.setVerticalSpacing(6)
+        single_layout.setVerticalSpacing(3)
         layout.addWidget(single_box)
 
         self.single_injection_volume_nl = self._spinbox(value=100, minimum=10, maximum=100000)
@@ -795,9 +795,9 @@ class CraniotomyWindow(QMainWindow):
 
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
-        sites_layout.setContentsMargins(10, 10, 10, 10)
+        sites_layout.setContentsMargins(7, 6, 7, 7)
         sites_layout.setHorizontalSpacing(8)
-        sites_layout.setVerticalSpacing(6)
+        sites_layout.setVerticalSpacing(3)
         layout.addWidget(sites_box)
 
         self.injection_sites_list = QListWidget()
