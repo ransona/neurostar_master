@@ -425,22 +425,22 @@ class StereoDriveController:
         self.show_injectomate()
         self._click(INJECT_BUTTON_ID)
 
-    def syringe_step_up(self) -> None:
+    def syringe_step_up(self, stop_requested=None) -> None:
         self.show_injectomate()
         self._click(SYRINGE_STEP_UP_ID)
-        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_UP_ID)
+        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_UP_ID, stop_requested=stop_requested)
 
-    def syringe_step_down(self) -> None:
+    def syringe_step_down(self, stop_requested=None) -> None:
         self.show_injectomate()
         self._click(SYRINGE_STEP_DOWN_ID)
-        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_DOWN_ID)
+        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_DOWN_ID, stop_requested=stop_requested)
 
-    def syringe_step(self, volume_label: str, up: bool = True) -> None:
+    def syringe_step(self, volume_label: str, up: bool = True, stop_requested=None) -> None:
         self.set_injection_volume(volume_label)
         if up:
-            self.syringe_step_up()
+            self.syringe_step_up(stop_requested=stop_requested)
         else:
-            self.syringe_step_down()
+            self.syringe_step_down(stop_requested=stop_requested)
 
     def empty_syringe(self) -> None:
         self.show_injectomate()
@@ -466,11 +466,14 @@ class StereoDriveController:
         trigger_control_id: int | None = None,
         timeout_seconds: float = 90.0,
         poll_seconds: float = 0.02,
+        stop_requested=None,
     ) -> None:
         deadline = time.monotonic() + timeout_seconds
         saw_busy = False
         stable_since: float | None = None
         while time.monotonic() < deadline:
+            if stop_requested is not None and stop_requested():
+                raise StereoDriveError("Injectomate syringe motion wait stopped.")
             status_busy = bool(self._injectomate_motion_status_text())
             disabled_busy = False
             if trigger_control_id is not None:

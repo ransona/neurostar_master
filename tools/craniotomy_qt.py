@@ -1482,6 +1482,9 @@ class CraniotomyWindow(QMainWindow):
             else:
                 self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
+            if self.injection_stop_requested.is_set():
+                self.injection_finished_signal.emit("Injection stopped")
+                return
             message = str(exc)
             if "Maximum movement" in message or "limit" in message:
                 self.syringe_limit_warning_signal.emit(message)
@@ -1513,7 +1516,11 @@ class CraniotomyWindow(QMainWindow):
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
                 step_nl = injection_events[event_index][1]
                 self.ensure_syringe_move_allowed(step_nl, True)
-                self.controller.syringe_step(f"{step_nl} nl", up=True)
+                self.controller.syringe_step(
+                    f"{step_nl} nl",
+                    up=True,
+                    stop_requested=self.injection_stop_requested.is_set,
+                )
                 self.track_injection_delivery(step_nl)
                 delivered += step_nl
                 event_index += 1
@@ -1632,7 +1639,11 @@ class CraniotomyWindow(QMainWindow):
                 return
             self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
             self.ensure_syringe_move_allowed(step_nl, True)
-            self.controller.syringe_step(f"{step_nl} nl", up=True)
+            self.controller.syringe_step(
+                f"{step_nl} nl",
+                up=True,
+                stop_requested=self.injection_stop_requested.is_set,
+            )
             self.track_injection_delivery(step_nl)
         self.block_prompt_event = threading.Event()
         self.block_prompt_continue = True
