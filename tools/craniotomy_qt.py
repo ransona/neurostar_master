@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -909,6 +910,20 @@ class CraniotomyWindow(QMainWindow):
         self.stop_injection_btn.style().polish(self.stop_injection_btn)
         self.stop_injection_btn.clicked.connect(self.stop_injection)
         self.sequence_steps_list = QListWidget()
+        self.sequence_steps_list.setSpacing(0)
+        self.sequence_steps_list.setUniformItemSizes(True)
+        self.sequence_steps_list.setStyleSheet(
+            """
+            QListWidget {
+                font-size: 8pt;
+            }
+            QListWidget::item {
+                margin: 0px;
+                padding: 0px 2px;
+                min-height: 14px;
+            }
+            """
+        )
         single_layout.addWidget(QLabel("Main injection volume (nl)"), 0, 0)
         single_layout.addWidget(self.single_injection_volume_nl, 0, 1)
         single_layout.addWidget(QLabel("Injection rate (nl/min)"), 0, 2)
@@ -1404,7 +1419,9 @@ class CraniotomyWindow(QMainWindow):
         if self.block_check.isChecked():
             steps.append("Run the blockage test from 1.000 mm above the injection site target depth.")
         for index, text in enumerate(steps, start=1):
-            self.sequence_steps_list.addItem(f"{index}. {text}")
+            item = QListWidgetItem(f"{index}. {text}")
+            item.setSizeHint(QSize(0, 15))
+            self.sequence_steps_list.addItem(item)
 
     def add_injection_site(self) -> None:
         try:
