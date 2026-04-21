@@ -165,9 +165,6 @@ public static class StereoDriveWin32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
@@ -426,18 +423,6 @@ function Close-ScalePopup {
 
     [void][StereoDriveWin32]::PostMessage($Probe.Window.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 200
-}
-
-function Move-ScalePopupOffscreen {
-    param([pscustomobject]$Probe)
-
-    $window = if ($Probe.PSObject.Properties["Window"]) { $Probe.Window } else { $Probe }
-    if (-not $window -or $window.Handle -eq [IntPtr]::Zero) {
-        return
-    }
-
-    # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE keeps the dialog alive but gets it out of view.
-    [void][StereoDriveWin32]::SetWindowPos($window.Handle, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x0015)
 }
 
 function Invoke-DirectCommand {
@@ -906,7 +891,6 @@ function Read-ScaleViaPopupApi {
         $popupWindow = Wait-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 3000
     }
     if ($popupWindow) {
-        Move-ScalePopupOffscreen -Probe $popupWindow
         $probe = $null
         $deadline = [DateTime]::UtcNow.AddMilliseconds(3000)
         do {
@@ -929,7 +913,6 @@ function Read-ScaleViaPopupApi {
         }) -join "; "
         throw "Scale popup/control 3242 was not found after opening calibrate. Visible windows: $windowSummary"
     }
-    Move-ScalePopupOffscreen -Probe $probe
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds(5000)
     $lastText = ""

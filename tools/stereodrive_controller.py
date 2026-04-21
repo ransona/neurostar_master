@@ -12,9 +12,6 @@ WM_GETTEXTLENGTH = 0x000E
 WM_SETTEXT = 0x000C
 WM_CLOSE = 0x0010
 BM_CLICK = 0x00F5
-SWP_NOSIZE = 0x0001
-SWP_NOZORDER = 0x0004
-SWP_NOACTIVATE = 0x0010
 CB_GETCOUNT = 0x0146
 CB_GETCURSEL = 0x0147
 CB_GETLBTEXT = 0x0148
@@ -82,16 +79,6 @@ user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
 user32.SendMessageW.restype = ctypes.c_ssize_t
 user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 user32.PostMessageW.restype = ctypes.c_bool
-user32.SetWindowPos.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_void_p,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_int,
-    ctypes.c_uint,
-]
-user32.SetWindowPos.restype = ctypes.c_bool
 
 
 class RECT(ctypes.Structure):
@@ -538,17 +525,6 @@ class StereoDriveController:
         self._click(CALIBRATE_INJECTOMATE_ID)
         time.sleep(0.2)
 
-    def _move_window_offscreen(self, hwnd: int) -> None:
-        user32.SetWindowPos(
-            hwnd,
-            0,
-            -32000,
-            -32000,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        )
-
     def _find_injectomate_calibrate_window(self, timeout_seconds: float = 5.0) -> int:
         deadline = time.monotonic() + timeout_seconds
         wanted_pid = self._window_process_id(self.main_hwnd)
@@ -578,7 +554,6 @@ class StereoDriveController:
         except StereoDriveError:
             self._post_command(CALIBRATE_INJECTOMATE_ID)
             popup_hwnd = self._find_injectomate_calibrate_window()
-        self._move_window_offscreen(popup_hwnd)
         deadline = time.monotonic() + 5.0
         last_text = ""
         value_hwnd = 0
