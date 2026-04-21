@@ -1501,7 +1501,7 @@ function Invoke-PopupMenuItem {
         [string]$Label
     )
 
-    Invoke-ButtonClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    Invoke-ButtonPostClick -ControlMap $controlMap -ControlId 1010 -MainWindowHandle $MainWindowHandle -PostClickDelayMilliseconds 250
     Start-Sleep -Milliseconds 250
 
     $popup = Get-PopupMenuWindow -ProcessId $ProcessId
@@ -1767,8 +1767,7 @@ function Get-ToolsMenuDiagnostic {
     )
 
     $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
-    Invoke-ButtonClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    Start-Sleep -Milliseconds 250
+    Invoke-ButtonPostClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -PostClickDelayMilliseconds 250
     $popup = Get-PopupMenuWindow -ProcessId $ProcessId
     if (-not $popup) {
         return [pscustomobject]@{
@@ -1794,8 +1793,7 @@ function Invoke-SyncMenuDiagnosticOpen {
     )
 
     $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
-    Invoke-ButtonClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    Start-Sleep -Milliseconds 250
+    Invoke-ButtonPostClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -PostClickDelayMilliseconds 250
     $popup = Get-PopupMenuWindow -ProcessId $ProcessId
     if (-not $popup) {
         throw "Tools popup window was not found."
