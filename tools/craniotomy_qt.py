@@ -146,9 +146,8 @@ class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
     unfreeze_drawn = Signal(int)
 
-    def __init__(self, title: str, x_label: str, y_label: str, invert_y: bool = False, parent: QWidget | None = None):
+    def __init__(self, x_label: str, y_label: str, invert_y: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
-        self.title = title
         self.x_label = x_label
         self.y_label = y_label
         self.invert_y = invert_y
@@ -240,7 +239,7 @@ class ProjectionWidget(QWidget):
         painter.fillRect(self.rect(), QColor("#fbfcfa"))
 
         pad = 24
-        available_rect = self.rect().adjusted(pad, pad + 20, -pad, -pad)
+        available_rect = self.rect().adjusted(pad, pad, -pad, -pad)
         side = min(available_rect.width(), available_rect.height())
         draw_rect = QRectF(
             available_rect.left() + (available_rect.width() - side) / 2.0,
@@ -252,9 +251,6 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
-
-        painter.setPen(QColor("#496052"))
-        painter.drawText(16, 20, self.title)
 
         if not self.trajectory and not self.seed_points:
             painter.setPen(QColor("#8b9a8d"))
@@ -806,20 +802,12 @@ class CraniotomyWindow(QMainWindow):
         views_layout.setContentsMargins(7, 6, 7, 7)
         content.addWidget(views_box, 1)
 
-        views_header = QHBoxLayout()
-        views_header.setSpacing(5)
-        views_title = QLabel("Trajectory View")
-        views_title.setProperty("role", "muted")
-        views_header.addWidget(views_title)
-        views_header.addStretch(1)
-        views_layout.addLayout(views_header, 0, 0, 1, 2)
-
-        self.top_view = ProjectionWidget("Trajectory View", "ML", "AP")
+        self.top_view = ProjectionWidget("ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
-        views_layout.addWidget(self.top_view, 1, 0)
+        views_layout.addWidget(self.top_view, 0, 0)
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(3)
         self.depth_legend = DepthLegendWidget()
@@ -835,7 +823,7 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addWidget(self.round_remaining_label)
         legend_layout.addWidget(self.round_percent_label)
         legend_layout.addStretch(1)
-        views_layout.addLayout(legend_layout, 1, 1)
+        views_layout.addLayout(legend_layout, 0, 1)
         self.update_move_speed_label()
         self._build_injection_tab()
 
