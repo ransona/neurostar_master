@@ -749,7 +749,7 @@ function Wait-ScalePopupWindow {
         if ($window) {
             return $window
         }
-        Start-Sleep -Milliseconds 25
+        Start-Sleep -Milliseconds 1
     } while ([DateTime]::UtcNow -lt $deadline)
 
     return $null
@@ -914,7 +914,7 @@ function Read-ScaleViaPopupApi {
             if ($probe) {
                 break
             }
-            Start-Sleep -Milliseconds 50
+            Start-Sleep -Milliseconds 1
         } while ([DateTime]::UtcNow -lt $deadline)
     } else {
         $probe = $null
@@ -947,7 +947,7 @@ function Read-ScaleViaPopupApi {
                 Rect = $probe.Control.Rect
             }
         }
-        Start-Sleep -Milliseconds 100
+        Start-Sleep -Milliseconds 1
     } while ([DateTime]::UtcNow -lt $deadline)
 
     Close-ScalePopup -Probe $probe

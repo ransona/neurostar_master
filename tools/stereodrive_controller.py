@@ -565,7 +565,7 @@ class StereoDriveController:
                     return window.hwnd
                 if self._child_control_handle(window.hwnd, CALIBRATE_SCALE_VALUE_ID):
                     return window.hwnd
-            time.sleep(0.025)
+            time.sleep(0.001)
         preview = ", ".join(dict.fromkeys(seen_windows[:8]))
         suffix = f" Seen windows: {preview}" if preview else ""
         raise StereoDriveError(f"Injectomate calibrate scale popup was not found.{suffix}")
@@ -586,12 +586,12 @@ class StereoDriveController:
             while time.monotonic() < deadline:
                 value_hwnd = self._child_control_handle(popup_hwnd, CALIBRATE_SCALE_VALUE_ID) or 0
                 if not value_hwnd:
-                    time.sleep(0.1)
+                    time.sleep(0.001)
                     continue
                 last_text = self._get_text(value_hwnd)
                 if re.fullmatch(r"-?\d+(?:\.\d+)?", last_text.replace(",", "")):
                     return float(last_text.replace(",", ""))
-                time.sleep(0.1)
+                time.sleep(0.001)
             popup_rect = self._window_rect_tuple(popup_hwnd)
             if not value_hwnd:
                 raise StereoDriveError(
