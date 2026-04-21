@@ -434,6 +434,7 @@ class CraniotomyWindow(QMainWindow):
     injection_progress_signal = Signal(int, str)
     injection_site_progress_signal = Signal(int)
     injection_finished_signal = Signal(str)
+    syringe_position_signal = Signal(object)
     block_prompt_signal = Signal()
 
     def __init__(self) -> None:
@@ -456,6 +457,8 @@ class CraniotomyWindow(QMainWindow):
         self.active_depth_ratio: float | None = None
         self.active_drill_depth_mm: float | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
+        self.syringe_position_nl: float | None = None
+        self.syringe_position_lock = threading.Lock()
         self.injection_sites: list[InjectionSite] = []
         self.injection_movement_steps: list[InjectionMovementStep] = []
         self.injection_thread: threading.Thread | None = None
@@ -472,10 +475,12 @@ class CraniotomyWindow(QMainWindow):
         self.injection_progress_signal.connect(self.set_injection_progress)
         self.injection_site_progress_signal.connect(self.set_injection_site_progress)
         self.injection_finished_signal.connect(self.finish_injection)
+        self.syringe_position_signal.connect(self.set_syringe_position)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
+        QTimer.singleShot(250, self.update_syringe_position_from_scale)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
         self.refresh_timer.start(50)
@@ -764,6 +769,8 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(status_box)
 
         self.manual_volume_label = QLabel()
+        self.syringe_position_label = QLabel("Syringe position = -- nl")
+        self.syringe_position_label.setProperty("role", "muted")
         self.injection_rate_label = QLabel("Current volume rate = -- nl/min")
         self.injection_rate_label.setProperty("role", "muted")
         self.manual_volume_combo = QComboBox()
@@ -775,25 +782,23 @@ class CraniotomyWindow(QMainWindow):
         self.inject_up_btn.clicked.connect(lambda: self.manual_syringe_step(up=True))
         self.inject_down_btn = QPushButton("Step Syringe Down (F4)")
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
+        self.empty_syringe_btn = QPushButton("Empty Syringe")
+        self.empty_syringe_btn.clicked.connect(self.empty_syringe)
+        update_syringe_position_btn = QPushButton("Update Syringe Position")
+        update_syringe_position_btn.clicked.connect(self.update_syringe_position_from_scale)
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
-        read_scale_btn = QPushButton("Read Scale")
-        read_scale_btn.clicked.connect(self.read_injectomate_scale)
-        debug_plunger_btn = QPushButton("Debug Plunger Capture")
-        debug_plunger_btn.clicked.connect(self.save_plunger_debug_capture)
-        debug_calibrate_btn = QPushButton("Debug Calibrate Dialog")
-        debug_calibrate_btn.clicked.connect(self.save_calibrate_dialog_debug)
 
-        status_layout.addWidget(QLabel("Current manual injection volume"), 0, 0)
-        status_layout.addWidget(self.manual_volume_label, 0, 1, 1, 3)
-        status_layout.addWidget(self.injection_rate_label, 1, 0, 1, 4)
-        status_layout.addWidget(self.manual_volume_combo, 2, 0, 1, 4)
-        status_layout.addWidget(self.inject_up_btn, 3, 0)
-        status_layout.addWidget(self.inject_down_btn, 3, 1)
-        status_layout.addWidget(test_blockage_btn, 3, 2, 1, 2)
-        status_layout.addWidget(read_scale_btn, 4, 0, 1, 4)
-        status_layout.addWidget(debug_plunger_btn, 5, 0, 1, 4)
-        status_layout.addWidget(debug_calibrate_btn, 6, 0, 1, 4)
+        status_layout.addWidget(self.syringe_position_label, 0, 0, 1, 4)
+        status_layout.addWidget(QLabel("Current manual injection volume"), 1, 0)
+        status_layout.addWidget(self.manual_volume_label, 1, 1, 1, 3)
+        status_layout.addWidget(self.injection_rate_label, 2, 0, 1, 4)
+        status_layout.addWidget(self.manual_volume_combo, 3, 0, 1, 4)
+        status_layout.addWidget(self.inject_up_btn, 4, 0)
+        status_layout.addWidget(self.inject_down_btn, 4, 1)
+        status_layout.addWidget(self.empty_syringe_btn, 4, 2)
+        status_layout.addWidget(update_syringe_position_btn, 4, 3)
+        status_layout.addWidget(test_blockage_btn, 5, 0, 1, 4)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -829,9 +834,6 @@ class CraniotomyWindow(QMainWindow):
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
         self.stop_injection_btn.style().polish(self.stop_injection_btn)
         self.stop_injection_btn.clicked.connect(self.stop_injection)
-        self.empty_syringe_btn = QPushButton("Empty Syringe")
-        self.empty_syringe_btn.clicked.connect(self.empty_syringe)
-
         self.movement_offset_mm = self._number_edit(0.2)
         self.movement_overshoot_mm = self._number_edit(0.0)
         self.movement_duration_s = self._number_edit(60.0)
@@ -865,8 +867,7 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.injection_site_progress, 7, 1, 1, 3)
         single_layout.addWidget(self.start_injection_btn, 8, 0)
         single_layout.addWidget(self.pause_injection_btn, 8, 1)
-        single_layout.addWidget(self.stop_injection_btn, 8, 2)
-        single_layout.addWidget(self.empty_syringe_btn, 8, 3)
+        single_layout.addWidget(self.stop_injection_btn, 8, 2, 1, 2)
 
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
@@ -1081,20 +1082,61 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl", up=up)
+            self.adjust_tracked_syringe_position(self.manual_injection_volume_nl if up else -self.manual_injection_volume_nl)
             direction = "up" if up else "down"
             self.set_status(f"Syringe step {direction}: {self.manual_injection_volume_nl} nl")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
 
-    def read_injectomate_scale(self) -> None:
+    def set_syringe_position(self, value_nl: object) -> None:
+        with self.syringe_position_lock:
+            if value_nl is None:
+                self.syringe_position_nl = None
+            else:
+                self.syringe_position_nl = max(0.0, float(value_nl))
+            position_nl = self.syringe_position_nl
+        if position_nl is None:
+            self.syringe_position_label.setText("Syringe position = -- nl")
+            self.plunger_gauge.set_position(None)
+        else:
+            self.syringe_position_label.setText(f"Syringe position = {position_nl:.1f} nl")
+            self.plunger_gauge.set_position(position_nl)
+
+    def adjust_tracked_syringe_position(self, delta_nl: float) -> None:
+        with self.syringe_position_lock:
+            if self.syringe_position_nl is None:
+                return
+            self.syringe_position_nl = max(0.0, self.syringe_position_nl + delta_nl)
+            position_nl = self.syringe_position_nl
+        self.syringe_position_signal.emit(position_nl)
+
+    def update_syringe_position_from_scale(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
-        try:
-            value_nl = self.controller.read_injectomate_calibrate_scale_nl()
-            self.plunger_gauge.set_position(value_nl)
-            self.set_status(f"Injectomate scale: {value_nl:.3f} nl")
-        except Exception as exc:
-            QMessageBox.critical(self, "Read Scale", str(exc))
+
+        def worker() -> None:
+            try:
+                value_nl = self.controller.read_injectomate_calibrate_scale_nl()
+                self.syringe_position_signal.emit(value_nl)
+                self.status_signal.emit(f"Syringe position updated from scale: {value_nl:.3f} nl")
+            except Exception as exc:
+                self.status_signal.emit(f"Syringe position update failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def read_injectomate_scale(self) -> None:
+        self.update_syringe_position_from_scale()
+
+    def sync_syringe_position_before_injection(self) -> None:
+        value_nl = self.controller.read_injectomate_calibrate_scale_nl()
+        self.set_syringe_position(value_nl)
+        self.set_status(f"Syringe position checked: {value_nl:.3f} nl")
+
+    def track_injection_delivery(self, volume_nl: int) -> None:
+        self.adjust_tracked_syringe_position(volume_nl)
+
+    def track_syringe_empty(self) -> None:
+        self.set_syringe_position(0.0)
 
     def test_for_blockage(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
@@ -1103,6 +1145,7 @@ class CraniotomyWindow(QMainWindow):
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
             self.controller.syringe_step(f"{volume_nl} nl", up=True)
+            self.track_injection_delivery(volume_nl)
             self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
@@ -1112,6 +1155,7 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             self.controller.empty_syringe()
+            self.track_syringe_empty()
             self.injection_status_label.setText("Emptying syringe to 0")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
@@ -1266,6 +1310,7 @@ class CraniotomyWindow(QMainWindow):
             movement_steps = list(self.injection_movement_steps)
             if not injection_plan and not movement_steps:
                 return
+            self.sync_syringe_position_before_injection()
             self.injection_pause_requested.clear()
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
@@ -1397,6 +1442,7 @@ class CraniotomyWindow(QMainWindow):
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
                 step_nl = injection_events[event_index][1]
                 self.controller.syringe_step(f"{step_nl} nl", up=True)
+                self.track_injection_delivery(step_nl)
                 delivered += step_nl
                 event_index += 1
             if movement_targets and elapsed - last_move_at >= 0.05:
@@ -1514,6 +1560,7 @@ class CraniotomyWindow(QMainWindow):
                 return
             self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
             self.controller.syringe_step(f"{step_nl} nl", up=True)
+            self.track_injection_delivery(step_nl)
         self.block_prompt_event = threading.Event()
         self.block_prompt_continue = True
         self.block_prompt_signal.emit()
@@ -1870,8 +1917,6 @@ class CraniotomyWindow(QMainWindow):
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
-            if hasattr(self, "plunger_gauge"):
-                self.plunger_gauge.set_position(self.read_plunger_gauge_from_screen())
             if self.seeds:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
