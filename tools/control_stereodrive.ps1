@@ -32,6 +32,7 @@ param(
         "close-injectomate",
         "dump-tools-menu",
         "read-open-tools-menu",
+        "open-sync-via-tools",
         "diagnose-sync-panel",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
@@ -2052,6 +2053,33 @@ if ($Action -eq "diagnose-sync-panel") {
         SyncMenuError = $menuSelectError
         DirectCommand32809Error = $directCommandError
         States = $states
+    }
+    return
+}
+
+if ($Action -eq "open-sync-via-tools") {
+    $initial = Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "initial"
+    if ($initial.ReferencePanelVisible) {
+        [pscustomobject]@{
+            MainHandle = $mainHandle
+            ProcessId = $mainProcessId
+            AlreadyOpen = $true
+            MenuSelected = $null
+            ReferencePanelVisible = $true
+            State = $initial
+        }
+        return
+    }
+
+    $selected = Invoke-SyncMenuDiagnosticOpen -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ClickMode $ClickMode
+    $state = Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "after-open-sync-via-tools"
+    [pscustomobject]@{
+        MainHandle = $mainHandle
+        ProcessId = $mainProcessId
+        AlreadyOpen = $false
+        MenuSelected = $selected
+        ReferencePanelVisible = $state.ReferencePanelVisible
+        State = $state
     }
     return
 }
