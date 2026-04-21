@@ -14,6 +14,8 @@ WM_CLOSE = 0x0010
 MN_GETHMENU = 0x01E1
 MF_BYPOSITION = 0x00000400
 BM_CLICK = 0x00F5
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 CB_GETCOUNT = 0x0146
 CB_GETCURSEL = 0x0147
 CB_GETLBTEXT = 0x0148
@@ -97,6 +99,12 @@ user32.GetMenuStringW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar
 user32.GetMenuStringW.restype = ctypes.c_int
 user32.GetMenuItemID.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.GetMenuItemID.restype = ctypes.c_uint
+user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+user32.SetForegroundWindow.restype = ctypes.c_bool
+user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+user32.SetCursorPos.restype = ctypes.c_bool
+user32.mouse_event.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+user32.mouse_event.restype = None
 
 
 class RECT(ctypes.Structure):
@@ -451,7 +459,22 @@ class StereoDriveController:
 
     def _invoke_tools_menu_item(self, wanted_label: str) -> None:
         self._click(TOOLS_BUTTON_ID)
-        popup_hwnd = self._popup_menu_window()
+        try:
+            popup_hwnd = self._popup_menu_window(timeout_seconds=0.35)
+        except StereoDriveError:
+            tools_hwnd = self._control_handle(TOOLS_BUTTON_ID, timeout_seconds=0.5, poll_seconds=0.05)
+            rect = self._window_rect_tuple(tools_hwnd)
+            if rect is None:
+                raise
+            left, top, right, bottom = rect
+            user32.SetForegroundWindow(self.main_hwnd)
+            time.sleep(0.15)
+            user32.SetCursorPos(int((left + right) / 2), int((top + bottom) / 2))
+            time.sleep(0.08)
+            user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, None)
+            time.sleep(0.03)
+            user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, None)
+            popup_hwnd = self._popup_menu_window(timeout_seconds=1.0)
         menu_handle = self._popup_menu_handle(popup_hwnd)
         item_id = self._find_popup_menu_item_id(menu_handle, wanted_label)
         if item_id is None:
