@@ -33,6 +33,7 @@ param(
         "dump-tools-menu",
         "read-open-tools-menu",
         "open-sync-via-tools",
+        "open-sync-direct-command",
         "diagnose-sync-panel",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
@@ -2094,6 +2095,23 @@ if ($Action -eq "open-sync-via-tools") {
         MenuSelected = $selected
         ReferencePanelVisible = $state.ReferencePanelVisible
         State = $state
+    }
+    return
+}
+
+if ($Action -eq "open-sync-direct-command") {
+    $before = Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "before-direct-32809"
+    [void][StereoDriveWin32]::SendMessage($mainHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new(32809), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    $after = Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "after-direct-32809"
+    [pscustomobject]@{
+        MainHandle = $mainHandle
+        ProcessId = $mainProcessId
+        CommandId = 32809
+        BeforeReferencePanelVisible = $before.ReferencePanelVisible
+        AfterReferencePanelVisible = $after.ReferencePanelVisible
+        Before = $before
+        After = $after
     }
     return
 }
