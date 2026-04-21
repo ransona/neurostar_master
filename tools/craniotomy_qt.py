@@ -445,6 +445,7 @@ class CraniotomyWindow(QMainWindow):
     drill_progress_signal = Signal(int)
     injection_progress_signal = Signal(int, str)
     injection_site_progress_signal = Signal(int)
+    sequence_step_signal = Signal(int)
     injection_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
@@ -487,6 +488,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_progress_signal.connect(self.set_drill_completed_points)
         self.injection_progress_signal.connect(self.set_injection_progress)
         self.injection_site_progress_signal.connect(self.set_injection_site_progress)
+        self.sequence_step_signal.connect(self.set_active_sequence_step)
         self.injection_finished_signal.connect(self.finish_injection)
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
@@ -1419,8 +1421,31 @@ class CraniotomyWindow(QMainWindow):
             steps.append("Run the blockage test from 1.000 mm above the stored surface.")
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
+            font = item.font()
+            font.setBold(False)
+            item.setFont(font)
             item.setSizeHint(QSize(0, 15))
             self.sequence_steps_list.addItem(item)
+
+    def _sequence_step_indexes(self, settings: InjectionProtocolSettings, check_blocked: bool) -> dict[str, int]:
+        indexes = {
+            "approach": 0,
+            "advance": 1,
+            "retract": 2,
+        }
+        next_index = 3
+        insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+        if self._main_injection_duration_s(settings) > insertion_time_s + retract_time_s + 0.05:
+            indexes["main_injection"] = next_index
+            next_index += 1
+        if settings.post_inject_pause_s > 0:
+            indexes["pause"] = next_index
+            next_index += 1
+        indexes["return"] = next_index
+        next_index += 1
+        if check_blocked:
+            indexes["block"] = next_index
+        return indexes
 
     def add_injection_site(self) -> None:
         try:
@@ -1535,9 +1560,11 @@ class CraniotomyWindow(QMainWindow):
     ) -> None:
         try:
             total_units = max(1, len(sites))
+            step_indexes = self._sequence_step_indexes(settings, check_blocked)
             for site_index, site in enumerate(sites, start=1):
                 if self.injection_stop_requested.is_set():
                     break
+                self.sequence_step_signal.emit(step_indexes["approach"])
                 self.injection_progress_signal.emit(
                     int(((site_index - 1) / total_units) * 100),
                     f"Moving to 1 mm above surface for site {site_index}/{len(sites)}",
@@ -1559,22 +1586,28 @@ class CraniotomyWindow(QMainWindow):
                     site,
                     settings,
                     injection_plan,
+                    step_indexes,
                     site_index,
                     len(sites),
                 )
                 if check_blocked and not self.injection_stop_requested.is_set():
+                    self.sequence_step_signal.emit(step_indexes["block"])
                     self._run_block_test(site, settings, test_volume_nl)
             if self.injection_stop_requested.is_set():
+                self.sequence_step_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection stopped")
             else:
+                self.sequence_step_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
             if self.injection_stop_requested.is_set():
+                self.sequence_step_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection stopped")
                 return
             message = str(exc)
             if "Maximum movement" in message or "limit" in message:
                 self.syringe_limit_warning_signal.emit(message)
+            self.sequence_step_signal.emit(-1)
             self.injection_finished_signal.emit(str(exc))
 
     def _run_protocol_at_site(
@@ -1582,9 +1615,11 @@ class CraniotomyWindow(QMainWindow):
         site: InjectionSite,
         settings: InjectionProtocolSettings,
         injection_plan: list[int],
+        step_indexes: dict[str, int],
         site_index: int,
         site_count: int,
     ) -> None:
+        self.sequence_step_signal.emit(step_indexes["approach"])
         self.injection_progress_signal.emit(
             int(((site_index - 1) / max(1, site_count)) * 100),
             f"Moving to injection site {site_index}/{site_count}",
@@ -1607,7 +1642,7 @@ class CraniotomyWindow(QMainWindow):
         movement_total_s = insertion_time_s + retract_time_s
         injection_duration_s = self._main_injection_duration_s(settings)
         active_work_s = max(injection_duration_s, movement_total_s)
-        protocol_duration_s = max(active_work_s + settings.post_inject_pause_s, 0.1)
+        protocol_duration_s = max(active_work_s, 0.1)
         injection_events = self._scheduled_main_injection_events(injection_plan, settings)
         movement_targets = self._protocol_movement_targets(site, settings)
         delivered = 0
@@ -1645,13 +1680,14 @@ class CraniotomyWindow(QMainWindow):
             total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
             current_volume = min(delivered, settings.main_volume_nl)
             if movement_targets and elapsed < movement_total_s and current_volume < settings.main_volume_nl:
+                self.sequence_step_signal.emit(step_indexes["advance"])
                 message = f"Inserting pipette while injecting (current volume = {current_volume} nl)"
             elif current_volume < settings.main_volume_nl:
+                self.sequence_step_signal.emit(step_indexes.get("main_injection", step_indexes["retract"]))
                 message = f"Injecting (current volume = {current_volume} nl)"
             elif movement_targets and elapsed < movement_total_s:
+                self.sequence_step_signal.emit(step_indexes["retract"])
                 message = "Inserting pipette"
-            elif elapsed < active_work_s + settings.post_inject_pause_s:
-                message = f"Post-injection pause at site {site_index}/{site_count}"
             else:
                 message = f"Injection/movement complete at site {site_index}/{site_count}"
             self.injection_progress_signal.emit(
@@ -1662,6 +1698,25 @@ class CraniotomyWindow(QMainWindow):
             time.sleep(0.02)
         if self.injection_stop_requested.is_set():
             return
+        if settings.post_inject_pause_s > 0:
+            self.sequence_step_signal.emit(step_indexes["pause"])
+            pause_started = time.monotonic()
+            while not self.injection_stop_requested.is_set():
+                pause_elapsed = time.monotonic() - pause_started
+                remaining_s = settings.post_inject_pause_s - pause_elapsed
+                if remaining_s <= 0:
+                    break
+                site_fraction = min(1.0, (active_work_s + pause_elapsed) / (active_work_s + settings.post_inject_pause_s))
+                total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
+                self.injection_progress_signal.emit(
+                    int(total_fraction * 100),
+                    f"Post-injection pause at site {site_index}/{site_count}: {remaining_s:.1f}s remaining",
+                )
+                self.injection_site_progress_signal.emit(int(site_fraction * 100))
+                time.sleep(0.05)
+        if self.injection_stop_requested.is_set():
+            return
+        self.sequence_step_signal.emit(step_indexes["return"])
         self.injection_progress_signal.emit(
             int((site_index / max(1, site_count)) * 100),
             f"Returning to 1 mm above surface for site {site_index}/{site_count}",
@@ -1800,7 +1855,23 @@ class CraniotomyWindow(QMainWindow):
     def set_injection_site_progress(self, percent: int) -> None:
         self.injection_site_progress.setValue(max(0, min(100, percent)))
 
+    def set_active_sequence_step(self, row: int) -> None:
+        if not hasattr(self, "sequence_steps_list"):
+            return
+        for index in range(self.sequence_steps_list.count()):
+            item = self.sequence_steps_list.item(index)
+            font = item.font()
+            font.setBold(index == row)
+            item.setFont(font)
+        if 0 <= row < self.sequence_steps_list.count():
+            self.sequence_steps_list.setCurrentRow(row)
+            self.sequence_steps_list.scrollToItem(self.sequence_steps_list.item(row))
+        else:
+            self.sequence_steps_list.clearSelection()
+            self.sequence_steps_list.setCurrentRow(-1)
+
     def finish_injection(self, message: str) -> None:
+        self.set_active_sequence_step(-1)
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
         self.injection_status_label.setText(display_message)
         self.start_injection_btn.setEnabled(True)
