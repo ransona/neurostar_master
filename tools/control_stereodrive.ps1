@@ -31,6 +31,7 @@ param(
         "fill",
         "close-injectomate",
         "dump-tools-menu",
+        "diagnose-sync-panel",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
         "probe-command",
@@ -1714,6 +1715,108 @@ function Get-ReferenceStatus {
     }
 }
 
+function Get-SyncPanelDiagnosticState {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
+        [string]$Label
+    )
+
+    $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    $syncControls = @(1043, 1094, 1095, 1096, 1071, 1072, 1073, 1097, 1101, 1102, 1438, 1042, 1387) |
+        ForEach-Object {
+            $control = $map[[string]$_]
+            if ($control) {
+                [pscustomobject]@{
+                    ControlId = $_
+                    ClassName = $control.ClassName
+                    Caption = $control.Caption
+                    Text = $control.Text
+                    Rect = $control.Rect
+                }
+            }
+        }
+
+    $windows = Get-ProcessWindows -ProcessId $ProcessId |
+        Where-Object {
+            $_.Caption -match "Synchron|Syringe|Reference|StereoDrive|Injectomate" -or
+            $_.ClassName -eq "#32770" -or
+            $_.ClassName -like "Afx*"
+        } |
+        Select-Object Handle, ProcessId, ClassName, Caption, Rect
+
+    [pscustomobject]@{
+        Label = $Label
+        MainHandle = $MainWindowHandle
+        ReferencePanelVisible = $map.ContainsKey("1095")
+        ToolsButtonVisible = $map.ContainsKey("1010")
+        SyncButtonVisible = $map.ContainsKey("1438")
+        InjectomateVisible = ($map.ContainsKey("10001") -or $map.ContainsKey("10030"))
+        SyncControls = @($syncControls)
+        ProcessWindows = @($windows)
+    }
+}
+
+function Get-ToolsMenuDiagnostic {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
+        [string]$ClickMode
+    )
+
+    $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    Invoke-ButtonClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    Start-Sleep -Milliseconds 250
+    $popup = Get-PopupMenuWindow -ProcessId $ProcessId
+    if (-not $popup) {
+        return [pscustomobject]@{
+            Found = $false
+            Error = "Tools popup window was not found."
+            Items = @()
+        }
+    }
+
+    $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
+    [pscustomobject]@{
+        Found = $true
+        Popup = $popup
+        Items = @(Get-MenuItems -MenuHandle $menu)
+    }
+}
+
+function Invoke-SyncMenuDiagnosticOpen {
+    param(
+        [IntPtr]$MainWindowHandle,
+        [int]$ProcessId,
+        [string]$ClickMode
+    )
+
+    $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+    Invoke-ButtonClick -ControlMap $map -ControlId 1010 -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    Start-Sleep -Milliseconds 250
+    $popup = Get-PopupMenuWindow -ProcessId $ProcessId
+    if (-not $popup) {
+        throw "Tools popup window was not found."
+    }
+
+    $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
+    $items = @(Get-MenuItems -MenuHandle $menu)
+    $match = $items |
+        Where-Object {
+            $_.NormalizedLabel -match "synchron" -and
+            $_.NormalizedLabel -match "drill" -and
+            $_.NormalizedLabel -match "syringe"
+        } |
+        Select-Object -First 1
+    if (-not $match -or $null -eq $match.Id) {
+        throw "Synchronize Drill and Syringe menu item was not found. Items: $($items.Label -join '; ')"
+    }
+
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new([int64]$match.Id), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    return $match
+}
+
 $proc = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne 0 } |
     Select-Object -First 1
@@ -1894,6 +1997,50 @@ if ($Action -eq "dump-tools-menu") {
     }
     $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
     Get-MenuItems -MenuHandle $menu
+    return
+}
+
+if ($Action -eq "diagnose-sync-panel") {
+    $states = @()
+    $states += Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "initial"
+
+    $toolsMenu = $null
+    $menuOpenError = $null
+    try {
+        $toolsMenu = Get-ToolsMenuDiagnostic -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ClickMode $ClickMode
+    } catch {
+        $menuOpenError = $_.Exception.Message
+    }
+    $states += Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "after-tools-menu-dump"
+
+    $menuSelected = $null
+    $menuSelectError = $null
+    try {
+        $menuSelected = Invoke-SyncMenuDiagnosticOpen -MainWindowHandle $mainHandle -ProcessId $mainProcessId -ClickMode $ClickMode
+    } catch {
+        $menuSelectError = $_.Exception.Message
+    }
+    $states += Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "after-sync-menu-open"
+
+    $directCommandError = $null
+    try {
+        Invoke-DirectCommand -MainWindowHandle $mainHandle -CommandId 32809
+    } catch {
+        $directCommandError = $_.Exception.Message
+    }
+    $states += Get-SyncPanelDiagnosticState -MainWindowHandle $mainHandle -ProcessId $mainProcessId -Label "after-direct-32809"
+
+    [pscustomobject]@{
+        ClickMode = $ClickMode
+        MainHandle = $mainHandle
+        ProcessId = $mainProcessId
+        ToolsMenuError = $menuOpenError
+        ToolsMenu = $toolsMenu
+        SyncMenuSelected = $menuSelected
+        SyncMenuError = $menuSelectError
+        DirectCommand32809Error = $directCommandError
+        States = $states
+    }
     return
 }
 
