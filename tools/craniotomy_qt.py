@@ -448,6 +448,7 @@ class CraniotomyWindow(QMainWindow):
     injection_progress_signal = Signal(int, str)
     injection_site_progress_signal = Signal(int)
     sequence_step_signal = Signal(int)
+    active_injection_site_signal = Signal(int)
     injection_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
@@ -492,6 +493,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_progress_signal.connect(self.set_injection_progress)
         self.injection_site_progress_signal.connect(self.set_injection_site_progress)
         self.sequence_step_signal.connect(self.set_active_sequence_step)
+        self.active_injection_site_signal.connect(self.set_active_injection_site)
         self.injection_finished_signal.connect(self.finish_injection)
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
@@ -1561,9 +1563,11 @@ class CraniotomyWindow(QMainWindow):
     def refresh_injection_sites_list(self) -> None:
         self.injection_sites_list.clear()
         for index, site in enumerate(self.injection_sites, start=1):
-            self.injection_sites_list.addItem(
-                f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}"
-            )
+            item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}")
+            font = item.font()
+            font.setBold(False)
+            item.setFont(font)
+            self.injection_sites_list.addItem(item)
 
     def _active_injection_sites(self) -> list[InjectionSite]:
         if self.injection_sites:
@@ -1657,6 +1661,7 @@ class CraniotomyWindow(QMainWindow):
             for site_index, site in enumerate(sites, start=1):
                 if self.injection_stop_requested.is_set():
                     break
+                self.active_injection_site_signal.emit(site_index - 1)
                 self.sequence_step_signal.emit(step_indexes["approach"])
                 self.injection_progress_signal.emit(
                     int(((site_index - 1) / total_units) * 100),
@@ -1688,19 +1693,23 @@ class CraniotomyWindow(QMainWindow):
                     self._run_block_test(site, settings, test_volume_nl)
             if self.injection_stop_requested.is_set():
                 self.sequence_step_signal.emit(-1)
+                self.active_injection_site_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection stopped")
             else:
                 self.sequence_step_signal.emit(-1)
+                self.active_injection_site_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
             if self.injection_stop_requested.is_set():
                 self.sequence_step_signal.emit(-1)
+                self.active_injection_site_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection stopped")
                 return
             message = str(exc)
             if "Maximum movement" in message or "limit" in message:
                 self.syringe_limit_warning_signal.emit(message)
             self.sequence_step_signal.emit(-1)
+            self.active_injection_site_signal.emit(-1)
             self.injection_finished_signal.emit(str(exc))
 
     def _run_protocol_at_site(
@@ -1990,8 +1999,24 @@ class CraniotomyWindow(QMainWindow):
             self.sequence_steps_list.clearSelection()
             self.sequence_steps_list.setCurrentRow(-1)
 
+    def set_active_injection_site(self, row: int) -> None:
+        if not hasattr(self, "injection_sites_list"):
+            return
+        for index in range(self.injection_sites_list.count()):
+            item = self.injection_sites_list.item(index)
+            font = item.font()
+            font.setBold(index == row)
+            item.setFont(font)
+        if 0 <= row < self.injection_sites_list.count():
+            self.injection_sites_list.setCurrentRow(row)
+            self.injection_sites_list.scrollToItem(self.injection_sites_list.item(row))
+        else:
+            self.injection_sites_list.clearSelection()
+            self.injection_sites_list.setCurrentRow(-1)
+
     def finish_injection(self, message: str) -> None:
         self.set_active_sequence_step(-1)
+        self.set_active_injection_site(-1)
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
         self.set_status(display_message)
         self.start_injection_btn.setEnabled(True)
