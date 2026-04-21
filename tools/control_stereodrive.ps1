@@ -78,6 +78,7 @@ public static class StereoDriveWin32
     public const uint MF_BYPOSITION = 0x00000400;
     public const uint MN_GETHMENU = 0x01E1;
     public const uint WM_COMMAND = 0x0111;
+    public const uint WM_CANCELMODE = 0x001F;
     public const uint WM_CLOSE = 0x0010;
     public const uint WM_GETTEXT = 0x000D;
     public const uint WM_GETTEXTLENGTH = 0x000E;
@@ -137,9 +138,6 @@ public static class StereoDriveWin32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool GetMenuItemRect(IntPtr hWnd, IntPtr hMenu, uint uItem, out RECT lprcItem);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -1497,36 +1495,20 @@ function Get-PopupMenuHandle {
     return $menu
 }
 
-function Invoke-PopupMenuItemClick {
+function Invoke-PopupMenuItemCommand {
     param(
         [pscustomobject]$Popup,
-        [IntPtr]$MenuHandle,
+        [IntPtr]$MainWindowHandle,
         [pscustomobject]$MenuItem
     )
 
-    $rect = New-Object StereoDriveWin32+RECT
-    $ok = [StereoDriveWin32]::GetMenuItemRect([IntPtr]::Zero, $MenuHandle, [uint32]$MenuItem.Position, [ref]$rect)
-    if (-not $ok) {
-        $popupRect = $Popup.Rect
-        if (-not $popupRect) {
-            throw "Could not read Tools popup or menu item rectangle."
-        }
-        $itemHeight = 24
-        $rect.Left = $popupRect.Left
-        $rect.Right = $popupRect.Right
-        $rect.Top = $popupRect.Top + ([int]$MenuItem.Position * $itemHeight)
-        $rect.Bottom = $rect.Top + $itemHeight
+    [void][StereoDriveWin32]::SendMessage($MainWindowHandle, [StereoDriveWin32]::WM_COMMAND, [IntPtr]::new([int64]$MenuItem.Id), [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 50
+    [void][StereoDriveWin32]::PostMessage($MainWindowHandle, [StereoDriveWin32]::WM_CANCELMODE, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($Popup -and $Popup.Handle) {
+        [void][StereoDriveWin32]::PostMessage($Popup.Handle, [StereoDriveWin32]::WM_CANCELMODE, [IntPtr]::Zero, [IntPtr]::Zero)
+        [void][StereoDriveWin32]::PostMessage($Popup.Handle, [StereoDriveWin32]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
     }
-
-    $x = [int](($rect.Left + $rect.Right) / 2)
-    $y = [int](($rect.Top + $rect.Bottom) / 2)
-    [void][StereoDriveWin32]::SetForegroundWindow($Popup.Handle)
-    Start-Sleep -Milliseconds 50
-    [void][StereoDriveWin32]::SetCursorPos($x, $y)
-    Start-Sleep -Milliseconds 50
-    [StereoDriveWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 30
-    [StereoDriveWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500
 }
 
@@ -1551,7 +1533,7 @@ function Invoke-PopupMenuItem {
         throw "Popup menu item '$Label' was not found."
     }
 
-    Invoke-PopupMenuItemClick -Popup $popup -MenuHandle $menu -MenuItem $match
+    Invoke-PopupMenuItemCommand -Popup $popup -MainWindowHandle $MainWindowHandle -MenuItem $match
 }
 
 function Open-ReferencePanel {
@@ -1847,7 +1829,7 @@ function Invoke-SyncMenuDiagnosticOpen {
         throw "Synchronize Drill and Syringe menu item was not found. Items: $($items.Label -join '; ')"
     }
 
-    Invoke-PopupMenuItemClick -Popup $popup -MenuHandle $menu -MenuItem $match
+    Invoke-PopupMenuItemCommand -Popup $popup -MainWindowHandle $MainWindowHandle -MenuItem $match
     return $match
 }
 
