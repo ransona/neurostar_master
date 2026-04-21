@@ -397,7 +397,8 @@ function Invoke-ButtonPostClick {
     param(
         [hashtable]$ControlMap,
         [int]$ControlId,
-        [IntPtr]$MainWindowHandle
+        [IntPtr]$MainWindowHandle,
+        [int]$PostClickDelayMilliseconds = 250
     )
 
     $control = $ControlMap[[string]$ControlId]
@@ -406,7 +407,9 @@ function Invoke-ButtonPostClick {
     }
 
     [void][StereoDriveWin32]::PostMessage($control.Handle, [StereoDriveWin32]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 250
+    if ($PostClickDelayMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $PostClickDelayMilliseconds
+    }
 }
 
 function Close-ScalePopup {
@@ -435,7 +438,6 @@ function Move-ScalePopupOffscreen {
 
     # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE keeps the dialog alive but gets it out of view.
     [void][StereoDriveWin32]::SetWindowPos($window.Handle, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x0015)
-    Start-Sleep -Milliseconds 10
 }
 
 function Invoke-DirectCommand {
@@ -896,8 +898,13 @@ function Read-ScaleViaPopupApi {
         [string]$ClickMode
     )
 
-    Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    $popupWindow = Wait-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 3000
+    Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode -PostClickDelayMilliseconds 0 -FallbackWaitMilliseconds 0
+    $popupWindow = Wait-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 500
+    if (-not $popupWindow) {
+        $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
+        Invoke-ControlMouseClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
+        $popupWindow = Wait-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 3000
+    }
     if ($popupWindow) {
         Move-ScalePopupOffscreen -Probe $popupWindow
         $probe = $null
@@ -1550,17 +1557,21 @@ function Show-Injectomate {
 function Open-InjectomateCalibrate {
     param(
         [IntPtr]$MainWindowHandle,
-        [string]$ClickMode
+        [string]$ClickMode,
+        [int]$PostClickDelayMilliseconds = 250,
+        [int]$FallbackWaitMilliseconds = 1000
     )
 
     Show-Injectomate -MainWindowHandle $MainWindowHandle
     $map = Get-ControlMap -MainWindowHandle $MainWindowHandle
-    Invoke-ButtonPostClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
-    $probe = Wait-ScaleControl -ProcessId $mainProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 1000
-    if (-not ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false)) {
-        return
+    Invoke-ButtonPostClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle -PostClickDelayMilliseconds $PostClickDelayMilliseconds
+    if ($FallbackWaitMilliseconds -gt 0) {
+        $probe = Wait-ScaleControl -ProcessId $mainProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds $FallbackWaitMilliseconds
+        if (-not ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false)) {
+            return
+        }
+        Invoke-ControlMouseClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
     }
-    Invoke-ControlMouseClick -ControlMap $map -ControlId 10030 -MainWindowHandle $MainWindowHandle
 }
 
 function Get-InjectomateMap {
