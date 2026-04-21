@@ -1365,8 +1365,9 @@ class CraniotomyWindow(QMainWindow):
         self.sequence_steps_list.clear()
         steps = [
             "Move to 1.000 mm above the injection site.",
+            "Move to the injection site.",
             (
-                f"Advance to target plus {settings.overshoot_mm:.3f} mm overshoot at "
+                f"Advance from the injection site to {settings.overshoot_mm:.3f} mm overshoot at "
                 f"{settings.insert_retract_speed_um_s:.1f} um/sec while injecting at "
                 f"{settings.insertion_rate_nl_min:.1f} nl/min."
             ),
@@ -1376,8 +1377,9 @@ class CraniotomyWindow(QMainWindow):
             steps.append(f"Continue injecting at target until {settings.main_volume_nl} nl total is delivered.")
         if settings.post_inject_pause_s > 0:
             steps.append(f"Pause at target for {settings.post_inject_pause_s:.1f} s.")
+        steps.append("Return to 1.000 mm above the injection site.")
         if self.block_check.isChecked():
-            steps.append("Retract to 1.000 mm above the site and run the blockage test.")
+            steps.append("Run the blockage test from 1.000 mm above the injection site.")
         for index, text in enumerate(steps, start=1):
             self.sequence_steps_list.addItem(f"{index}. {text}")
 
@@ -1538,6 +1540,23 @@ class CraniotomyWindow(QMainWindow):
         site_index: int,
         site_count: int,
     ) -> None:
+        self.injection_progress_signal.emit(
+            int(((site_index - 1) / max(1, site_count)) * 100),
+            f"Moving to injection site {site_index}/{site_count}",
+        )
+        self.controller.goto_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
+        self.controller.wait_for_position(
+            site.ap,
+            site.ml,
+            site.dv,
+            tolerance_mm=0.02,
+            timeout_seconds=60.0,
+            poll_seconds=0.1,
+            stop_requested=self.injection_stop_requested.is_set,
+        )
+        if self.injection_stop_requested.is_set():
+            return
+
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
         movement_total_s = insertion_time_s + retract_time_s
         injection_duration_s = self._main_injection_duration_s(settings)
@@ -1595,6 +1614,23 @@ class CraniotomyWindow(QMainWindow):
             )
             self.injection_site_progress_signal.emit(int(site_fraction * 100))
             time.sleep(0.02)
+        if self.injection_stop_requested.is_set():
+            return
+        self.injection_progress_signal.emit(
+            int((site_index / max(1, site_count)) * 100),
+            f"Returning to 1 mm above site {site_index}/{site_count}",
+        )
+        above_dv = self._above_injection_site_dv(site)
+        self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
+        self.controller.wait_for_position(
+            site.ap,
+            site.ml,
+            above_dv,
+            tolerance_mm=0.02,
+            timeout_seconds=60.0,
+            poll_seconds=0.1,
+            stop_requested=self.injection_stop_requested.is_set,
+        )
 
     def _scheduled_injection_events(self, plan: list[int], duration_s: float) -> list[tuple[float, int]]:
         total_volume = max(1, sum(plan))
@@ -1613,7 +1649,7 @@ class CraniotomyWindow(QMainWindow):
 
     def _insertion_retraction_times(self, settings: InjectionProtocolSettings) -> tuple[float, float]:
         speed_mm_s = max(settings.insert_retract_speed_um_s / 1000.0, 0.0001)
-        insertion_time_s = (1.0 + settings.overshoot_mm) / speed_mm_s
+        insertion_time_s = settings.overshoot_mm / speed_mm_s
         retract_time_s = settings.overshoot_mm / speed_mm_s
         return insertion_time_s, retract_time_s
 
@@ -1623,10 +1659,9 @@ class CraniotomyWindow(QMainWindow):
         settings: InjectionProtocolSettings,
     ) -> list[tuple[float, float]]:
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
-        above_dv = self._above_injection_site_dv(site)
         overshoot_dv = site.dv + settings.overshoot_mm
         targets = [
-            (0.0, above_dv),
+            (0.0, site.dv),
             (insertion_time_s, overshoot_dv),
             (insertion_time_s + retract_time_s, site.dv),
         ]
