@@ -1149,9 +1149,14 @@ class CraniotomyWindow(QMainWindow):
             position_nl = self.current_syringe_position()
         if position_nl is None:
             raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
-        message = self.syringe_limit_message(requested_total_nl, True, position_nl)
-        if message:
-            raise StereoDriveError(message)
+        remaining_capacity_nl = SYRINGE_MAX_NL - position_nl
+        if requested_total_nl > remaining_capacity_nl + 1e-6:
+            raise StereoDriveError(
+                f"Requested injection sequence volume is {requested_total_nl:.0f} nl, "
+                f"but current syringe position is {position_nl:.1f} nl and the 5000 nl limit leaves "
+                f"only {max(0.0, remaining_capacity_nl):.1f} nl available.\n\n"
+                f"Maximum sequence volume possible: {max(0.0, remaining_capacity_nl):.1f} nl."
+            )
 
     def show_syringe_limit_warning(self, message: str) -> None:
         QMessageBox.warning(self, "Syringe Limit", message)
