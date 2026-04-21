@@ -406,7 +406,7 @@ class StereoDriveController:
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, command_id, 0)
 
     def _normalize_menu_label(self, text: str) -> str:
-        normalized = text.lower().replace("&", "").replace("...", "")
+        normalized = text.lower().replace("&", "").replace("...", "").replace("\u2026", "")
         normalized = re.sub(r"\s+", " ", normalized)
         return normalized.strip()
 
@@ -427,19 +427,32 @@ class StereoDriveController:
             raise StereoDriveError("Could not retrieve the StereoDrive Tools popup menu handle.")
         return int(menu)
 
-    def _find_popup_menu_item_id(self, menu_handle: int, wanted_label: str) -> int | None:
-        wanted = self._normalize_menu_label(wanted_label)
+    def _popup_menu_items(self, menu_handle: int) -> list[tuple[int, str, str]]:
         count = user32.GetMenuItemCount(menu_handle)
         if count < 0:
-            return None
+            return []
+        items: list[tuple[int, str, str]] = []
         for position in range(count):
             buffer = ctypes.create_unicode_buffer(256)
             user32.GetMenuStringW(menu_handle, position, buffer, len(buffer), MF_BYPOSITION)
-            if self._normalize_menu_label(buffer.value) == wanted:
-                item_id = user32.GetMenuItemID(menu_handle, position)
-                if item_id == 0xFFFFFFFF:
-                    return None
-                return int(item_id)
+            item_id = user32.GetMenuItemID(menu_handle, position)
+            if item_id == 0xFFFFFFFF:
+                continue
+            label = buffer.value
+            items.append((int(item_id), label, self._normalize_menu_label(label)))
+        return items
+
+    def _find_popup_menu_item_id(self, menu_handle: int, wanted_label: str) -> int | None:
+        wanted = self._normalize_menu_label(wanted_label)
+        for item_id, _label, normalized in self._popup_menu_items(menu_handle):
+            if normalized == wanted:
+                return item_id
+        return None
+
+    def _find_sync_menu_item_id(self, menu_handle: int) -> int | None:
+        for item_id, _label, normalized in self._popup_menu_items(menu_handle):
+            if "synchron" in normalized and "drill" in normalized and "syringe" in normalized:
+                return item_id
         return None
 
     def _invoke_tools_menu_item(self, wanted_label: str) -> None:
@@ -448,7 +461,21 @@ class StereoDriveController:
         menu_handle = self._popup_menu_handle(popup_hwnd)
         item_id = self._find_popup_menu_item_id(menu_handle, wanted_label)
         if item_id is None:
-            raise StereoDriveError(f"StereoDrive Tools menu item '{wanted_label}' was not found.")
+            available = ", ".join(label for _item_id, label, _normalized in self._popup_menu_items(menu_handle) if label)
+            raise StereoDriveError(
+                f"StereoDrive Tools menu item '{wanted_label}' was not found. Available items: {available}"
+            )
+        self._send_command(item_id)
+        time.sleep(0.3)
+
+    def _invoke_sync_tools_menu_item(self) -> None:
+        self._click(TOOLS_BUTTON_ID)
+        popup_hwnd = self._popup_menu_window()
+        menu_handle = self._popup_menu_handle(popup_hwnd)
+        item_id = self._find_sync_menu_item_id(menu_handle)
+        if item_id is None:
+            available = ", ".join(label for _item_id, label, _normalized in self._popup_menu_items(menu_handle) if label)
+            raise StereoDriveError(f"Synchronize Drill and Syringe menu item was not found. Available items: {available}")
         self._send_command(item_id)
         time.sleep(0.3)
 
@@ -538,15 +565,9 @@ class StereoDriveController:
     def show_reference_panel(self) -> None:
         if self.reference_panel_visible():
             return
-        opened_from_menu = False
-        for label in ("Synchronize Drill and Syringe", "Synchronise Drill and Syringe"):
-            try:
-                self._invoke_tools_menu_item(label)
-                opened_from_menu = True
-                break
-            except StereoDriveError:
-                continue
-        if not opened_from_menu:
+        try:
+            self._invoke_sync_tools_menu_item()
+        except StereoDriveError:
             self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
             time.sleep(0.3)
         self._control_handle(SET_REFERENCE_BREGMA_COMMAND_ID, timeout_seconds=2.0, poll_seconds=0.05)
