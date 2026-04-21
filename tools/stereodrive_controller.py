@@ -562,15 +562,34 @@ class StereoDriveController:
         controls = self._control_map()
         return SET_REFERENCE_BREGMA_COMMAND_ID in controls or REFERENCE_SELECTOR_ID in controls
 
+    def _wait_for_reference_panel(self, timeout_seconds: float = 1.0) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.reference_panel_visible():
+                return True
+            time.sleep(0.05)
+        return self.reference_panel_visible()
+
     def show_reference_panel(self) -> None:
         if self.reference_panel_visible():
             return
+        menu_error: Exception | None = None
         try:
             self._invoke_sync_tools_menu_item()
-        except StereoDriveError:
+        except StereoDriveError as exc:
+            menu_error = exc
+
+        if self._wait_for_reference_panel(timeout_seconds=1.0):
+            return
+
+        # Command 32809 is a toggle. Only use it after confirming the menu route
+        # did not make the panel visible, otherwise it closes the panel again.
+        if menu_error is not None:
             self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
-            time.sleep(0.3)
-        self._control_handle(SET_REFERENCE_BREGMA_COMMAND_ID, timeout_seconds=2.0, poll_seconds=0.05)
+            if self._wait_for_reference_panel(timeout_seconds=1.0):
+                return
+        details = f" Menu open error: {menu_error}" if menu_error is not None else ""
+        raise StereoDriveError(f"Synchronize Drill and Syringe panel did not open.{details}")
 
     def close_reference_panel(self) -> None:
         if not self.reference_panel_visible():
