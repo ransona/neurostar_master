@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -123,12 +122,12 @@ class InjectionSite:
 
 
 @dataclass
-class InjectionMovementStep:
-    dv_offset_mm: float
-    duration_s: float
-    overshoot_mm: float = 0.0
-    is_pause: bool = False
-    pause_until_injection_complete: bool = False
+class InjectionProtocolSettings:
+    main_volume_nl: int
+    insertion_rate_nl_min: float
+    insert_retract_speed_um_s: float
+    overshoot_mm: float
+    post_inject_pause_s: float
 
 
 class ProjectionWidget(QWidget):
@@ -463,7 +462,6 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
         self.injection_sites: list[InjectionSite] = []
-        self.injection_movement_steps: list[InjectionMovementStep] = []
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
@@ -819,11 +817,23 @@ class CraniotomyWindow(QMainWindow):
 
         self.single_injection_volume_nl = self._number_edit(100)
         self.single_injection_volume_nl.editingFinished.connect(self.round_single_injection_volume_up)
-        self.single_injection_time_s = self._number_edit(10.0)
+        self.insertion_injection_rate_nl_min = self._number_edit(100.0)
+        self.insert_retract_speed_um_s = self._number_edit(20.0)
+        self.movement_overshoot_mm = self._number_edit(0.0)
+        self.post_inject_pause_s = self._number_edit(5.0)
         self.single_injection_volume_nl.textChanged.connect(self.update_injection_rate_label)
-        self.single_injection_time_s.textChanged.connect(self.update_injection_rate_label)
+        self.insertion_injection_rate_nl_min.textChanged.connect(self.update_injection_rate_label)
         self.block_test_volume_nl = self._number_edit(50)
         self.block_test_volume_nl.editingFinished.connect(self.round_test_volume_to_supported)
+        for widget in (
+            self.single_injection_volume_nl,
+            self.insertion_injection_rate_nl_min,
+            self.insert_retract_speed_um_s,
+            self.movement_overshoot_mm,
+            self.post_inject_pause_s,
+            self.block_test_volume_nl,
+        ):
+            widget.textChanged.connect(self.refresh_injection_sequence_summary)
         self.injection_progress = QProgressBar()
         self.injection_progress.setRange(0, 100)
         self.injection_progress.setValue(0)
@@ -844,32 +854,21 @@ class CraniotomyWindow(QMainWindow):
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
         self.stop_injection_btn.style().polish(self.stop_injection_btn)
         self.stop_injection_btn.clicked.connect(self.stop_injection)
-        self.movement_offset_mm = self._number_edit(0.2)
-        self.movement_overshoot_mm = self._number_edit(0.0)
-        self.movement_duration_s = self._number_edit(60.0)
-        self.movement_steps_list = QListWidget()
-        add_movement_btn = QPushButton("Add Movement Step")
-        add_movement_btn.clicked.connect(self.add_movement_step)
-        remove_movement_btn = QPushButton("Remove Selected Step")
-        remove_movement_btn.clicked.connect(self.remove_selected_movement_step)
-        add_pause_btn = QPushButton("Add Pause")
-        add_pause_btn.clicked.connect(self.add_timed_movement_pause)
-        single_layout.addWidget(QLabel("Volume (nl, rounded to 10)"), 0, 0)
+        self.sequence_steps_list = QListWidget()
+        single_layout.addWidget(QLabel("Main injection volume (nl, rounded to 10)"), 0, 0)
         single_layout.addWidget(self.single_injection_volume_nl, 0, 1)
-        single_layout.addWidget(QLabel("Time (s)"), 0, 2)
-        single_layout.addWidget(self.single_injection_time_s, 0, 3)
-        single_layout.addWidget(QLabel("DV offset from surface (mm)"), 1, 0)
-        single_layout.addWidget(self.movement_offset_mm, 1, 1)
-        single_layout.addWidget(QLabel("Move duration (s)"), 1, 2)
-        single_layout.addWidget(self.movement_duration_s, 1, 3)
+        single_layout.addWidget(QLabel("Insertion injection rate (nl/min)"), 0, 2)
+        single_layout.addWidget(self.insertion_injection_rate_nl_min, 0, 3)
+        single_layout.addWidget(QLabel("Insert/retract speed (um/sec)"), 1, 0)
+        single_layout.addWidget(self.insert_retract_speed_um_s, 1, 1)
+        single_layout.addWidget(QLabel("Post inject pause (s)"), 1, 2)
+        single_layout.addWidget(self.post_inject_pause_s, 1, 3)
         single_layout.addWidget(QLabel("Overshoot (mm)"), 2, 0)
         single_layout.addWidget(self.movement_overshoot_mm, 2, 1)
         single_layout.addWidget(QLabel("Test volume (nl)"), 2, 2)
         single_layout.addWidget(self.block_test_volume_nl, 2, 3)
-        single_layout.addWidget(add_movement_btn, 3, 0)
-        single_layout.addWidget(remove_movement_btn, 3, 1)
-        single_layout.addWidget(add_pause_btn, 3, 2, 1, 2)
-        single_layout.addWidget(self.movement_steps_list, 4, 0, 1, 4)
+        single_layout.addWidget(QLabel("Program sequence"), 3, 0, 1, 4)
+        single_layout.addWidget(self.sequence_steps_list, 4, 0, 1, 4)
         single_layout.addWidget(self.injection_status_label, 5, 0, 1, 4)
         single_layout.addWidget(QLabel("Overall sequence progress"), 6, 0)
         single_layout.addWidget(self.injection_progress, 6, 1, 1, 3)
@@ -892,6 +891,7 @@ class CraniotomyWindow(QMainWindow):
         remove_site_btn = QPushButton("Remove Selected Site")
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
         self.block_check = QCheckBox("Check blockage after each site")
+        self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
         sites_layout.addWidget(self.block_check, 0, 2, 1, 2)
@@ -899,6 +899,7 @@ class CraniotomyWindow(QMainWindow):
         layout.addStretch(1)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
+        self.refresh_injection_sequence_summary()
 
     def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
@@ -1062,8 +1063,10 @@ class CraniotomyWindow(QMainWindow):
 
     def update_injection_rate_label(self) -> None:
         volume_nl = self._rounded_single_injection_volume()
-        duration_s = max(self._line_float(self.single_injection_time_s, 10.0, 0.1, 3600.0), 0.1)
-        self.injection_rate_label.setText(f"Current volume rate = {(volume_nl / duration_s) * 60.0:.1f} nl/min")
+        rate_nl_min = max(self._line_float(self.insertion_injection_rate_nl_min, 100.0, 0.1, 100000.0), 0.1)
+        duration_s = (volume_nl / rate_nl_min) * 60.0
+        self.injection_rate_label.setText(f"Main volume duration at insertion rate = {duration_s:.1f} s")
+        self.refresh_injection_sequence_summary()
 
     def round_single_injection_volume_up(self) -> None:
         self._set_number_edit(self.single_injection_volume_nl, self._rounded_single_injection_volume())
@@ -1267,77 +1270,47 @@ class CraniotomyWindow(QMainWindow):
             plan.append(10)
         return plan
 
-    def add_movement_step(self) -> None:
-        step = InjectionMovementStep(
-            dv_offset_mm=self._line_float(self.movement_offset_mm, 0.2, -10.0, 10.0),
-            duration_s=max(0.1, self._line_float(self.movement_duration_s, 60.0, 0.1, 3600.0)),
-            overshoot_mm=max(0.0, self._line_float(self.movement_overshoot_mm, 0.0, 0.0, 10.0)),
-        )
-        self.injection_movement_steps.append(step)
-        self.refresh_movement_steps_list()
+    def _main_injection_step_plan(self, volume_nl: int) -> list[int]:
+        return [10] * max(1, int(math.ceil(volume_nl / 10.0)))
 
-    def add_timed_movement_pause(self) -> None:
-        box = QMessageBox(self)
-        box.setWindowTitle("Add Pause")
-        box.setText("Add movement pause")
-        timed_button = box.addButton("Timed pause", QMessageBox.AcceptRole)
-        until_done_button = box.addButton("Until injection complete", QMessageBox.ActionRole)
-        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
-        box.setDefaultButton(timed_button)
-        box.exec()
-        clicked_button = box.clickedButton()
-        if clicked_button is cancel_button:
+    def _injection_protocol_settings(self) -> InjectionProtocolSettings:
+        volume_nl = self._rounded_single_injection_volume()
+        rate_nl_min = max(self._line_float(self.insertion_injection_rate_nl_min, 100.0, 0.1, 100000.0), 0.1)
+        speed_um_s = max(self._line_float(self.insert_retract_speed_um_s, 20.0, 0.1, 10000.0), 0.1)
+        overshoot_mm = max(0.0, self._line_float(self.movement_overshoot_mm, 0.0, 0.0, 10.0))
+        pause_s = max(0.0, self._line_float(self.post_inject_pause_s, 5.0, 0.0, 3600.0))
+        return InjectionProtocolSettings(
+            main_volume_nl=volume_nl,
+            insertion_rate_nl_min=rate_nl_min,
+            insert_retract_speed_um_s=speed_um_s,
+            overshoot_mm=overshoot_mm,
+            post_inject_pause_s=pause_s,
+        )
+
+    def refresh_injection_sequence_summary(self) -> None:
+        if not hasattr(self, "sequence_steps_list"):
             return
-        if clicked_button is until_done_button:
-            self.add_injection_complete_pause()
-            return
-
-        duration_s, accepted = QInputDialog.getDouble(
-            self,
-            "Add Pause",
-            "Pause duration (s)",
-            self._line_float(self.movement_duration_s, 60.0, 0.1, 3600.0),
-            0.1,
-            3600.0,
-            1,
-        )
-        if not accepted:
-            return
-        self.injection_movement_steps.append(
-            InjectionMovementStep(dv_offset_mm=0.0, duration_s=duration_s, is_pause=True)
-        )
-        self.refresh_movement_steps_list()
-
-    def add_injection_complete_pause(self) -> None:
-        self.injection_movement_steps.append(
-            InjectionMovementStep(
-                dv_offset_mm=0.0,
-                duration_s=0.0,
-                is_pause=True,
-                pause_until_injection_complete=True,
-            )
-        )
-        self.refresh_movement_steps_list()
-
-    def remove_selected_movement_step(self) -> None:
-        row = self.movement_steps_list.currentRow()
-        if 0 <= row < len(self.injection_movement_steps):
-            del self.injection_movement_steps[row]
-            self.refresh_movement_steps_list()
-
-    def refresh_movement_steps_list(self) -> None:
-        self.movement_steps_list.clear()
-        for index, step in enumerate(self.injection_movement_steps, start=1):
-            if step.pause_until_injection_complete:
-                self.movement_steps_list.addItem(f"{index}. Pause until injection complete")
-                continue
-            if step.is_pause:
-                self.movement_steps_list.addItem(f"{index}. Pause for {step.duration_s:.1f}s")
-                continue
-            overshoot = f", overshoot {step.overshoot_mm:.3f} mm" if step.overshoot_mm > 0 else ""
-            self.movement_steps_list.addItem(
-                f"{index}. DV offset {step.dv_offset_mm:.3f} mm{overshoot} over {step.duration_s:.1f}s"
-            )
+        settings = self._injection_protocol_settings()
+        insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+        injection_duration_s = self._main_injection_duration_s(settings)
+        self.sequence_steps_list.clear()
+        steps = [
+            "Move to 1.000 mm above the injection site.",
+            (
+                f"Advance to target plus {settings.overshoot_mm:.3f} mm overshoot at "
+                f"{settings.insert_retract_speed_um_s:.1f} um/sec while injecting at "
+                f"{settings.insertion_rate_nl_min:.1f} nl/min."
+            ),
+            f"Retract overshoot back to the target at {settings.insert_retract_speed_um_s:.1f} um/sec.",
+        ]
+        if injection_duration_s > insertion_time_s + retract_time_s + 0.05:
+            steps.append(f"Continue injecting at target until {settings.main_volume_nl} nl total is delivered.")
+        if settings.post_inject_pause_s > 0:
+            steps.append(f"Pause at target for {settings.post_inject_pause_s:.1f} s.")
+        if self.block_check.isChecked():
+            steps.append("Retract to 1.000 mm above the site and run the blockage test.")
+        for index, text in enumerate(steps, start=1):
+            self.sequence_steps_list.addItem(f"{index}. {text}")
 
     def add_injection_site(self) -> None:
         try:
@@ -1357,7 +1330,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites_list.clear()
         for index, site in enumerate(self.injection_sites, start=1):
             self.injection_sites_list.addItem(
-                f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}"
+                f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, target DV {site.dv:.2f}"
             )
 
     def _active_injection_sites(self) -> list[InjectionSite]:
@@ -1371,15 +1344,17 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             sites = self._active_injection_sites()
-            volume_nl = self._rounded_single_injection_volume()
-            self._set_number_edit(self.single_injection_volume_nl, volume_nl)
-            duration_s = max(self._line_float(self.single_injection_time_s, 10.0, 0.1, 3600.0), 0.1)
-            injection_plan = self._injection_step_plan(volume_nl)
-            movement_steps = list(self.injection_movement_steps)
-            if not injection_plan and not movement_steps:
+            settings = self._injection_protocol_settings()
+            self._set_number_edit(self.single_injection_volume_nl, settings.main_volume_nl)
+            self._set_number_edit(self.insertion_injection_rate_nl_min, settings.insertion_rate_nl_min)
+            self._set_number_edit(self.insert_retract_speed_um_s, settings.insert_retract_speed_um_s)
+            self._set_number_edit(self.movement_overshoot_mm, settings.overshoot_mm)
+            self._set_number_edit(self.post_inject_pause_s, settings.post_inject_pause_s)
+            injection_plan = self._main_injection_step_plan(settings.main_volume_nl)
+            if not injection_plan:
                 return
             self.sync_syringe_position_before_injection()
-            required_volume_nl = volume_nl * len(sites)
+            required_volume_nl = settings.main_volume_nl * len(sites)
             test_volume_nl = self._rounded_test_volume()
             if self.block_check.isChecked():
                 required_volume_nl += test_volume_nl * len(sites)
@@ -1388,17 +1363,17 @@ class CraniotomyWindow(QMainWindow):
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
             self.injection_site_progress.setValue(0)
-            self.injection_status_label.setText(f"Ready: {len(sites)} site(s), {volume_nl} nl over {duration_s:.1f}s")
+            self.injection_status_label.setText(
+                f"Ready: {len(sites)} site(s), {settings.main_volume_nl} nl at {settings.insertion_rate_nl_min:.1f} nl/min"
+            )
             self.start_injection_btn.setEnabled(False)
             self.pause_injection_btn.setText("Pause")
             self.injection_thread = threading.Thread(
                 target=self._run_injection_protocol,
                 args=(
                     sites,
-                    movement_steps,
+                    settings,
                     injection_plan,
-                    duration_s,
-                    volume_nl,
                     self.block_check.isChecked(),
                     test_volume_nl,
                 ),
@@ -1437,10 +1412,8 @@ class CraniotomyWindow(QMainWindow):
     def _run_injection_protocol(
         self,
         sites: list[InjectionSite],
-        movement_steps: list[InjectionMovementStep],
+        settings: InjectionProtocolSettings,
         injection_plan: list[int],
-        injection_duration_s: float,
-        total_volume_nl: int,
         check_blocked: bool,
         test_volume_nl: int,
     ) -> None:
@@ -1449,39 +1422,27 @@ class CraniotomyWindow(QMainWindow):
             for site_index, site in enumerate(sites, start=1):
                 if self.injection_stop_requested.is_set():
                     break
-                if self.injection_sites:
-                    self.injection_progress_signal.emit(
-                        int(((site_index - 1) / total_units) * 100),
-                        f"Moving to site {site_index}/{len(sites)}",
-                    )
-                    self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
-                    self.controller.wait_for_position(
-                        site.ap,
-                        site.ml,
-                        -1.0,
-                        tolerance_mm=0.02,
-                        timeout_seconds=60.0,
-                        poll_seconds=0.1,
-                        stop_requested=self.injection_stop_requested.is_set,
-                    )
-                    self.controller.goto_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
-                    self.controller.wait_for_position(
-                        site.ap,
-                        site.ml,
-                        site.dv,
-                        tolerance_mm=0.02,
-                        timeout_seconds=60.0,
-                        poll_seconds=0.1,
-                        stop_requested=self.injection_stop_requested.is_set,
-                    )
+                self.injection_progress_signal.emit(
+                    int(((site_index - 1) / total_units) * 100),
+                    f"Moving to 1 mm above site {site_index}/{len(sites)}",
+                )
+                above_dv = self._above_injection_site_dv(site)
+                self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
+                self.controller.wait_for_position(
+                    site.ap,
+                    site.ml,
+                    above_dv,
+                    tolerance_mm=0.02,
+                    timeout_seconds=60.0,
+                    poll_seconds=0.1,
+                    stop_requested=self.injection_stop_requested.is_set,
+                )
                 if self.injection_stop_requested.is_set():
                     break
                 self._run_protocol_at_site(
                     site,
-                    movement_steps,
+                    settings,
                     injection_plan,
-                    injection_duration_s,
-                    total_volume_nl,
                     site_index,
                     len(sites),
                 )
@@ -1503,17 +1464,18 @@ class CraniotomyWindow(QMainWindow):
     def _run_protocol_at_site(
         self,
         site: InjectionSite,
-        movement_steps: list[InjectionMovementStep],
+        settings: InjectionProtocolSettings,
         injection_plan: list[int],
-        injection_duration_s: float,
-        total_volume_nl: int,
         site_index: int,
         site_count: int,
     ) -> None:
-        movement_total_s = self._movement_total_duration(movement_steps, injection_duration_s)
-        protocol_duration_s = max(injection_duration_s, movement_total_s, 0.1)
+        insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+        movement_total_s = insertion_time_s + retract_time_s
+        injection_duration_s = self._main_injection_duration_s(settings)
+        active_work_s = max(injection_duration_s, movement_total_s)
+        protocol_duration_s = max(active_work_s + settings.post_inject_pause_s, 0.1)
         injection_events = self._scheduled_injection_events(injection_plan, injection_duration_s)
-        movement_targets = self._movement_targets(movement_steps, site.dv, injection_duration_s)
+        movement_targets = self._protocol_movement_targets(site, settings)
         delivered = 0
         event_index = 0
         start_time = time.monotonic()
@@ -1547,13 +1509,15 @@ class CraniotomyWindow(QMainWindow):
                 last_move_at = elapsed
             site_fraction = min(1.0, elapsed / protocol_duration_s)
             total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
-            current_volume = min(delivered, total_volume_nl)
-            if movement_targets and elapsed < movement_total_s and current_volume < total_volume_nl:
+            current_volume = min(delivered, settings.main_volume_nl)
+            if movement_targets and elapsed < movement_total_s and current_volume < settings.main_volume_nl:
                 message = f"Inserting pipette while injecting (current volume = {current_volume} nl)"
-            elif current_volume < total_volume_nl:
+            elif current_volume < settings.main_volume_nl:
                 message = f"Injecting (current volume = {current_volume} nl)"
             elif movement_targets and elapsed < movement_total_s:
                 message = "Inserting pipette"
+            elif elapsed < active_work_s + settings.post_inject_pause_s:
+                message = f"Post-injection pause at site {site_index}/{site_count}"
             else:
                 message = f"Injection/movement complete at site {site_index}/{site_count}"
             self.injection_progress_signal.emit(
@@ -1572,41 +1536,31 @@ class CraniotomyWindow(QMainWindow):
             events.append(((delivered / total_volume) * duration_s, step_nl))
         return events
 
-    def _movement_total_duration(self, steps: list[InjectionMovementStep], injection_duration_s: float) -> float:
-        elapsed = 0.0
-        for step in steps:
-            if step.pause_until_injection_complete:
-                elapsed = max(elapsed, injection_duration_s)
-            else:
-                elapsed += step.duration_s
-        return elapsed
+    def _above_injection_site_dv(self, site: InjectionSite) -> float:
+        return site.dv - 1.0
 
-    def _movement_targets(
+    def _main_injection_duration_s(self, settings: InjectionProtocolSettings) -> float:
+        return (settings.main_volume_nl / max(settings.insertion_rate_nl_min, 0.1)) * 60.0
+
+    def _insertion_retraction_times(self, settings: InjectionProtocolSettings) -> tuple[float, float]:
+        speed_mm_s = max(settings.insert_retract_speed_um_s / 1000.0, 0.0001)
+        insertion_time_s = (1.0 + settings.overshoot_mm) / speed_mm_s
+        retract_time_s = settings.overshoot_mm / speed_mm_s
+        return insertion_time_s, retract_time_s
+
+    def _protocol_movement_targets(
         self,
-        steps: list[InjectionMovementStep],
-        surface_dv: float,
-        injection_duration_s: float,
+        site: InjectionSite,
+        settings: InjectionProtocolSettings,
     ) -> list[tuple[float, float]]:
-        elapsed = 0.0
-        current_dv = surface_dv
-        targets = [(0.0, current_dv)]
-        for step in steps:
-            if step.pause_until_injection_complete:
-                elapsed = max(elapsed, injection_duration_s)
-                targets.append((elapsed, current_dv))
-                continue
-            if step.is_pause:
-                elapsed += step.duration_s
-                targets.append((elapsed, current_dv))
-                continue
-            if step.overshoot_mm > 0:
-                elapsed += step.duration_s / 2.0
-                targets.append((elapsed, surface_dv + step.dv_offset_mm + step.overshoot_mm))
-                elapsed += step.duration_s / 2.0
-            else:
-                elapsed += step.duration_s
-            current_dv = surface_dv + step.dv_offset_mm
-            targets.append((elapsed, current_dv))
+        insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+        above_dv = self._above_injection_site_dv(site)
+        overshoot_dv = site.dv + settings.overshoot_mm
+        targets = [
+            (0.0, above_dv),
+            (insertion_time_s, overshoot_dv),
+            (insertion_time_s + retract_time_s, site.dv),
+        ]
         return targets
 
     def _interpolated_movement_dv(self, targets: list[tuple[float, float]], elapsed_s: float) -> float:
@@ -1628,11 +1582,12 @@ class CraniotomyWindow(QMainWindow):
 
     def _run_block_test(self, site: InjectionSite, test_volume_nl: int) -> None:
         self.injection_progress_signal.emit(100, "Retracting pipette")
-        self.controller.goto_position(site.ap, site.ml, -1.0, delay_seconds=0.5)
+        above_dv = self._above_injection_site_dv(site)
+        self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
             site.ml,
-            -1.0,
+            above_dv,
             tolerance_mm=0.02,
             timeout_seconds=60.0,
             poll_seconds=0.1,
