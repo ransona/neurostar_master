@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
@@ -634,10 +636,14 @@ class CraniotomyWindow(QMainWindow):
         header_layout.setSpacing(5)
         set_bregma_btn = QPushButton("Set Bregma")
         set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        bregma_btn = QPushButton("Bregma")
+        bregma_btn.clicked.connect(self.goto_bregma)
         home_btn = QPushButton("Home")
         home_btn.clicked.connect(self.goto_home)
         work_btn = QPushButton("Work")
         work_btn.clicked.connect(self.goto_work)
+        goto_btn = QPushButton("Go to")
+        goto_btn.clicked.connect(self.open_goto_dialog)
         header_stop_btn = QPushButton("Stop")
         header_stop_btn.setProperty("variant", "danger")
         header_stop_btn.style().unpolish(header_stop_btn)
@@ -670,8 +676,10 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(header_stop_btn)
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_btn)
+        header_layout.addWidget(bregma_btn)
         header_layout.addWidget(home_btn)
         header_layout.addWidget(work_btn)
+        header_layout.addWidget(goto_btn)
         for button in quick_buttons:
             header_layout.addWidget(button)
         header_layout.addStretch(1)
@@ -1358,6 +1366,62 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Sent GoTo 'Work' command.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def goto_bregma(self) -> None:
+        try:
+            self.controller.goto_position(0.0, 0.0, 0.0)
+            self.set_status("Moving to Bregma: AP 0.00, ML 0.00, DV 0.00.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def open_goto_dialog(self) -> None:
+        try:
+            current_ap, current_ml, current_dv = self.controller.get_current_position()
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Go to Position")
+        layout = QGridLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(6)
+
+        ap_box = self._position_spinbox(current_ap)
+        ml_box = self._position_spinbox(current_ml)
+        dv_box = self._position_spinbox(current_dv)
+        layout.addWidget(QLabel("AP"), 0, 0)
+        layout.addWidget(ap_box, 0, 1)
+        layout.addWidget(QLabel("ML"), 1, 0)
+        layout.addWidget(ml_box, 1, 1)
+        layout.addWidget(QLabel("DV"), 2, 0)
+        layout.addWidget(dv_box, 2, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons, 3, 0, 1, 2)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        ap = ap_box.value()
+        ml = ml_box.value()
+        dv = dv_box.value()
+        try:
+            self.controller.goto_position(ap, ml, dv)
+            self.set_status(f"Moving to AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def _position_spinbox(self, value: float) -> QDoubleSpinBox:
+        widget = QDoubleSpinBox()
+        widget.setDecimals(3)
+        widget.setRange(-100.0, 100.0)
+        widget.setSingleStep(0.1)
+        widget.setValue(value)
+        return widget
 
     def set_quick_location(self, slot: str) -> None:
         try:
