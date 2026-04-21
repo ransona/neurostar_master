@@ -871,7 +871,9 @@ class StereoDriveController:
         return max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
 
     def set_current_location_to_bregma(self) -> None:
-        self.ensure_reference_panel_open()
+        self.send_sync_direct_command()
+        if not self._wait_for_reference_controls(timeout_seconds=3.0):
+            raise StereoDriveError("Synchronize Drill and Syringe panel controls did not become available.")
         try:
             self._click(ACTIVE_DRILL_ID)
             time.sleep(0.1)
