@@ -1356,8 +1356,8 @@ class CraniotomyWindow(QMainWindow):
 
     def click_stereodrive_sync_menu_item(self) -> None:
         try:
-            self.controller.click_synchronize_drill_and_syringe_menu_item()
-            self.set_status("Clicked Synchronize Drill and Syringe menu item.")
+            self.controller.send_sync_direct_command()
+            self.set_status("Sent direct Synchronize Drill and Syringe command.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 

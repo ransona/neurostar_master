@@ -539,7 +539,10 @@ class StereoDriveController:
         self._click(TOOLS_BUTTON_ID)
 
     def click_synchronize_drill_and_syringe_menu_item(self) -> None:
-        self.show_reference_panel()
+        self.send_sync_direct_command()
+
+    def send_sync_direct_command(self) -> None:
+        self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
 
     def _click_tools_then_menu_position(self, wanted_label: str) -> None:
         self.click_tools_button()
