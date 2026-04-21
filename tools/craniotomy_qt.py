@@ -1628,7 +1628,7 @@ class CraniotomyWindow(QMainWindow):
             return templates
 
         templates = []
-        for family in ("Segoe UI", "Arial", "Tahoma", "MS Sans Serif"):
+        for family in ("Segoe UI", "Arial", "Tahoma"):
             for point_size in range(18, 31, 2):
                 for weight in (QFont.Normal, QFont.Bold):
                     font = QFont(family, point_size, weight)
@@ -2403,6 +2403,7 @@ class CraniotomyWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Craniotomy Planner")
+    app.setFont(QFont("Segoe UI", 9))
     window = CraniotomyWindow()
     window.show()
     sys.exit(app.exec())
