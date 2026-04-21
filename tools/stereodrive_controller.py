@@ -283,6 +283,15 @@ class StereoDriveController:
         user32.EnumChildWindows(parent_hwnd, callback, 0)
         return match[0] if match else None
 
+    def _click_popup_ok_button(self, popup_hwnd: int) -> bool:
+        for control in self._child_controls_for_window(popup_hwnd):
+            if control.class_name != "Button":
+                continue
+            if re.fullmatch(r"\s*OK\s*", control.text, re.IGNORECASE):
+                user32.PostMessageW(control.hwnd, BM_CLICK, 0, 0)
+                return True
+        return False
+
     def _get_text(self, hwnd: int) -> str:
         length = int(user32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0))
         buffer = ctypes.create_unicode_buffer(length + 1)
@@ -579,7 +588,7 @@ class StereoDriveController:
             )
         finally:
             if close_popup:
-                user32.SendMessageW(popup_hwnd, WM_CLOSE, 0, 0)
+                self._click_popup_ok_button(popup_hwnd)
 
     def get_injectomate_calibrate_snapshot(self) -> dict[str, object]:
         before_windows = [self._control_row(window) for window in self._top_level_windows()]
