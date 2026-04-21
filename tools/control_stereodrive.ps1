@@ -31,6 +31,7 @@ param(
         "fill",
         "close-injectomate",
         "dump-tools-menu",
+        "read-open-tools-menu",
         "diagnose-sync-panel",
         "test-hidden-reference-bregma",
         "test-hidden-drill-to-bregma",
@@ -1997,6 +1998,19 @@ if ($Action -eq "dump-tools-menu") {
     }
     $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
     Get-MenuItems -MenuHandle $menu
+    return
+}
+
+if ($Action -eq "read-open-tools-menu") {
+    $popup = Get-PopupMenuWindow -ProcessId $mainProcessId
+    if (-not $popup) {
+        throw "No open Tools popup menu was found. Open Tools > first, then rerun this action."
+    }
+    $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
+    [pscustomobject]@{
+        Popup = $popup
+        Items = @(Get-MenuItems -MenuHandle $menu)
+    }
     return
 }
 
