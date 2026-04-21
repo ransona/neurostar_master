@@ -814,7 +814,7 @@ class CraniotomyWindow(QMainWindow):
         views_header.addStretch(1)
         views_layout.addLayout(views_header, 0, 0, 1, 2)
 
-        self.top_view = ProjectionWidget(self.current_action, "ML", "AP")
+        self.top_view = ProjectionWidget("Trajectory View", "ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.setMinimumSize(420, 420)
@@ -1057,8 +1057,6 @@ class CraniotomyWindow(QMainWindow):
         self.current_action = message or "Trajectory"
         if hasattr(self, "action_status_label"):
             self.action_status_label.setText(self.current_action)
-        self.top_view.title = self.current_action
-        self.top_view.update()
 
     def update_move_speed_label(self) -> None:
         try:
