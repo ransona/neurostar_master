@@ -1221,11 +1221,11 @@ class CraniotomyWindow(QMainWindow):
             position_nl = self.current_syringe_position()
         if position_nl is None:
             raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
-        remaining_capacity_nl = SYRINGE_MAX_NL - position_nl
+        remaining_capacity_nl = position_nl - SYRINGE_MIN_NL
         if requested_total_nl > remaining_capacity_nl + 1e-6:
             raise StereoDriveError(
                 f"Requested injection sequence volume is {requested_total_nl:.0f} nl, "
-                f"but current syringe position is {position_nl:.1f} nl and the 5000 nl limit leaves "
+                f"but current syringe position is {position_nl:.1f} nl and the 0 nl limit leaves "
                 f"only {max(0.0, remaining_capacity_nl):.1f} nl available.\n\n"
                 f"Maximum sequence volume possible: {max(0.0, remaining_capacity_nl):.1f} nl."
             )
@@ -1266,7 +1266,7 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Syringe position checked: {value_nl:.3f} nl")
 
     def track_injection_delivery(self, volume_nl: int) -> None:
-        self.adjust_tracked_syringe_position(volume_nl)
+        self.adjust_tracked_syringe_position(-volume_nl)
 
     def track_syringe_empty(self) -> None:
         self.set_syringe_position(0.0)
@@ -1277,8 +1277,8 @@ class CraniotomyWindow(QMainWindow):
         try:
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
-            self.ensure_syringe_move_allowed(volume_nl, True)
-            self.controller.syringe_step(f"{volume_nl} nl", up=True)
+            self.ensure_syringe_move_allowed(volume_nl, False)
+            self.controller.syringe_step(f"{volume_nl} nl", up=False)
             self.track_injection_delivery(volume_nl)
             self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
         except Exception as exc:
@@ -1605,10 +1605,10 @@ class CraniotomyWindow(QMainWindow):
                 break
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
                 step_nl = injection_events[event_index][1]
-                self.ensure_syringe_move_allowed(step_nl, True)
+                self.ensure_syringe_move_allowed(step_nl, False)
                 self.controller.syringe_step(
                     f"{step_nl} nl",
-                    up=True,
+                    up=False,
                     stop_requested=self.injection_stop_requested.is_set,
                 )
                 self.track_injection_delivery(step_nl)
@@ -1762,10 +1762,10 @@ class CraniotomyWindow(QMainWindow):
             if self.injection_stop_requested.is_set():
                 return
             self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
-            self.ensure_syringe_move_allowed(step_nl, True)
+            self.ensure_syringe_move_allowed(step_nl, False)
             self.controller.syringe_step(
                 f"{step_nl} nl",
-                up=True,
+                up=False,
                 stop_requested=self.injection_stop_requested.is_set,
             )
             self.track_injection_delivery(step_nl)
