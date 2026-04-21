@@ -619,6 +619,7 @@ class CraniotomyWindow(QMainWindow):
             "background: rgba(255,255,255,0.72); border: 1px solid #d4ded3; "
             "border-radius: 7px; padding: 4px 8px;"
         )
+        self.move_speed_label = QLabel()
         for label in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setProperty("role", "coord")
@@ -664,6 +665,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(self.current_ml_label)
         position_layout.addWidget(QLabel("DV"))
         position_layout.addWidget(self.current_dv_label)
+        position_layout.addWidget(self.move_speed_label)
         position_layout.addWidget(header_stop_btn)
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_btn)
@@ -797,9 +799,7 @@ class CraniotomyWindow(QMainWindow):
         views_header.setSpacing(5)
         views_title = QLabel("Trajectory View")
         views_title.setProperty("role", "muted")
-        self.move_speed_label = QLabel()
         views_header.addWidget(views_title)
-        views_header.addWidget(self.move_speed_label)
         views_header.addStretch(1)
         views_layout.addLayout(views_header, 0, 0, 1, 2)
 
