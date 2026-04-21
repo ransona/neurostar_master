@@ -1682,15 +1682,23 @@ class CraniotomyWindow(QMainWindow):
             site_fraction = min(1.0, elapsed / protocol_duration_s)
             total_fraction = ((site_index - 1) + site_fraction) / max(1, site_count)
             current_volume = min(delivered, settings.main_volume_nl)
-            if movement_targets and elapsed < movement_total_s and current_volume < settings.main_volume_nl:
+            in_insertion_phase = movement_targets and elapsed < insertion_time_s
+            in_retraction_phase = movement_targets and insertion_time_s <= elapsed < movement_total_s
+            if in_insertion_phase and current_volume < settings.main_volume_nl:
                 self.sequence_step_signal.emit(step_indexes["advance"])
                 message = f"Inserting pipette while injecting (current volume = {current_volume} nl)"
+            elif in_retraction_phase and current_volume < settings.main_volume_nl:
+                self.sequence_step_signal.emit(step_indexes["retract"])
+                message = f"Retracting overshoot while injecting (current volume = {current_volume} nl)"
             elif current_volume < settings.main_volume_nl:
                 self.sequence_step_signal.emit(step_indexes.get("main_injection", step_indexes["retract"]))
                 message = f"Injecting (current volume = {current_volume} nl)"
-            elif movement_targets and elapsed < movement_total_s:
-                self.sequence_step_signal.emit(step_indexes["retract"])
+            elif in_insertion_phase:
+                self.sequence_step_signal.emit(step_indexes["advance"])
                 message = "Inserting pipette"
+            elif in_retraction_phase:
+                self.sequence_step_signal.emit(step_indexes["retract"])
+                message = "Retracting overshoot"
             else:
                 message = f"Injection/movement complete at site {site_index}/{site_count}"
             self.injection_progress_signal.emit(
