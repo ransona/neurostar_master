@@ -100,6 +100,8 @@ MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0
 DEFAULT_MOVE_SPEED_MM = 0.05
 INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100, 200, 500, 1000, 2000]
 DEFAULT_INJECTION_VOLUME_NL = 100
+SYRINGE_MIN_NL = 0.0
+SYRINGE_MAX_NL = 5000.0
 
 
 @dataclass
@@ -435,6 +437,7 @@ class CraniotomyWindow(QMainWindow):
     injection_site_progress_signal = Signal(int)
     injection_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
+    syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
 
     def __init__(self) -> None:
@@ -476,6 +479,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_site_progress_signal.connect(self.set_injection_site_progress)
         self.injection_finished_signal.connect(self.finish_injection)
         self.syringe_position_signal.connect(self.set_syringe_position)
+        self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
         QApplication.instance().installEventFilter(self)
@@ -1081,12 +1085,13 @@ class CraniotomyWindow(QMainWindow):
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
         try:
+            self.ensure_syringe_move_allowed(self.manual_injection_volume_nl, up)
             self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl", up=up)
             self.adjust_tracked_syringe_position(self.manual_injection_volume_nl if up else -self.manual_injection_volume_nl)
             direction = "up" if up else "down"
             self.set_status(f"Syringe step {direction}: {self.manual_injection_volume_nl} nl")
         except Exception as exc:
-            QMessageBox.critical(self, "Injectomate", str(exc))
+            QMessageBox.warning(self, "Injectomate", str(exc))
 
     def set_syringe_position(self, value_nl: object) -> None:
         with self.syringe_position_lock:
@@ -1106,9 +1111,50 @@ class CraniotomyWindow(QMainWindow):
         with self.syringe_position_lock:
             if self.syringe_position_nl is None:
                 return
-            self.syringe_position_nl = max(0.0, self.syringe_position_nl + delta_nl)
+            self.syringe_position_nl = max(SYRINGE_MIN_NL, min(SYRINGE_MAX_NL, self.syringe_position_nl + delta_nl))
             position_nl = self.syringe_position_nl
         self.syringe_position_signal.emit(position_nl)
+
+    def current_syringe_position(self) -> float | None:
+        with self.syringe_position_lock:
+            return self.syringe_position_nl
+
+    def syringe_limit_message(self, requested_nl: float, up: bool, position_nl: float) -> str | None:
+        max_possible_nl = (SYRINGE_MAX_NL - position_nl) if up else (position_nl - SYRINGE_MIN_NL)
+        if requested_nl <= max_possible_nl + 1e-6:
+            return None
+        direction = "up" if up else "down"
+        limit = SYRINGE_MAX_NL if up else SYRINGE_MIN_NL
+        return (
+            f"Requested syringe step {direction} of {requested_nl:.0f} nl would exceed the "
+            f"{limit:.0f} nl limit from current position {position_nl:.1f} nl.\n\n"
+            f"Maximum movement {direction}: {max(0.0, max_possible_nl):.1f} nl."
+        )
+
+    def ensure_syringe_move_allowed(self, requested_nl: float, up: bool) -> None:
+        position_nl = self.current_syringe_position()
+        if position_nl is None:
+            self.sync_syringe_position_before_injection()
+            position_nl = self.current_syringe_position()
+        if position_nl is None:
+            raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
+        message = self.syringe_limit_message(requested_nl, up, position_nl)
+        if message:
+            raise StereoDriveError(message)
+
+    def ensure_total_syringe_capacity(self, requested_total_nl: float) -> None:
+        position_nl = self.current_syringe_position()
+        if position_nl is None:
+            self.sync_syringe_position_before_injection()
+            position_nl = self.current_syringe_position()
+        if position_nl is None:
+            raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
+        message = self.syringe_limit_message(requested_total_nl, True, position_nl)
+        if message:
+            raise StereoDriveError(message)
+
+    def show_syringe_limit_warning(self, message: str) -> None:
+        QMessageBox.warning(self, "Syringe Limit", message)
 
     def update_syringe_position_from_scale(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
@@ -1154,11 +1200,12 @@ class CraniotomyWindow(QMainWindow):
         try:
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
+            self.ensure_syringe_move_allowed(volume_nl, True)
             self.controller.syringe_step(f"{volume_nl} nl", up=True)
             self.track_injection_delivery(volume_nl)
             self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
         except Exception as exc:
-            QMessageBox.critical(self, "Injectomate", str(exc))
+            QMessageBox.warning(self, "Injectomate", str(exc))
 
     def empty_syringe(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
@@ -1321,6 +1368,11 @@ class CraniotomyWindow(QMainWindow):
             if not injection_plan and not movement_steps:
                 return
             self.sync_syringe_position_before_injection()
+            required_volume_nl = volume_nl * len(sites)
+            test_volume_nl = self._rounded_test_volume()
+            if self.block_check.isChecked():
+                required_volume_nl += test_volume_nl * len(sites)
+            self.ensure_total_syringe_capacity(required_volume_nl)
             self.injection_pause_requested.clear()
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
@@ -1337,13 +1389,13 @@ class CraniotomyWindow(QMainWindow):
                     duration_s,
                     volume_nl,
                     self.block_check.isChecked(),
-                    self._rounded_test_volume(),
+                    test_volume_nl,
                 ),
                 daemon=True,
             )
             self.injection_thread.start()
         except Exception as exc:
-            QMessageBox.critical(self, "Injection", str(exc))
+            QMessageBox.warning(self, "Injection", str(exc))
 
     def pause_resume_injection(self) -> None:
         if self.injection_thread is None or not self.injection_thread.is_alive():
@@ -1425,6 +1477,9 @@ class CraniotomyWindow(QMainWindow):
             else:
                 self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
+            message = str(exc)
+            if "Maximum movement" in message or "limit" in message:
+                self.syringe_limit_warning_signal.emit(message)
             self.injection_finished_signal.emit(str(exc))
 
     def _run_protocol_at_site(
@@ -1452,6 +1507,7 @@ class CraniotomyWindow(QMainWindow):
                 break
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
                 step_nl = injection_events[event_index][1]
+                self.ensure_syringe_move_allowed(step_nl, True)
                 self.controller.syringe_step(f"{step_nl} nl", up=True)
                 self.track_injection_delivery(step_nl)
                 delivered += step_nl
@@ -1570,6 +1626,7 @@ class CraniotomyWindow(QMainWindow):
             if self.injection_stop_requested.is_set():
                 return
             self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
+            self.ensure_syringe_move_allowed(step_nl, True)
             self.controller.syringe_step(f"{step_nl} nl", up=True)
             self.track_injection_delivery(step_nl)
         self.block_prompt_event = threading.Event()
