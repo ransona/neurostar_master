@@ -2002,6 +2002,7 @@ if ($Action -eq "dump-tools-menu") {
 }
 
 if ($Action -eq "read-open-tools-menu") {
+    Start-Sleep -Seconds 3
     $popup = Get-PopupMenuWindow -ProcessId $mainProcessId
     if (-not $popup) {
         throw "No open Tools popup menu was found. Open Tools > first, then rerun this action."
