@@ -1399,8 +1399,7 @@ class CraniotomyWindow(QMainWindow):
         injection_duration_s = self._main_injection_duration_s(settings)
         self.sequence_steps_list.clear()
         steps = [
-            f"Move to 1.000 mm above the injection site target depth ({settings.injection_depth_mm:.3f} mm below the stored surface).",
-            f"Move from surface to the injection target depth ({settings.injection_depth_mm:.3f} mm).",
+            f"Move to 1.000 mm above the stored surface, then to the injection target depth ({settings.injection_depth_mm:.3f} mm below surface).",
             (
                 f"Advance from the target depth to {settings.overshoot_mm:.3f} mm overshoot at "
                 f"{settings.insert_retract_speed_um_s:.1f} um/sec while injecting at "
@@ -1415,9 +1414,9 @@ class CraniotomyWindow(QMainWindow):
             )
         if settings.post_inject_pause_s > 0:
             steps.append(f"Pause at target for {settings.post_inject_pause_s:.1f} s.")
-        steps.append("Return to 1.000 mm above the injection site target depth.")
+        steps.append("Return to 1.000 mm above the stored surface.")
         if self.block_check.isChecked():
-            steps.append("Run the blockage test from 1.000 mm above the injection site target depth.")
+            steps.append("Run the blockage test from 1.000 mm above the stored surface.")
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
             item.setSizeHint(QSize(0, 15))
@@ -1541,9 +1540,9 @@ class CraniotomyWindow(QMainWindow):
                     break
                 self.injection_progress_signal.emit(
                     int(((site_index - 1) / total_units) * 100),
-                    f"Moving to 1 mm above site {site_index}/{len(sites)}",
+                    f"Moving to 1 mm above surface for site {site_index}/{len(sites)}",
                 )
-                above_dv = self._above_injection_site_dv(site, settings)
+                above_dv = self._above_surface_dv(site)
                 self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
                 self.controller.wait_for_position(
                     site.ap,
@@ -1665,9 +1664,9 @@ class CraniotomyWindow(QMainWindow):
             return
         self.injection_progress_signal.emit(
             int((site_index / max(1, site_count)) * 100),
-            f"Returning to 1 mm above site {site_index}/{site_count}",
+            f"Returning to 1 mm above surface for site {site_index}/{site_count}",
         )
-        above_dv = self._above_injection_site_dv(site, settings)
+        above_dv = self._above_surface_dv(site)
         self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
@@ -1702,8 +1701,8 @@ class CraniotomyWindow(QMainWindow):
     def _target_injection_site_dv(self, site: InjectionSite, settings: InjectionProtocolSettings) -> float:
         return site.dv + settings.injection_depth_mm
 
-    def _above_injection_site_dv(self, site: InjectionSite, settings: InjectionProtocolSettings) -> float:
-        return self._target_injection_site_dv(site, settings) - 1.0
+    def _above_surface_dv(self, site: InjectionSite) -> float:
+        return site.dv - 1.0
 
     def _main_injection_duration_s(self, settings: InjectionProtocolSettings) -> float:
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
@@ -1758,7 +1757,7 @@ class CraniotomyWindow(QMainWindow):
         test_volume_nl: int,
     ) -> None:
         self.injection_progress_signal.emit(100, "Retracting pipette")
-        above_dv = self._above_injection_site_dv(site, settings)
+        above_dv = self._above_surface_dv(site)
         self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
