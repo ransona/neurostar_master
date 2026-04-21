@@ -374,11 +374,16 @@ class StereoDriveController:
 
     def _set_edit_control_text(self, control_id: int, text: str) -> None:
         hwnd = self._control_handle(control_id)
-        self._set_text(hwnd, text)
-        self._notify_command(control_id, EN_UPDATE, hwnd)
-        self._notify_command(control_id, EN_CHANGE, hwnd)
-        if not self._get_text(hwnd):
-            raise StereoDriveError(f"Target control {control_id} is blank after setting value '{text}'.")
+        for _attempt in range(3):
+            self._set_text(hwnd, text)
+            self._notify_command(control_id, EN_UPDATE, hwnd)
+            self._notify_command(control_id, EN_CHANGE, hwnd)
+            time.sleep(0.05)
+            actual = self._get_text(hwnd)
+            if actual == text:
+                return
+        actual = self._get_text(hwnd)
+        raise StereoDriveError(f"Target control {control_id} was not set to '{text}'. Current value: '{actual}'.")
 
     def _notify_command(self, control_id: int, notify_code: int, hwnd: int) -> None:
         wparam = (notify_code << 16) | (control_id & 0xFFFF)
@@ -967,9 +972,11 @@ class StereoDriveController:
 
     def set_target_position(self, ap: float, ml: float, dv: float) -> None:
         self._set_edit_control_text(TARGET_AP_ID, f"{ap:.2f}")
+        time.sleep(0.05)
         self._set_edit_control_text(TARGET_ML_ID, f"{ml:.2f}")
+        time.sleep(0.05)
         self._set_edit_control_text(TARGET_DV_ID, f"{dv:.2f}")
-        time.sleep(0.1)
+        time.sleep(0.2)
         self._verify_target_position(ap, ml, dv)
 
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
