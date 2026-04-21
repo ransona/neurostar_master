@@ -449,12 +449,6 @@ class StereoDriveController:
                 return item_id
         return None
 
-    def _find_sync_menu_item_id(self, menu_handle: int) -> int | None:
-        for item_id, _label, normalized in self._popup_menu_items(menu_handle):
-            if "synchron" in normalized and "drill" in normalized and "syringe" in normalized:
-                return item_id
-        return None
-
     def _invoke_tools_menu_item(self, wanted_label: str) -> None:
         self._click(TOOLS_BUTTON_ID)
         popup_hwnd = self._popup_menu_window()
@@ -465,17 +459,6 @@ class StereoDriveController:
             raise StereoDriveError(
                 f"StereoDrive Tools menu item '{wanted_label}' was not found. Available items: {available}"
             )
-        self._send_command(item_id)
-        time.sleep(0.3)
-
-    def _invoke_sync_tools_menu_item(self) -> None:
-        self._click(TOOLS_BUTTON_ID)
-        popup_hwnd = self._popup_menu_window()
-        menu_handle = self._popup_menu_handle(popup_hwnd)
-        item_id = self._find_sync_menu_item_id(menu_handle)
-        if item_id is None:
-            available = ", ".join(label for _item_id, label, _normalized in self._popup_menu_items(menu_handle) if label)
-            raise StereoDriveError(f"Synchronize Drill and Syringe menu item was not found. Available items: {available}")
         self._send_command(item_id)
         time.sleep(0.3)
 
@@ -573,23 +556,15 @@ class StereoDriveController:
     def show_reference_panel(self) -> None:
         if self.reference_panel_visible():
             return
-        menu_error: Exception | None = None
         try:
-            self._invoke_sync_tools_menu_item()
+            self._invoke_tools_menu_item("Synchronize Drill and Syringe")
         except StereoDriveError as exc:
-            menu_error = exc
+            raise StereoDriveError(f"Could not open Synchronize Drill and Syringe panel from Tools menu. {exc}") from exc
 
         if self._wait_for_reference_panel(timeout_seconds=1.0):
             return
 
-        # Command 32809 is a toggle. Only use it after confirming the menu route
-        # did not make the panel visible, otherwise it closes the panel again.
-        if menu_error is not None:
-            self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
-            if self._wait_for_reference_panel(timeout_seconds=1.0):
-                return
-        details = f" Menu open error: {menu_error}" if menu_error is not None else ""
-        raise StereoDriveError(f"Synchronize Drill and Syringe panel did not open.{details}")
+        raise StereoDriveError("Synchronize Drill and Syringe menu item was selected, but the panel did not open.")
 
     def close_reference_panel(self) -> None:
         if not self.reference_panel_visible():
