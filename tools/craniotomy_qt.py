@@ -122,6 +122,13 @@ class InjectionSite:
 
 
 @dataclass
+class StoredLocation:
+    ap: float
+    ml: float
+    dv: float
+
+
+@dataclass
 class InjectionProtocolSettings:
     main_volume_nl: int
     insertion_rate_nl_min: float
@@ -387,6 +394,7 @@ class PlungerGaugeWidget(QWidget):
         self.setMinimumWidth(92)
         self.setMaximumWidth(92)
         self.setMinimumHeight(520)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
     def set_position(self, position_nl: float | None) -> None:
         self.position_nl = position_nl
@@ -462,6 +470,7 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
         self.injection_sites: list[InjectionSite] = []
+        self.quick_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
@@ -529,6 +538,18 @@ class CraniotomyWindow(QMainWindow):
                 background: #b23a48;
                 color: white;
             }
+            QPushButton[variant="quick-green"] {
+                background: #108a54;
+                color: white;
+            }
+            QPushButton[variant="quick-blue"] {
+                background: #1f6fbf;
+                color: white;
+            }
+            QPushButton[variant="quick-yellow"] {
+                background: #f1c232;
+                color: #2d2600;
+            }
             QLabel[role="hero"] {
                 font-size: 34px;
                 font-weight: 700;
@@ -573,6 +594,10 @@ class CraniotomyWindow(QMainWindow):
             label.setProperty("role", "coord")
             label.setMinimumWidth(82)
 
+        header_container = QVBoxLayout()
+        header_container.setSpacing(3)
+        position_layout = QHBoxLayout()
+        position_layout.setSpacing(5)
         header_layout = QHBoxLayout()
         header_layout.setSpacing(5)
         set_bregma_btn = QPushButton("Set Bregma")
@@ -586,18 +611,40 @@ class CraniotomyWindow(QMainWindow):
         header_stop_btn.style().unpolish(header_stop_btn)
         header_stop_btn.style().polish(header_stop_btn)
         header_stop_btn.clicked.connect(self.stop_motion)
+        quick_specs = (
+            ("A", "quick-green"),
+            ("B", "quick-blue"),
+            ("C", "quick-yellow"),
+        )
+        quick_buttons: list[QPushButton] = []
+        for name, variant in quick_specs:
+            set_btn = QPushButton(f"Set {name}")
+            set_btn.setProperty("variant", variant)
+            set_btn.clicked.connect(lambda _checked=False, slot=name: self.set_quick_location(slot))
+            goto_btn = QPushButton(name)
+            goto_btn.setProperty("variant", variant)
+            goto_btn.clicked.connect(lambda _checked=False, slot=name: self.goto_quick_location(slot))
+            for button in (set_btn, goto_btn):
+                button.style().unpolish(button)
+                button.style().polish(button)
+                quick_buttons.append(button)
+        position_layout.addWidget(QLabel("AP"))
+        position_layout.addWidget(self.current_ap_label)
+        position_layout.addWidget(QLabel("ML"))
+        position_layout.addWidget(self.current_ml_label)
+        position_layout.addWidget(QLabel("DV"))
+        position_layout.addWidget(self.current_dv_label)
+        position_layout.addWidget(header_stop_btn)
+        position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_btn)
         header_layout.addWidget(home_btn)
         header_layout.addWidget(work_btn)
-        header_layout.addWidget(QLabel("Current AP"))
-        header_layout.addWidget(self.current_ap_label)
-        header_layout.addWidget(QLabel("Current ML"))
-        header_layout.addWidget(self.current_ml_label)
-        header_layout.addWidget(QLabel("Current DV"))
-        header_layout.addWidget(self.current_dv_label)
-        header_layout.addWidget(header_stop_btn)
+        for button in quick_buttons:
+            header_layout.addWidget(button)
         header_layout.addStretch(1)
-        layout.addLayout(header_layout)
+        header_container.addLayout(position_layout)
+        header_container.addLayout(header_layout)
+        layout.addLayout(header_container)
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
@@ -760,7 +807,7 @@ class CraniotomyWindow(QMainWindow):
         layout.setSpacing(4)
         outer_layout.addLayout(layout, 1)
         self.plunger_gauge = PlungerGaugeWidget()
-        outer_layout.addWidget(self.plunger_gauge, 0, Qt.AlignTop)
+        outer_layout.addWidget(self.plunger_gauge)
         self.tabs.addTab(injection_tab, "Injection")
 
         status_box = QGroupBox("Manual Control")
@@ -1249,6 +1296,27 @@ class CraniotomyWindow(QMainWindow):
         try:
             self.controller.goto_work()
             self.set_status("Sent GoTo 'Work' command.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def set_quick_location(self, slot: str) -> None:
+        try:
+            ap, ml, dv = self.controller.get_current_position()
+            self.quick_locations[slot] = StoredLocation(ap=ap, ml=ml, dv=dv)
+            self.set_status(f"Stored location {slot}: AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def goto_quick_location(self, slot: str) -> None:
+        location = self.quick_locations.get(slot)
+        if location is None:
+            QMessageBox.information(self, "Stored Location", f"Location {slot} has not been set.")
+            return
+        try:
+            self.controller.goto_position(location.ap, location.ml, location.dv, delay_seconds=0.5)
+            self.set_status(
+                f"Moving to location {slot}: AP {location.ap:.2f}, ML {location.ml:.2f}, DV {location.dv:.2f}."
+            )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
