@@ -46,6 +46,9 @@ INJECTION_VOLUME_ID = 10001
 INJECTION_GOTO_TEXT_ID = 10004
 INJECTION_GOTO_BUTTON_ID = 10005
 INJECTION_PLUNGER_POSITION_ID = 10017
+INJECTION_STATUS_RATE_ID = 10028
+INJECTION_STATUS_TIME_ELAPSED_ID = 10020
+INJECTION_STATUS_TIME_REMAINING_ID = 10021
 SYRINGE_TYPE_ID = 10006
 SYRINGE_STEP_UP_ID = 10000
 SYRINGE_STEP_DOWN_ID = 10002
@@ -79,6 +82,8 @@ user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
 user32.SendMessageW.restype = ctypes.c_ssize_t
 user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 user32.PostMessageW.restype = ctypes.c_bool
+user32.IsWindowEnabled.argtypes = [ctypes.c_void_p]
+user32.IsWindowEnabled.restype = ctypes.c_bool
 
 
 class RECT(ctypes.Structure):
@@ -343,6 +348,10 @@ class StereoDriveController:
         user32.SendMessageW(hwnd, BM_CLICK, 0, 0)
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
 
+    def _is_control_enabled(self, control_id: int) -> bool:
+        hwnd = self._control_handle(control_id, timeout_seconds=0.2, poll_seconds=0.01)
+        return bool(user32.IsWindowEnabled(hwnd))
+
     def _post_click(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
         user32.PostMessageW(hwnd, BM_CLICK, 0, 0)
@@ -419,10 +428,12 @@ class StereoDriveController:
     def syringe_step_up(self) -> None:
         self.show_injectomate()
         self._click(SYRINGE_STEP_UP_ID)
+        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_UP_ID)
 
     def syringe_step_down(self) -> None:
         self.show_injectomate()
         self._click(SYRINGE_STEP_DOWN_ID)
+        self.wait_for_injectomate_motion_complete(SYRINGE_STEP_DOWN_ID)
 
     def syringe_step(self, volume_label: str, up: bool = True) -> None:
         self.set_injection_volume(volume_label)
@@ -437,6 +448,49 @@ class StereoDriveController:
         self._set_text(hwnd, "0")
         time.sleep(0.1)
         self._click(INJECTION_GOTO_BUTTON_ID)
+        self.wait_for_injectomate_motion_complete(INJECTION_GOTO_BUTTON_ID, timeout_seconds=180.0)
+
+    def _injectomate_motion_status_text(self) -> str:
+        parts = []
+        controls = self._control_map()
+        for control_id in (INJECTION_STATUS_RATE_ID, INJECTION_STATUS_TIME_ELAPSED_ID, INJECTION_STATUS_TIME_REMAINING_ID):
+            hwnd = controls.get(control_id)
+            if hwnd:
+                text = self._get_text(hwnd).strip()
+                if text:
+                    parts.append(text)
+        return " ".join(parts)
+
+    def wait_for_injectomate_motion_complete(
+        self,
+        trigger_control_id: int | None = None,
+        timeout_seconds: float = 90.0,
+        poll_seconds: float = 0.02,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        saw_busy = False
+        stable_since: float | None = None
+        while time.monotonic() < deadline:
+            status_busy = bool(self._injectomate_motion_status_text())
+            disabled_busy = False
+            if trigger_control_id is not None:
+                try:
+                    disabled_busy = not self._is_control_enabled(trigger_control_id)
+                except StereoDriveError:
+                    disabled_busy = False
+            busy = status_busy or disabled_busy
+            now = time.monotonic()
+            if busy:
+                saw_busy = True
+                stable_since = None
+            else:
+                if stable_since is None:
+                    stable_since = now
+                required_stable_s = 0.10 if saw_busy else 0.20
+                if now - stable_since >= required_stable_s:
+                    return
+            time.sleep(poll_seconds)
+        raise StereoDriveError("Timed out waiting for Injectomate syringe motion to complete.")
 
     def get_injection_plunger_position_nl(self) -> float | None:
         if not self.injectomate_visible():

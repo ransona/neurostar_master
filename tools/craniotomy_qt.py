@@ -1113,8 +1113,18 @@ class CraniotomyWindow(QMainWindow):
     def update_syringe_position_from_scale(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
+        self._start_syringe_position_scale_read()
 
+    def _start_syringe_position_scale_read(self, wait_for_injection_thread: bool = False) -> None:
         def worker() -> None:
+            if wait_for_injection_thread:
+                deadline = time.monotonic() + 15.0
+                while (
+                    self.injection_thread is not None
+                    and self.injection_thread.is_alive()
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.05)
             try:
                 value_nl = self.controller.read_injectomate_calibrate_scale_nl()
                 self.syringe_position_signal.emit(value_nl)
@@ -1350,6 +1360,7 @@ class CraniotomyWindow(QMainWindow):
     def stop_injection(self) -> None:
         self.injection_stop_requested.set()
         self.injection_status_label.setText("Stopping injection")
+        self._start_syringe_position_scale_read(wait_for_injection_thread=True)
 
     def _rounded_test_volume(self) -> int:
         volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
