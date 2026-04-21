@@ -1281,7 +1281,8 @@ class CraniotomyWindow(QMainWindow):
     def set_current_location_to_bregma(self) -> None:
         try:
             self.controller.set_current_location_to_bregma()
-            self.set_status("Current location set to Bregma.")
+            self.refresh_live_position()
+            self.set_status("Current location set to Bregma. AP/ML/DV verified at 0.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 

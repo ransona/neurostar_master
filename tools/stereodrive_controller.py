@@ -610,6 +610,23 @@ class StereoDriveController:
         self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
         time.sleep(0.1)
         self._send_command(SET_DRILL_TO_BREGMA_COMMAND_ID)
+        self._verify_bregma_zeroed()
+
+    def _verify_bregma_zeroed(self, timeout_seconds: float = 2.0, tolerance_mm: float = 0.02) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        last_position: tuple[float, float, float] | None = None
+        while time.monotonic() < deadline:
+            last_position = self.get_current_position()
+            if all(abs(value) <= tolerance_mm for value in last_position):
+                return
+            time.sleep(0.05)
+        if last_position is None:
+            raise StereoDriveError("Could not verify Bregma zero after Set Bregma.")
+        ap, ml, dv = last_position
+        raise StereoDriveError(
+            "Set Bregma did not zero the displayed Bregma coordinates. "
+            f"Current readings are AP {ap:.3f}, ML {ml:.3f}, DV {dv:.3f} mm."
+        )
 
     def goto_home(self) -> None:
         self._click(GOTO_HOME_ID)
