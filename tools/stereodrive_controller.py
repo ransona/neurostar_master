@@ -457,6 +457,18 @@ class StereoDriveController:
                 return item_id
         return None
 
+    def _find_popup_menu_item_position(self, menu_handle: int, wanted_label: str) -> int | None:
+        wanted = self._normalize_menu_label(wanted_label)
+        count = user32.GetMenuItemCount(menu_handle)
+        if count < 0:
+            return None
+        for position in range(count):
+            buffer = ctypes.create_unicode_buffer(256)
+            user32.GetMenuStringW(menu_handle, position, buffer, len(buffer), MF_BYPOSITION)
+            if self._normalize_menu_label(buffer.value) == wanted:
+                return position
+        return None
+
     def _invoke_tools_menu_item(self, wanted_label: str) -> None:
         self._click(TOOLS_BUTTON_ID)
         try:
@@ -519,9 +531,33 @@ class StereoDriveController:
     def click_synchronize_drill_and_syringe_menu_item(self) -> None:
         if self.reference_panel_visible():
             return
-        self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
+        self._click_tools_then_menu_position("Synchronize Drill and Syringe")
         if not self._wait_for_reference_panel(timeout_seconds=1.0):
             raise StereoDriveError("Synchronize Drill and Syringe panel did not open.")
+
+    def _click_tools_then_menu_position(self, wanted_label: str) -> None:
+        self.click_tools_button()
+        popup_hwnd = self._popup_menu_window(timeout_seconds=1.0)
+        menu_handle = self._popup_menu_handle(popup_hwnd)
+        position = self._find_popup_menu_item_position(menu_handle, wanted_label)
+        if position is None:
+            available = ", ".join(label for _item_id, label, _normalized in self._popup_menu_items(menu_handle) if label)
+            raise StereoDriveError(
+                f"StereoDrive Tools menu item '{wanted_label}' was not found. Available items: {available}"
+            )
+        rect = self._window_rect_tuple(popup_hwnd)
+        if rect is None:
+            raise StereoDriveError("Could not read StereoDrive Tools popup rectangle.")
+        left, top, right, _bottom = rect
+        item_height = 24
+        x = left + max(20, min(180, int((right - left) / 2)))
+        y = top + int((position + 0.5) * item_height)
+        user32.SetCursorPos(x, y)
+        time.sleep(0.05)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, None)
+        time.sleep(0.03)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, None)
+        time.sleep(0.3)
 
     def _is_control_enabled(self, control_id: int) -> bool:
         hwnd = self._control_handle(control_id, timeout_seconds=0.2, poll_seconds=0.01)
