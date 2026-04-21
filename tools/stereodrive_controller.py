@@ -164,6 +164,7 @@ class StereoDriveController:
         return buffer.value
 
     def _control_map(self) -> dict[int, int]:
+        self._refresh_main_window()
         controls: dict[int, int] = {}
 
         @WNDENUMPROC
@@ -392,6 +393,7 @@ class StereoDriveController:
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, wparam, hwnd)
 
     def _send_command(self, command_id: int) -> None:
+        self._refresh_main_window()
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, command_id, 0)
 
     def _combo_select_exact(self, control_id: int, text: str) -> None:
