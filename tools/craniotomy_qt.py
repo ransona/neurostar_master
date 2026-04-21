@@ -542,7 +542,7 @@ class CraniotomyWindow(QMainWindow):
                 background: rgba(255,255,255,0.92);
                 border: 1px solid #d4ded3;
                 border-radius: 8px;
-                font-size: 110%;
+                font-size: 12px;
                 font-weight: 700;
                 padding: 2px 8px;
             }
@@ -1423,6 +1423,10 @@ class CraniotomyWindow(QMainWindow):
     def stop_injection(self) -> None:
         self.injection_stop_requested.set()
         self.injection_status_label.setText("Stopping injection")
+        try:
+            self.controller.stop_injectomate_motion()
+        except Exception:
+            pass
         self._start_syringe_position_scale_read(wait_for_injection_thread=True)
 
     def _rounded_test_volume(self) -> int:
@@ -1718,32 +1722,6 @@ class CraniotomyWindow(QMainWindow):
             return templates
 
         templates = []
-        for family in ("Segoe UI", "Arial", "Tahoma"):
-            for point_size in range(18, 31, 2):
-                for weight in (QFont.Normal, QFont.Bold):
-                    font = QFont(family, point_size, weight)
-                    for digit in "0123456789":
-                        image = QImage(48, 58, QImage.Format_ARGB32)
-                        image.fill(QColor("#ffffff"))
-                        painter = QPainter(image)
-                        painter.setFont(font)
-                        painter.setPen(QColor("#0000ff"))
-                        painter.drawText(QRectF(0, 0, 48, 58), Qt.AlignCenter, digit)
-                        painter.end()
-
-                        xs: list[int] = []
-                        ys: list[int] = []
-                        for y in range(image.height()):
-                            for x in range(image.width()):
-                                if self._is_blue_plunger_pixel(image, x, y):
-                                    xs.append(x)
-                                    ys.append(y)
-                        if not xs or not ys:
-                            continue
-                        mask = self._normalized_blue_mask(image, min(xs), max(xs), min(ys), max(ys))
-                        if mask:
-                            templates.append((digit, mask))
-
         self._cached_plunger_digit_templates = templates
         return templates
 

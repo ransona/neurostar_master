@@ -116,6 +116,7 @@ class StereoDriveError(RuntimeError):
 class StereoDriveController:
     def __init__(self) -> None:
         self.main_hwnd = self._find_main_window()
+        self._active_injectomate_trigger_control_id: int | None = None
 
     def _refresh_main_window(self) -> None:
         self.main_hwnd = self._find_main_window()
@@ -356,6 +357,10 @@ class StereoDriveController:
         hwnd = self._control_handle(control_id)
         user32.PostMessageW(hwnd, BM_CLICK, 0, 0)
 
+    def _post_click_handle(self, hwnd: int, control_id: int) -> None:
+        user32.PostMessageW(hwnd, BM_CLICK, 0, 0)
+        user32.PostMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
+
     def _post_command(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
         user32.PostMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
@@ -425,6 +430,27 @@ class StereoDriveController:
         self.show_injectomate()
         self._click(INJECT_BUTTON_ID)
 
+    def stop_injectomate_motion(self, trigger_control_id: int | None = None) -> None:
+        self.show_injectomate()
+        controls = self._control_map()
+        candidates: list[int] = []
+        active_trigger = trigger_control_id or self._active_injectomate_trigger_control_id
+        if active_trigger is not None:
+            candidates.append(active_trigger)
+        candidates.extend([INJECT_BUTTON_ID, SYRINGE_STEP_UP_ID, SYRINGE_STEP_DOWN_ID, INJECTION_GOTO_BUTTON_ID])
+
+        clicked_any = False
+        for control_id in dict.fromkeys(candidates):
+            hwnd = controls.get(control_id)
+            if not hwnd:
+                continue
+            text = self._get_text(hwnd).strip().lower()
+            if control_id == active_trigger or text in {"stop", "cancel"}:
+                self._post_click_handle(hwnd, control_id)
+                clicked_any = True
+        if not clicked_any:
+            raise StereoDriveError("No active Injectomate stop control was found.")
+
     def syringe_step_up(self, stop_requested=None) -> None:
         self.show_injectomate()
         self._click(SYRINGE_STEP_UP_ID)
@@ -471,28 +497,37 @@ class StereoDriveController:
         deadline = time.monotonic() + timeout_seconds
         saw_busy = False
         stable_since: float | None = None
-        while time.monotonic() < deadline:
-            if stop_requested is not None and stop_requested():
-                raise StereoDriveError("Injectomate syringe motion wait stopped.")
-            status_busy = bool(self._injectomate_motion_status_text())
-            disabled_busy = False
-            if trigger_control_id is not None:
-                try:
-                    disabled_busy = not self._is_control_enabled(trigger_control_id)
-                except StereoDriveError:
-                    disabled_busy = False
-            busy = status_busy or disabled_busy
-            now = time.monotonic()
-            if busy:
-                saw_busy = True
-                stable_since = None
-            else:
-                if stable_since is None:
-                    stable_since = now
-                required_stable_s = 0.10 if saw_busy else 0.20
-                if now - stable_since >= required_stable_s:
-                    return
-            time.sleep(poll_seconds)
+        self._active_injectomate_trigger_control_id = trigger_control_id
+        try:
+            while time.monotonic() < deadline:
+                if stop_requested is not None and stop_requested():
+                    try:
+                        self.stop_injectomate_motion(trigger_control_id=trigger_control_id)
+                    except Exception:
+                        pass
+                    raise StereoDriveError("Injectomate syringe motion wait stopped.")
+                status_busy = bool(self._injectomate_motion_status_text())
+                disabled_busy = False
+                if trigger_control_id is not None:
+                    try:
+                        disabled_busy = not self._is_control_enabled(trigger_control_id)
+                    except StereoDriveError:
+                        disabled_busy = False
+                busy = status_busy or disabled_busy
+                now = time.monotonic()
+                if busy:
+                    saw_busy = True
+                    stable_since = None
+                else:
+                    if stable_since is None:
+                        stable_since = now
+                    required_stable_s = 0.10 if saw_busy else 0.20
+                    if now - stable_since >= required_stable_s:
+                        return
+                time.sleep(poll_seconds)
+        finally:
+            if self._active_injectomate_trigger_control_id == trigger_control_id:
+                self._active_injectomate_trigger_control_id = None
         raise StereoDriveError("Timed out waiting for Injectomate syringe motion to complete.")
 
     def get_injection_plunger_position_nl(self) -> float | None:
