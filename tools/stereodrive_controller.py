@@ -325,10 +325,12 @@ class StereoDriveController:
 
     def confirm_below_skull_warning(self, timeout_seconds: float = 0.75, poll_seconds: float = 0.02) -> bool:
         deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
+        while True:
             popup_hwnd = self._find_below_skull_warning_dialog()
             if popup_hwnd is not None:
                 return self._click_popup_button(popup_hwnd, "Yes")
+            if time.monotonic() >= deadline:
+                break
             time.sleep(poll_seconds)
         return False
 

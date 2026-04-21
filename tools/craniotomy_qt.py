@@ -480,6 +480,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
         self.block_prompt_continue = True
+        self.warning_auto_confirm_stop = threading.Event()
         self.setWindowTitle("Craniotomy Planner")
         self.setFocusPolicy(Qt.StrongFocus)
         self.resize(1120, 760)
@@ -500,6 +501,22 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
         self.refresh_timer.start(50)
+        self._start_warning_auto_confirm_watcher()
+
+    def _start_warning_auto_confirm_watcher(self) -> None:
+        def worker() -> None:
+            while not self.warning_auto_confirm_stop.is_set():
+                try:
+                    self.controller.confirm_below_skull_warning(timeout_seconds=0.0)
+                except Exception:
+                    pass
+                self.warning_auto_confirm_stop.wait(0.05)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.warning_auto_confirm_stop.set()
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         root = QWidget()
