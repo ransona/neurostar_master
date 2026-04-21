@@ -1416,7 +1416,10 @@ class CraniotomyWindow(QMainWindow):
             )
         if settings.post_inject_pause_s > 0:
             steps.append(f"Pause at target for {settings.post_inject_pause_s:.1f} s.")
-        steps.append("Return to 1.000 mm above the stored surface.")
+        steps.append(
+            f"Retract to the stored surface at {settings.insert_retract_speed_um_s:.1f} um/sec, "
+            "then move normally to 1.000 mm above the surface."
+        )
         if self.block_check.isChecked():
             steps.append("Run the blockage test from 1.000 mm above the stored surface.")
         for index, text in enumerate(steps, start=1):
@@ -1719,9 +1722,24 @@ class CraniotomyWindow(QMainWindow):
         self.sequence_step_signal.emit(step_indexes["return"])
         self.injection_progress_signal.emit(
             int((site_index / max(1, site_count)) * 100),
-            f"Returning to 1 mm above surface for site {site_index}/{site_count}",
+            f"Retracting to surface at {settings.insert_retract_speed_um_s:.1f} um/sec for site {site_index}/{site_count}",
         )
+        retract_step_mm, retract_dwell_s = self._slow_axis_step_and_dwell(settings)
+        self.controller.move_axis_to_target(
+            "DV",
+            site.dv,
+            step_mm=retract_step_mm,
+            tolerance=0.003,
+            stop_requested=self.injection_stop_requested.is_set,
+            dwell_seconds=retract_dwell_s,
+        )
+        if self.injection_stop_requested.is_set():
+            return
         above_dv = self._above_surface_dv(site)
+        self.injection_progress_signal.emit(
+            int((site_index / max(1, site_count)) * 100),
+            f"Moving normally to 1 mm above surface for site {site_index}/{site_count}",
+        )
         self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
@@ -1772,6 +1790,11 @@ class CraniotomyWindow(QMainWindow):
         insertion_time_s = settings.overshoot_mm / speed_mm_s
         retract_time_s = settings.overshoot_mm / speed_mm_s
         return insertion_time_s, retract_time_s
+
+    def _slow_axis_step_and_dwell(self, settings: InjectionProtocolSettings) -> tuple[float, float]:
+        step_mm = 0.005
+        speed_mm_s = max(settings.insert_retract_speed_um_s / 1000.0, 0.0001)
+        return step_mm, step_mm / speed_mm_s
 
     def _protocol_movement_targets(
         self,
