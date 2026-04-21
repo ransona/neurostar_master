@@ -298,6 +298,40 @@ class StereoDriveController:
                 return True
         return False
 
+    def _click_popup_button(self, popup_hwnd: int, label: str) -> bool:
+        wanted = label.strip().lower()
+        for control in self._child_controls_for_window(popup_hwnd):
+            if control.class_name != "Button":
+                continue
+            text = control.text.replace("&", "").strip().lower()
+            if text == wanted:
+                user32.PostMessageW(control.hwnd, BM_CLICK, 0, 0)
+                return True
+        return False
+
+    def _combined_window_text(self, hwnd: int) -> str:
+        parts = [self._window_text(hwnd)]
+        parts.extend(control.text for control in self._child_controls_for_window(hwnd) if control.text)
+        return "\n".join(parts)
+
+    def _find_below_skull_warning_dialog(self) -> int | None:
+        for window in self._top_level_windows_for_process():
+            if window.class_name != "#32770":
+                continue
+            text = self._combined_window_text(window.hwnd).lower()
+            if "target position is below the skull surface" in text and "do you want to continue" in text:
+                return window.hwnd
+        return None
+
+    def confirm_below_skull_warning(self, timeout_seconds: float = 0.75, poll_seconds: float = 0.02) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            popup_hwnd = self._find_below_skull_warning_dialog()
+            if popup_hwnd is not None:
+                return self._click_popup_button(popup_hwnd, "Yes")
+            time.sleep(poll_seconds)
+        return False
+
     def _get_text(self, hwnd: int) -> str:
         length = int(user32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, 0))
         buffer = ctypes.create_unicode_buffer(length + 1)
@@ -817,6 +851,8 @@ class StereoDriveController:
             elif (positive and current >= target) or ((not positive) and current <= target):
                 return
             self.nudge_axis(axis, positive)
+            if axis.upper() == "DV" and positive:
+                self.confirm_below_skull_warning(timeout_seconds=0.05, poll_seconds=0.01)
             moved = True
             if status_callback is not None:
                 status_callback(f"Nudging {axis.upper()} to {target:.3f} (current {current:.3f})")
@@ -918,6 +954,7 @@ class StereoDriveController:
         self.set_target_position(ap, ml, dv)
         time.sleep(delay_seconds)
         self._click(GOTO_ID)
+        self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
 
     def wait_for_position(
         self,
@@ -933,6 +970,7 @@ class StereoDriveController:
         while time.monotonic() < deadline:
             if stop_requested is not None and stop_requested():
                 raise StereoDriveError("Operation paused.")
+            self.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
             current_ap, current_ml, current_dv = self.get_current_position()
             if (
                 abs(current_ap - ap) <= tolerance_mm
