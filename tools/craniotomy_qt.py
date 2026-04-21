@@ -634,6 +634,8 @@ class CraniotomyWindow(QMainWindow):
         header_layout.setSpacing(5)
         set_bregma_btn = QPushButton("Set Bregma")
         set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
+        tools_btn = QPushButton("Tools >")
+        tools_btn.clicked.connect(self.click_stereodrive_tools)
         bregma_btn = QPushButton("Bregma")
         bregma_btn.clicked.connect(self.goto_bregma)
         home_btn = QPushButton("Home")
@@ -674,6 +676,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(header_stop_btn)
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_btn)
+        header_layout.addWidget(tools_btn)
         header_layout.addWidget(bregma_btn)
         header_layout.addWidget(home_btn)
         header_layout.addWidget(work_btn)
@@ -1338,6 +1341,13 @@ class CraniotomyWindow(QMainWindow):
             self.controller.set_current_location_to_bregma()
             self.refresh_live_position()
             self.set_status("Current location set to Bregma. AP/ML/DV verified at 0.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def click_stereodrive_tools(self) -> None:
+        try:
+            self.controller.click_tools_button()
+            self.set_status("Clicked StereoDrive Tools button.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
