@@ -516,6 +516,9 @@ class StereoDriveController:
     def click_tools_button(self) -> None:
         self._click(TOOLS_BUTTON_ID)
 
+    def click_synchronize_drill_and_syringe_menu_item(self) -> None:
+        self._invoke_tools_menu_item("Synchronize Drill and Syringe")
+
     def _is_control_enabled(self, control_id: int) -> bool:
         hwnd = self._control_handle(control_id, timeout_seconds=0.2, poll_seconds=0.01)
         return bool(user32.IsWindowEnabled(hwnd))

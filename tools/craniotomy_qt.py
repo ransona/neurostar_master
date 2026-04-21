@@ -636,6 +636,8 @@ class CraniotomyWindow(QMainWindow):
         set_bregma_btn.clicked.connect(self.set_current_location_to_bregma)
         tools_btn = QPushButton("Tools >")
         tools_btn.clicked.connect(self.click_stereodrive_tools)
+        sync_tools_btn = QPushButton("Sync...")
+        sync_tools_btn.clicked.connect(self.click_stereodrive_sync_menu_item)
         bregma_btn = QPushButton("Bregma")
         bregma_btn.clicked.connect(self.goto_bregma)
         home_btn = QPushButton("Home")
@@ -677,6 +679,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_btn)
         header_layout.addWidget(tools_btn)
+        header_layout.addWidget(sync_tools_btn)
         header_layout.addWidget(bregma_btn)
         header_layout.addWidget(home_btn)
         header_layout.addWidget(work_btn)
@@ -1348,6 +1351,13 @@ class CraniotomyWindow(QMainWindow):
         try:
             self.controller.click_tools_button()
             self.set_status("Clicked StereoDrive Tools button.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def click_stereodrive_sync_menu_item(self) -> None:
+        try:
+            self.controller.click_synchronize_drill_and_syringe_menu_item()
+            self.set_status("Clicked Synchronize Drill and Syringe menu item.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
