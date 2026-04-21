@@ -1418,9 +1418,9 @@ class CraniotomyWindow(QMainWindow):
         injection_duration_s = self._main_injection_duration_s(settings)
         self.sequence_steps_list.clear()
         steps = [
-            f"Move to 1.000 mm above the stored surface, then to the injection target depth ({settings.injection_depth_mm:.3f} mm below surface).",
+            "Move to 1.000 mm above the stored surface, then move normally to the surface.",
             (
-                f"Advance from the target depth to {settings.overshoot_mm:.3f} mm overshoot at "
+                f"Insert from surface to {settings.injection_depth_mm + settings.overshoot_mm:.3f} mm below surface at "
                 f"{settings.insert_retract_speed_um_s:.1f} um/sec while injecting at "
                 f"{settings.insertion_rate_nl_min:.1f} nl/min."
             ),
@@ -1642,14 +1642,13 @@ class CraniotomyWindow(QMainWindow):
         self.sequence_step_signal.emit(step_indexes["approach"])
         self.injection_progress_signal.emit(
             int(((site_index - 1) / max(1, site_count)) * 100),
-            f"Moving to injection site {site_index}/{site_count}",
+            f"Moving to surface for injection site {site_index}/{site_count}",
         )
-        target_dv = self._target_injection_site_dv(site, settings)
-        self.controller.goto_position(site.ap, site.ml, target_dv, delay_seconds=0.5)
+        self.controller.goto_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
         self.controller.wait_for_position(
             site.ap,
             site.ml,
-            target_dv,
+            site.dv,
             tolerance_mm=0.02,
             timeout_seconds=60.0,
             poll_seconds=0.1,
@@ -1812,7 +1811,7 @@ class CraniotomyWindow(QMainWindow):
 
     def _insertion_retraction_times(self, settings: InjectionProtocolSettings) -> tuple[float, float]:
         speed_mm_s = max(settings.insert_retract_speed_um_s / 1000.0, 0.0001)
-        insertion_time_s = settings.overshoot_mm / speed_mm_s
+        insertion_time_s = (settings.injection_depth_mm + settings.overshoot_mm) / speed_mm_s
         retract_time_s = settings.overshoot_mm / speed_mm_s
         return insertion_time_s, retract_time_s
 
@@ -1830,7 +1829,7 @@ class CraniotomyWindow(QMainWindow):
         target_dv = self._target_injection_site_dv(site, settings)
         overshoot_dv = target_dv + settings.overshoot_mm
         targets = [
-            (0.0, target_dv),
+            (0.0, site.dv),
             (insertion_time_s, overshoot_dv),
             (insertion_time_s + retract_time_s, target_dv),
         ]
