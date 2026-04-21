@@ -91,6 +91,8 @@ user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
 user32.SendMessageW.restype = ctypes.c_ssize_t
 user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 user32.PostMessageW.restype = ctypes.c_bool
+user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+user32.IsWindowVisible.restype = ctypes.c_bool
 user32.IsWindowEnabled.argtypes = [ctypes.c_void_p]
 user32.IsWindowEnabled.restype = ctypes.c_bool
 user32.GetMenuItemCount.argtypes = [ctypes.c_void_p]
@@ -167,6 +169,9 @@ class StereoDriveController:
         user32.EnumWindows(callback, 0)
         if not matches:
             raise StereoDriveError("StereoDrive main window was not found. Start StereoDrive first.")
+        visible_matches = [hwnd for hwnd in matches if user32.IsWindowVisible(hwnd)]
+        if visible_matches:
+            return visible_matches[0]
         return matches[0]
 
     def _window_text(self, hwnd: int) -> str:
@@ -411,7 +416,12 @@ class StereoDriveController:
 
     def _send_command(self, command_id: int) -> None:
         self._refresh_main_window()
-        user32.SendMessageW(self.main_hwnd, WM_COMMAND, command_id, 0)
+        user32.SendMessageW(
+            ctypes.c_void_p(self.main_hwnd),
+            WM_COMMAND,
+            ctypes.c_void_p(command_id),
+            ctypes.c_void_p(0),
+        )
 
     def _normalize_menu_label(self, text: str) -> str:
         normalized = text.lower().replace("&", "").replace("...", "").replace("\u2026", "")
@@ -623,7 +633,7 @@ class StereoDriveController:
             return
         self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
 
-        if self._wait_for_reference_panel(timeout_seconds=1.0):
+        if self._wait_for_reference_panel(timeout_seconds=3.0):
             return
 
         raise StereoDriveError("Synchronize Drill and Syringe panel did not open.")
