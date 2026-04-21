@@ -33,6 +33,7 @@ STOP_ID = 1018
 GOTO_HOME_ID = 1540
 GOTO_WORK_ID = 1541
 SHOW_INJECTOMATE_COMMAND_ID = 32815
+SHOW_REFERENCE_PANEL_COMMAND_ID = 32809
 ACTIVE_DRILL_ID = 1043
 REFERENCE_SELECTOR_ID = 1387
 STEP_AP_ID = 1132
@@ -61,6 +62,7 @@ FILL_BUTTON_ID = 10032
 CALIBRATE_INJECTOMATE_ID = 10030
 CALIBRATE_SCALE_VALUE_ID = 3242
 CLOSE_INJECTOMATE_ID = 10031
+CLOSE_REFERENCE_PANEL_ID = 1042
 NUDGE_STEP_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
 
@@ -471,6 +473,26 @@ class StereoDriveController:
         except StereoDriveError:
             return ""
 
+    def reference_panel_visible(self) -> bool:
+        controls = self._control_map()
+        return SET_REFERENCE_BREGMA_COMMAND_ID in controls or REFERENCE_SELECTOR_ID in controls
+
+    def show_reference_panel(self) -> None:
+        if self.reference_panel_visible():
+            return
+        self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
+        self._control_handle(SET_REFERENCE_BREGMA_COMMAND_ID, timeout_seconds=2.0, poll_seconds=0.05)
+
+    def close_reference_panel(self) -> None:
+        if not self.reference_panel_visible():
+            return
+        self._click(CLOSE_REFERENCE_PANEL_ID)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if not self.reference_panel_visible():
+                return
+            time.sleep(0.05)
+
     def injectomate_visible(self) -> bool:
         return INJECTION_VOLUME_ID in self._control_map()
 
@@ -676,12 +698,16 @@ class StereoDriveController:
         return max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
 
     def set_current_location_to_bregma(self) -> None:
-        self._click(ACTIVE_DRILL_ID)
-        time.sleep(0.1)
-        self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
-        time.sleep(0.1)
-        self._send_command(SET_DRILL_TO_BREGMA_COMMAND_ID)
-        self._verify_bregma_zeroed()
+        self.show_reference_panel()
+        try:
+            self._click(ACTIVE_DRILL_ID)
+            time.sleep(0.1)
+            self._send_command(SET_REFERENCE_BREGMA_COMMAND_ID)
+            time.sleep(0.1)
+            self._send_command(SET_DRILL_TO_BREGMA_COMMAND_ID)
+            self._verify_bregma_zeroed()
+        finally:
+            self.close_reference_panel()
 
     def _verify_bregma_zeroed(self, timeout_seconds: float = 2.0, tolerance_mm: float = 0.02) -> None:
         deadline = time.monotonic() + timeout_seconds
