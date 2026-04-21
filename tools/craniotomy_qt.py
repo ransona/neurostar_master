@@ -508,6 +508,7 @@ class CraniotomyWindow(QMainWindow):
             while not self.warning_auto_confirm_stop.is_set():
                 try:
                     self.controller.confirm_below_skull_warning(timeout_seconds=0.0)
+                    self.controller.confirm_no_actual_movement_dialog(timeout_seconds=0.0)
                 except Exception:
                     pass
                 self.warning_auto_confirm_stop.wait(0.05)

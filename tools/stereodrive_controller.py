@@ -19,6 +19,8 @@ CB_GETLBTEXTLEN = 0x0149
 CB_SETCURSEL = 0x014E
 CB_FINDSTRINGEXACT = 0x0158
 CBN_SELCHANGE = 1
+EN_CHANGE = 0x0300
+EN_UPDATE = 0x0400
 
 TARGET_AP_ID = 1147
 TARGET_ML_ID = 1148
@@ -323,12 +325,32 @@ class StereoDriveController:
                 return window.hwnd
         return None
 
+    def _find_no_actual_movement_dialog(self) -> int | None:
+        for window in self._top_level_windows_for_process():
+            if window.class_name != "#32770":
+                continue
+            text = self._combined_window_text(window.hwnd).lower()
+            if "there are no actual movements to execute" in text:
+                return window.hwnd
+        return None
+
     def confirm_below_skull_warning(self, timeout_seconds: float = 0.75, poll_seconds: float = 0.02) -> bool:
         deadline = time.monotonic() + timeout_seconds
         while True:
             popup_hwnd = self._find_below_skull_warning_dialog()
             if popup_hwnd is not None:
                 return self._click_popup_button(popup_hwnd, "Yes")
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_seconds)
+        return False
+
+    def confirm_no_actual_movement_dialog(self, timeout_seconds: float = 0.5, poll_seconds: float = 0.02) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            popup_hwnd = self._find_no_actual_movement_dialog()
+            if popup_hwnd is not None:
+                return self._click_popup_ok_button(popup_hwnd)
             if time.monotonic() >= deadline:
                 break
             time.sleep(poll_seconds)
@@ -349,6 +371,14 @@ class StereoDriveController:
     def _set_text(self, hwnd: int, text: str) -> None:
         text_buffer = ctypes.create_unicode_buffer(text)
         user32.SendMessageW(hwnd, WM_SETTEXT, 0, ctypes.cast(text_buffer, ctypes.c_void_p))
+
+    def _set_edit_control_text(self, control_id: int, text: str) -> None:
+        hwnd = self._control_handle(control_id)
+        self._set_text(hwnd, text)
+        self._notify_command(control_id, EN_UPDATE, hwnd)
+        self._notify_command(control_id, EN_CHANGE, hwnd)
+        if not self._get_text(hwnd):
+            raise StereoDriveError(f"Target control {control_id} is blank after setting value '{text}'.")
 
     def _notify_command(self, control_id: int, notify_code: int, hwnd: int) -> None:
         wparam = (notify_code << 16) | (control_id & 0xFFFF)
@@ -936,15 +966,24 @@ class StereoDriveController:
         raise StereoDriveError(f"Timed out moving AP/ML to target [{ap:.3f}, {ml:.3f}].")
 
     def set_target_position(self, ap: float, ml: float, dv: float) -> None:
-        self._set_text(self._control_handle(TARGET_AP_ID), f"{ap:.2f}")
-        self._set_text(self._control_handle(TARGET_ML_ID), f"{ml:.2f}")
-        self._set_text(self._control_handle(TARGET_DV_ID), f"{dv:.2f}")
+        self._set_edit_control_text(TARGET_AP_ID, f"{ap:.2f}")
+        self._set_edit_control_text(TARGET_ML_ID, f"{ml:.2f}")
+        self._set_edit_control_text(TARGET_DV_ID, f"{dv:.2f}")
+        time.sleep(0.1)
         self._verify_target_position(ap, ml, dv)
 
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
-        actual_ap = self._parse_float(TARGET_AP_ID)
-        actual_ml = self._parse_float(TARGET_ML_ID)
-        actual_dv = self._parse_float(TARGET_DV_ID)
+        actual_ap_text = self._get_text(self._control_handle(TARGET_AP_ID))
+        actual_ml_text = self._get_text(self._control_handle(TARGET_ML_ID))
+        actual_dv_text = self._get_text(self._control_handle(TARGET_DV_ID))
+        if not actual_ap_text or not actual_ml_text or not actual_dv_text:
+            raise StereoDriveError(
+                f"Target position boxes must all be populated before GoTo. "
+                f"Current values: AP='{actual_ap_text}', ML='{actual_ml_text}', DV='{actual_dv_text}'."
+            )
+        actual_ap = float(actual_ap_text)
+        actual_ml = float(actual_ml_text)
+        actual_dv = float(actual_dv_text)
         if round(actual_ap, 2) != round(ap, 2):
             raise StereoDriveError(f"Failed to set Bregma AP target box to {ap:.2f}.")
         if round(actual_ml, 2) != round(ml, 2):
@@ -952,11 +991,12 @@ class StereoDriveController:
         if round(actual_dv, 2) != round(dv, 2):
             raise StereoDriveError(f"Failed to set Bregma DV target box to {dv:.2f}.")
 
-    def goto_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.5) -> None:
+    def goto_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
         self.set_target_position(ap, ml, dv)
         time.sleep(delay_seconds)
         self._click(GOTO_ID)
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
+        self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
 
     def wait_for_position(
         self,
