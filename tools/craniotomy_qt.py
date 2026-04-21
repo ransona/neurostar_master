@@ -611,6 +611,14 @@ class CraniotomyWindow(QMainWindow):
         self.current_ap_label = QLabel("-")
         self.current_ml_label = QLabel("-")
         self.current_dv_label = QLabel("-")
+        self.action_status_label = QLabel(self.current_action)
+        self.action_status_label.setWordWrap(True)
+        self.action_status_label.setMinimumHeight(34)
+        self.action_status_label.setStyleSheet(
+            "font-size: 22px; font-weight: 800; color: #173122; "
+            "background: rgba(255,255,255,0.72); border: 1px solid #d4ded3; "
+            "border-radius: 7px; padding: 4px 8px;"
+        )
         for label in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setProperty("role", "coord")
@@ -666,6 +674,7 @@ class CraniotomyWindow(QMainWindow):
         header_layout.addStretch(1)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
+        header_container.addWidget(self.action_status_label)
         layout.addLayout(header_container)
 
         self.tabs = QTabWidget()
@@ -914,8 +923,6 @@ class CraniotomyWindow(QMainWindow):
         self.injection_site_progress = QProgressBar()
         self.injection_site_progress.setRange(0, 100)
         self.injection_site_progress.setValue(0)
-        self.injection_status_label = QLabel("Idle")
-        self.injection_status_label.setProperty("role", "muted")
         self.start_injection_btn = QPushButton("Go")
         self.start_injection_btn.setProperty("variant", "primary")
         self.start_injection_btn.style().unpolish(self.start_injection_btn)
@@ -961,14 +968,13 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.block_test_volume_nl, 2, 3)
         single_layout.addWidget(QLabel("Program sequence"), 3, 0, 1, 6)
         single_layout.addWidget(self.sequence_steps_list, 4, 0, 1, 6)
-        single_layout.addWidget(self.injection_status_label, 5, 0, 1, 6)
-        single_layout.addWidget(QLabel("Overall sequence progress"), 6, 0)
-        single_layout.addWidget(self.injection_progress, 6, 1, 1, 5)
-        single_layout.addWidget(QLabel("Current injection/movement"), 7, 0)
-        single_layout.addWidget(self.injection_site_progress, 7, 1, 1, 5)
-        single_layout.addWidget(self.start_injection_btn, 8, 0)
-        single_layout.addWidget(self.pause_injection_btn, 8, 1)
-        single_layout.addWidget(self.stop_injection_btn, 8, 2, 1, 4)
+        single_layout.addWidget(QLabel("Overall sequence progress"), 5, 0)
+        single_layout.addWidget(self.injection_progress, 5, 1, 1, 5)
+        single_layout.addWidget(QLabel("Current injection/movement"), 6, 0)
+        single_layout.addWidget(self.injection_site_progress, 6, 1, 1, 5)
+        single_layout.addWidget(self.start_injection_btn, 7, 0)
+        single_layout.addWidget(self.pause_injection_btn, 7, 1)
+        single_layout.addWidget(self.stop_injection_btn, 7, 2, 1, 4)
 
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
@@ -1038,6 +1044,8 @@ class CraniotomyWindow(QMainWindow):
 
     def set_status(self, message: str) -> None:
         self.current_action = message or "Trajectory"
+        if hasattr(self, "action_status_label"):
+            self.action_status_label.setText(self.current_action)
         self.top_view.title = self.current_action
         self.top_view.update()
 
@@ -1314,7 +1322,7 @@ class CraniotomyWindow(QMainWindow):
             self.ensure_syringe_move_allowed(volume_nl, False)
             self.controller.syringe_step(f"{volume_nl} nl", up=False)
             self.track_injection_delivery(volume_nl)
-            self.injection_status_label.setText(f"Verifying no blockage (test volume = {volume_nl} nl)")
+            self.set_status(f"Verifying no blockage (test volume = {volume_nl} nl)")
         except Exception as exc:
             QMessageBox.warning(self, "Injectomate", str(exc))
 
@@ -1324,7 +1332,7 @@ class CraniotomyWindow(QMainWindow):
         try:
             self.controller.empty_syringe()
             self.track_syringe_empty()
-            self.injection_status_label.setText("Emptying syringe to 0")
+            self.set_status("Emptying syringe to 0")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
 
@@ -1524,7 +1532,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_stop_requested.clear()
             self.injection_progress.setValue(0)
             self.injection_site_progress.setValue(0)
-            self.injection_status_label.setText(
+            self.set_status(
                 f"Ready: {len(sites)} site(s), {settings.main_volume_nl} nl; insertion {settings.insertion_rate_nl_min:.1f}, main {settings.main_rate_nl_min:.1f} nl/min"
             )
             self.start_injection_btn.setEnabled(False)
@@ -1550,15 +1558,15 @@ class CraniotomyWindow(QMainWindow):
         if self.injection_pause_requested.is_set():
             self.injection_pause_requested.clear()
             self.pause_injection_btn.setText("Pause")
-            self.injection_status_label.setText("Injection resumed")
+            self.set_status("Injection resumed")
         else:
             self.injection_pause_requested.set()
             self.pause_injection_btn.setText("Resume")
-            self.injection_status_label.setText("Injection paused")
+            self.set_status("Injection paused")
 
     def stop_injection(self) -> None:
         self.injection_stop_requested.set()
-        self.injection_status_label.setText("Stopping injection")
+        self.set_status("Stopping injection")
         try:
             self.controller.stop_injectomate_motion()
         except Exception:
@@ -1897,7 +1905,7 @@ class CraniotomyWindow(QMainWindow):
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
-        self.injection_status_label.setText(message)
+        self.set_status(message)
 
     def set_injection_site_progress(self, percent: int) -> None:
         self.injection_site_progress.setValue(max(0, min(100, percent)))
@@ -1920,7 +1928,7 @@ class CraniotomyWindow(QMainWindow):
     def finish_injection(self, message: str) -> None:
         self.set_active_sequence_step(-1)
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
-        self.injection_status_label.setText(display_message)
+        self.set_status(display_message)
         self.start_injection_btn.setEnabled(True)
         self.pause_injection_btn.setText("Pause")
         if message in ("Injection complete", "Injection protocol complete"):
