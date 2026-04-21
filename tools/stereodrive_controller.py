@@ -621,8 +621,6 @@ class StereoDriveController:
     def show_reference_panel(self) -> None:
         if self.reference_panel_visible():
             return
-        self.click_tools_button()
-        self._popup_menu_window(timeout_seconds=1.0)
         self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
 
         if self._wait_for_reference_panel(timeout_seconds=1.0):
