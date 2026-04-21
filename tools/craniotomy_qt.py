@@ -870,7 +870,7 @@ class CraniotomyWindow(QMainWindow):
         self.main_injection_rate_nl_min = self._number_edit(100.0)
         self.injection_depth_mm = self._number_edit(0.2)
         self.insert_retract_speed_um_s = self._number_edit(20.0)
-        self.movement_overshoot_mm = self._number_edit(0.0)
+        self.movement_overshoot_mm = self._number_edit(0.05)
         self.post_inject_pause_s = self._number_edit(5.0)
         self.single_injection_volume_nl.textChanged.connect(self.update_injection_rate_label)
         self.insertion_injection_rate_nl_min.textChanged.connect(self.update_injection_rate_label)
@@ -1364,7 +1364,7 @@ class CraniotomyWindow(QMainWindow):
         main_rate_nl_min = max(self._line_float(self.main_injection_rate_nl_min, 100.0, 0.1, 100000.0), 0.1)
         injection_depth_mm = max(0.0, self._line_float(self.injection_depth_mm, 0.2, 0.0, 20.0))
         speed_um_s = max(self._line_float(self.insert_retract_speed_um_s, 20.0, 0.1, 10000.0), 0.1)
-        overshoot_mm = max(0.0, self._line_float(self.movement_overshoot_mm, 0.0, 0.0, 10.0))
+        overshoot_mm = max(0.0, self._line_float(self.movement_overshoot_mm, 0.05, 0.0, 10.0))
         pause_s = max(0.0, self._line_float(self.post_inject_pause_s, 5.0, 0.0, 3600.0))
         return InjectionProtocolSettings(
             main_volume_nl=volume_nl,
