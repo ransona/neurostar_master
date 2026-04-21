@@ -428,10 +428,14 @@ function Close-ScalePopup {
 function Move-ScalePopupOffscreen {
     param([pscustomobject]$Probe)
 
-    $width = [Math]::Max(1, [int]$Probe.Window.Rect.Width)
-    $height = [Math]::Max(1, [int]$Probe.Window.Rect.Height)
-    [void][StereoDriveWin32]::SetWindowPos($Probe.Window.Handle, [IntPtr]::Zero, -32000, -32000, $width, $height, 0x0014)
-    Start-Sleep -Milliseconds 80
+    $window = if ($Probe.PSObject.Properties["Window"]) { $Probe.Window } else { $Probe }
+    if (-not $window -or $window.Handle -eq [IntPtr]::Zero) {
+        return
+    }
+
+    # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE keeps the dialog alive but gets it out of view.
+    [void][StereoDriveWin32]::SetWindowPos($window.Handle, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x0015)
+    Start-Sleep -Milliseconds 10
 }
 
 function Invoke-DirectCommand {
@@ -683,6 +687,92 @@ function Find-ScaleControl {
     return $null
 }
 
+function Test-ScalePopupWindow {
+    param(
+        [pscustomobject]$Window,
+        [int]$ProcessId,
+        [pscustomobject]$MainWindow = $null
+    )
+
+    if (-not $Window -or -not $Window.Visible -or -not $Window.Rect -or $Window.Rect.Width -le 0 -or $Window.Rect.Height -le 0) {
+        return $false
+    }
+
+    if ($Window.Caption -match "Microdrive Calibrate Scale|Injectomate") {
+        return $true
+    }
+
+    if ($Window.ProcessId -ne $ProcessId -or $Window.ClassName -ne "#32770" -or -not $MainWindow) {
+        return $false
+    }
+
+    return -not (
+        $Window.Rect.Right -lt ($MainWindow.Rect.Left - 120) -or
+        $Window.Rect.Left -gt ($MainWindow.Rect.Right + 240) -or
+        $Window.Rect.Bottom -lt ($MainWindow.Rect.Top - 120) -or
+        $Window.Rect.Top -gt ($MainWindow.Rect.Bottom + 240)
+    )
+}
+
+function Find-ScalePopupWindow {
+    param(
+        [int]$ProcessId,
+        [IntPtr]$MainWindowHandle = [IntPtr]::Zero
+    )
+
+    $windows = @(Get-TopLevelWindows | Where-Object { $_.Visible -and $_.Rect -and $_.Rect.Width -gt 0 -and $_.Rect.Height -gt 0 })
+    $mainWindow = $null
+    if ($MainWindowHandle -ne [IntPtr]::Zero) {
+        $mainWindow = $windows | Where-Object { $_.Handle -eq $MainWindowHandle } | Select-Object -First 1
+    }
+
+    $captionMatch = $windows | Where-Object { $_.Caption -match "Microdrive Calibrate Scale|Injectomate" } | Select-Object -First 1
+    if ($captionMatch) {
+        return $captionMatch
+    }
+
+    return $windows | Where-Object { Test-ScalePopupWindow -Window $_ -ProcessId $ProcessId -MainWindow $mainWindow } | Select-Object -First 1
+}
+
+function Wait-ScalePopupWindow {
+    param(
+        [int]$ProcessId,
+        [IntPtr]$MainWindowHandle = [IntPtr]::Zero,
+        [int]$TimeoutMilliseconds = 3000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $window = Find-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle
+        if ($window) {
+            return $window
+        }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return $null
+}
+
+function Get-ScaleProbeFromWindow {
+    param([pscustomobject]$Window)
+
+    if (-not $Window) {
+        return $null
+    }
+
+    $children = @(Get-ChildControls -ParentHandle $Window.Handle)
+    $match = $children | Where-Object { $_.ControlId -eq 3242 } | Select-Object -First 1
+    if (-not $match) {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Window = $Window
+        Control = $match
+        Children = $children
+    }
+}
+
 function Get-UiAutomationDetails {
     param([IntPtr]$Handle)
 
@@ -807,7 +897,25 @@ function Read-ScaleViaPopupApi {
     )
 
     Open-InjectomateCalibrate -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
-    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 15000
+    $popupWindow = Wait-ScalePopupWindow -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 3000
+    if ($popupWindow) {
+        Move-ScalePopupOffscreen -Probe $popupWindow
+        $probe = $null
+        $deadline = [DateTime]::UtcNow.AddMilliseconds(3000)
+        do {
+            $probe = Get-ScaleProbeFromWindow -Window $popupWindow
+            if ($probe) {
+                break
+            }
+            Start-Sleep -Milliseconds 50
+        } while ([DateTime]::UtcNow -lt $deadline)
+    } else {
+        $probe = $null
+    }
+
+    if (-not $probe) {
+        $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 12000
+    }
     if ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false) {
         $windowSummary = @($probe.SeenWindows | ForEach-Object {
             "handle=$($_.Handle) pid=$($_.ProcessId) class=$($_.ClassName) caption='$($_.Caption)' rect=($($_.Rect.Left),$($_.Rect.Top),$($_.Rect.Right),$($_.Rect.Bottom))"
@@ -815,10 +923,6 @@ function Read-ScaleViaPopupApi {
         throw "Scale popup/control 3242 was not found after opening calibrate. Visible windows: $windowSummary"
     }
     Move-ScalePopupOffscreen -Probe $probe
-    $probe = Wait-ScaleControl -ProcessId $ProcessId -MainWindowHandle $MainWindowHandle -TimeoutMilliseconds 1500
-    if ($probe.PSObject.Properties["Found"] -and $probe.Found -eq $false) {
-        throw "Scale popup/control 3242 was found, moved offscreen, then could not be reacquired."
-    }
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds(5000)
     $lastText = ""
