@@ -631,15 +631,30 @@ class StereoDriveController:
             time.sleep(0.05)
         return self.reference_panel_visible()
 
+    def _wait_for_reference_controls(self, timeout_seconds: float = 3.0) -> bool:
+        required_controls = (
+            ACTIVE_DRILL_ID,
+            SET_REFERENCE_BREGMA_COMMAND_ID,
+            SET_DRILL_TO_BREGMA_COMMAND_ID,
+            CLOSE_REFERENCE_PANEL_ID,
+        )
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            controls = self._control_map()
+            if all(control_id in controls for control_id in required_controls):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def ensure_reference_panel_open(self) -> None:
+        if not self.reference_panel_visible():
+            self.send_sync_direct_command()
+        if self._wait_for_reference_controls(timeout_seconds=3.0):
+            return
+        raise StereoDriveError("Synchronize Drill and Syringe panel controls did not become available.")
+
     def show_reference_panel(self) -> None:
-        if self.reference_panel_visible():
-            return
-        self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
-
-        if self._wait_for_reference_panel(timeout_seconds=3.0):
-            return
-
-        raise StereoDriveError("Synchronize Drill and Syringe panel did not open.")
+        self.ensure_reference_panel_open()
 
     def close_reference_panel(self) -> None:
         if not self.reference_panel_visible():
@@ -856,7 +871,7 @@ class StereoDriveController:
         return max(gauge_controls, key=lambda control: (control.bottom - control.top) * (control.right - control.left))
 
     def set_current_location_to_bregma(self) -> None:
-        self.show_reference_panel()
+        self.ensure_reference_panel_open()
         try:
             self._click(ACTIVE_DRILL_ID)
             time.sleep(0.1)
