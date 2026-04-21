@@ -948,12 +948,15 @@ class CraniotomyWindow(QMainWindow):
         add_site_btn.clicked.connect(self.add_injection_site)
         remove_site_btn = QPushButton("Remove Selected Site")
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
+        clear_sites_btn = QPushButton("Clear Sites")
+        clear_sites_btn.clicked.connect(self.clear_injection_sites)
         self.block_check = QCheckBox("Check blockage after each site")
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
-        sites_layout.addWidget(self.block_check, 0, 2, 1, 2)
-        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 4)
+        sites_layout.addWidget(clear_sites_btn, 0, 2)
+        sites_layout.addWidget(self.block_check, 0, 3, 1, 2)
+        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 5)
         layout.addStretch(1)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
@@ -1416,6 +1419,10 @@ class CraniotomyWindow(QMainWindow):
         if 0 <= row < len(self.injection_sites):
             del self.injection_sites[row]
             self.refresh_injection_sites_list()
+
+    def clear_injection_sites(self) -> None:
+        self.injection_sites.clear()
+        self.refresh_injection_sites_list()
 
     def refresh_injection_sites_list(self) -> None:
         self.injection_sites_list.clear()
