@@ -517,7 +517,7 @@ class StereoDriveController:
         self._click(TOOLS_BUTTON_ID)
 
     def click_synchronize_drill_and_syringe_menu_item(self) -> None:
-        self._invoke_tools_menu_item("Synchronize Drill and Syringe")
+        self.show_reference_panel()
 
     def _is_control_enabled(self, control_id: int) -> bool:
         hwnd = self._control_handle(control_id, timeout_seconds=0.2, poll_seconds=0.01)
@@ -587,13 +587,13 @@ class StereoDriveController:
             return
         try:
             self._invoke_tools_menu_item("Synchronize Drill and Syringe")
-        except StereoDriveError as exc:
-            raise StereoDriveError(f"Could not open Synchronize Drill and Syringe panel from Tools menu. {exc}") from exc
+        except StereoDriveError:
+            self._send_command(SHOW_REFERENCE_PANEL_COMMAND_ID)
 
         if self._wait_for_reference_panel(timeout_seconds=1.0):
             return
 
-        raise StereoDriveError("Synchronize Drill and Syringe menu item was selected, but the panel did not open.")
+        raise StereoDriveError("Synchronize Drill and Syringe panel did not open.")
 
     def close_reference_panel(self) -> None:
         if not self.reference_panel_visible():
