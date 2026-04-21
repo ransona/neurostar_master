@@ -2008,10 +2008,7 @@ if ($Action -eq "read-open-tools-menu") {
         throw "No open Tools popup menu was found. Open Tools > first, then rerun this action."
     }
     $menu = Get-PopupMenuHandle -PopupWindowHandle $popup.Handle
-    [pscustomobject]@{
-        Popup = $popup
-        Items = @(Get-MenuItems -MenuHandle $menu)
-    }
+    Get-MenuItems -MenuHandle $menu
     return
 }
 
