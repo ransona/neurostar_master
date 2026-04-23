@@ -54,7 +54,8 @@ param(
         "jog-dv-inf",
         "set-step-ap",
         "set-step-ml",
-        "set-step-dv"
+        "set-step-dv",
+        "benchmark-axis-moves"
     )]
     [string]$Action,
     [string]$Value,
@@ -1403,6 +1404,170 @@ function Get-Coords {
     }
 }
 
+function Convert-CoordTextToDouble {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        throw "Coordinate text is empty."
+    }
+    return [double]::Parse($Text.Trim(), [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Get-AxisCurrentValue {
+    param(
+        [hashtable]$ControlMap,
+        [string]$Axis
+    )
+
+    $controlId = switch ($Axis.ToUpperInvariant()) {
+        "AP" { "1138" }
+        "ML" { "1139" }
+        "DV" { "1140" }
+        default { throw "Unsupported axis '$Axis'." }
+    }
+    return Convert-CoordTextToDouble -Text (Get-ControlText -Handle $ControlMap[$controlId].Handle)
+}
+
+function Get-AxisButtonAction {
+    param(
+        [string]$Axis,
+        [bool]$Positive
+    )
+
+    switch ($Axis.ToUpperInvariant()) {
+        "AP" { if ($Positive) { return "jog-ap-ant" } else { return "jog-ap-post" } }
+        "ML" { if ($Positive) { return "jog-ml-right" } else { return "jog-ml-left" } }
+        "DV" { if ($Positive) { return "jog-dv-inf" } else { return "jog-dv-sup" } }
+        default { throw "Unsupported axis '$Axis'." }
+    }
+}
+
+function Get-AxisStepAction {
+    param([string]$Axis)
+
+    switch ($Axis.ToUpperInvariant()) {
+        "AP" { return "set-step-ap" }
+        "ML" { return "set-step-ml" }
+        "DV" { return "set-step-dv" }
+        default { throw "Unsupported axis '$Axis'." }
+    }
+}
+
+function Format-StepLabel {
+    param([double]$StepMm)
+
+    if ($StepMm -ge 1.0 -and ([Math]::Abs($StepMm - [Math]::Round($StepMm)) -lt 0.0000001)) {
+        return "$([int][Math]::Round($StepMm)) mm"
+    }
+    $text = $StepMm.ToString("0.###", [System.Globalization.CultureInfo]::InvariantCulture)
+    return "$text mm"
+}
+
+function Wait-AxisAtTarget {
+    param(
+        [hashtable]$ControlMap,
+        [string]$Axis,
+        [double]$Target,
+        [double]$ToleranceMm = 0.003,
+        [double]$TimeoutSeconds = 30.0,
+        [int]$PollMilliseconds = 20
+    )
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutSeconds * 1000.0)
+    $last = $null
+    while ((Get-Date) -lt $deadline) {
+        $last = Get-AxisCurrentValue -ControlMap $ControlMap -Axis $Axis
+        if ([Math]::Abs($last - $Target) -le $ToleranceMm) {
+            return [pscustomobject]@{
+                Reached = $true
+                Value = $last
+                ErrorMm = $last - $Target
+            }
+        }
+        Start-Sleep -Milliseconds $PollMilliseconds
+    }
+    return [pscustomobject]@{
+        Reached = $false
+        Value = $last
+        ErrorMm = if ($null -eq $last) { $null } else { $last - $Target }
+    }
+}
+
+function Invoke-AxisBenchmarkMove {
+    param(
+        [hashtable]$ControlMap,
+        [string]$Axis,
+        [double]$DistanceMm,
+        [bool]$Positive,
+        [int]$Repeat,
+        [string]$ClickMode,
+        [IntPtr]$MainWindowHandle,
+        [double]$ToleranceMm
+    )
+
+    $start = Get-AxisCurrentValue -ControlMap $ControlMap -Axis $Axis
+    $target = if ($Positive) { $start + $DistanceMm } else { $start - $DistanceMm }
+    $buttonAction = Get-AxisButtonAction -Axis $Axis -Positive $Positive
+    $buttonId = $script:buttonIds[$buttonAction]
+    $direction = if ($Positive) { "+" } else { "-" }
+    $startedAt = Get-Date
+    Invoke-ButtonClick -ControlMap $ControlMap -ControlId $buttonId -MainWindowHandle $MainWindowHandle -ClickMode $ClickMode
+    $wait = Wait-AxisAtTarget -ControlMap $ControlMap -Axis $Axis -Target $target -ToleranceMm $ToleranceMm
+    $elapsed = ((Get-Date) - $startedAt).TotalSeconds
+    $end = Get-AxisCurrentValue -ControlMap $ControlMap -Axis $Axis
+    $achieved = [Math]::Abs($end - $start)
+    return [pscustomobject]@{
+        Axis = $Axis.ToUpperInvariant()
+        DistanceMm = $DistanceMm
+        Direction = $direction
+        Repeat = $Repeat
+        Start = $start
+        Target = $target
+        End = $end
+        AchievedMm = $achieved
+        ElapsedSeconds = [Math]::Round($elapsed, 4)
+        MmPerSecond = if ($elapsed -gt 0) { [Math]::Round($achieved / $elapsed, 5) } else { $null }
+        Reached = $wait.Reached
+        ErrorMm = $wait.ErrorMm
+    }
+}
+
+function Invoke-AxisMoveBenchmark {
+    param(
+        [hashtable]$ControlMap,
+        [string]$Spec,
+        [string]$ClickMode,
+        [IntPtr]$MainWindowHandle
+    )
+
+    $parts = @($Spec -split ';')
+    $axes = if ($parts.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($parts[0])) { @($parts[0] -split ',' | ForEach-Object { $_.Trim().ToUpperInvariant() }) } else { @("AP", "ML", "DV") }
+    $distances = if ($parts.Count -ge 2 -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
+        @($parts[1] -split ',' | ForEach-Object { [double]::Parse($_.Trim(), [System.Globalization.CultureInfo]::InvariantCulture) })
+    } else {
+        @(0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
+    }
+    $repeats = if ($parts.Count -ge 3 -and -not [string]::IsNullOrWhiteSpace($parts[2])) { [int]$parts[2] } else { 3 }
+    $tolerance = if ($parts.Count -ge 4 -and -not [string]::IsNullOrWhiteSpace($parts[3])) {
+        [double]::Parse($parts[3].Trim(), [System.Globalization.CultureInfo]::InvariantCulture)
+    } else {
+        0.003
+    }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($axis in $axes) {
+        foreach ($distance in $distances) {
+            $stepAction = Get-AxisStepAction -Axis $axis
+            Set-ComboByText -ControlMap $ControlMap -ControlId $script:comboIds[$stepAction] -WantedText (Format-StepLabel -StepMm $distance)
+            foreach ($repeat in 1..$repeats) {
+                $rows.Add((Invoke-AxisBenchmarkMove -ControlMap $ControlMap -Axis $axis -DistanceMm $distance -Positive $true -Repeat $repeat -ClickMode $ClickMode -MainWindowHandle $MainWindowHandle -ToleranceMm $tolerance))
+                $rows.Add((Invoke-AxisBenchmarkMove -ControlMap $ControlMap -Axis $axis -DistanceMm $distance -Positive $false -Repeat $repeat -ClickMode $ClickMode -MainWindowHandle $MainWindowHandle -ToleranceMm $tolerance))
+            }
+        }
+    }
+    return $rows
+}
+
 function Normalize-MenuLabel {
     param([string]$Text)
 
@@ -1897,6 +2062,15 @@ if ($Action -eq "show-map") {
 
 if ($Action -eq "read-coords") {
     Get-Coords -ControlMap $controlMap
+    return
+}
+
+if ($Action -eq "benchmark-axis-moves") {
+    if (-not $Value) {
+        $Value = "AP,ML,DV;0.02,0.05,0.1,0.2,0.5,1.0;3;0.003"
+    }
+    Invoke-AxisMoveBenchmark -ControlMap $controlMap -Spec $Value -ClickMode $ClickMode -MainWindowHandle $mainHandle |
+        Format-Table -AutoSize
     return
 }
 
