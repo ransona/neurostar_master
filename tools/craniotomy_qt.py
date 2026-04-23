@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -500,6 +499,8 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
+        for spinbox in self.findChildren(QAbstractSpinBox):
+            spinbox.setButtonSymbols(QAbstractSpinBox.NoButtons)
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         QTimer.singleShot(250, self.update_syringe_position_from_scale)
@@ -712,12 +713,13 @@ class CraniotomyWindow(QMainWindow):
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
-        self.drill_depth = self._double_spinbox(value=0.10, minimum=0.0, maximum=5.0)
+        self.drill_depth = self._double_spinbox(value=0.20, minimum=0.0, maximum=5.0)
         self.depth_per_round = self._double_spinbox(value=0.05, minimum=0.001, maximum=5.0)
         self.skull_thickness_mm = self._double_spinbox(value=0.25, minimum=0.001, maximum=5.0)
         self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
         self.auto_start_rounds = QCheckBox("Auto start next round")
+        self.auto_start_rounds.setChecked(True)
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
@@ -2409,16 +2411,22 @@ class CraniotomyWindow(QMainWindow):
 
     def change_current_target_depth(self) -> None:
         max_depth = max(0.0, self.drill_depth.value())
-        value, ok = QInputDialog.getDouble(
-            self,
-            "Current Target Depth",
-            "Current target depth (mm)",
-            self.current_target_depth_mm,
-            0.0,
-            max_depth,
-            3,
-        )
-        if not ok:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Current Target Depth")
+        layout = QGridLayout(dialog)
+        layout.addWidget(QLabel("Current target depth (mm)"), 0, 0)
+        depth_box = QLineEdit(f"{self.current_target_depth_mm:.3f}")
+        layout.addWidget(depth_box, 0, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons, 1, 0, 1, 2)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            value = float(depth_box.text())
+        except ValueError:
+            QMessageBox.warning(self, "Current Target Depth", "Enter a numeric depth in mm.")
             return
         self.current_target_depth_mm = min(max(value, 0.0), max_depth)
         self.update_current_target_depth_label()
@@ -2608,6 +2616,60 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = completed_points
         self.redraw_views()
 
+    def move_to_position_alternating(
+        self,
+        ap: float,
+        ml: float,
+        dv: float,
+        step_mm: float,
+        stop_requested=None,
+        status_callback=None,
+        dwell_seconds: float = 0.005,
+    ) -> None:
+        tolerance_mm = 0.005
+        while True:
+            if stop_requested is not None and stop_requested():
+                return
+            current_ap, current_ml, _current_dv = self.controller.get_current_position()
+            ap_delta = ap - current_ap
+            ml_delta = ml - current_ml
+            ap_done = abs(ap_delta) <= tolerance_mm
+            ml_done = abs(ml_delta) <= tolerance_mm
+            if ap_done and ml_done:
+                break
+            if not ap_done:
+                next_ap = current_ap + max(-step_mm, min(step_mm, ap_delta))
+                self.controller.move_axis_to_target(
+                    "AP",
+                    next_ap,
+                    step_mm=step_mm,
+                    stop_requested=stop_requested,
+                    status_callback=status_callback,
+                    dwell_seconds=dwell_seconds,
+                )
+            if stop_requested is not None and stop_requested():
+                return
+            current_ap, current_ml, _current_dv = self.controller.get_current_position()
+            ml_delta = ml - current_ml
+            if abs(ml_delta) > tolerance_mm:
+                next_ml = current_ml + max(-step_mm, min(step_mm, ml_delta))
+                self.controller.move_axis_to_target(
+                    "ML",
+                    next_ml,
+                    step_mm=step_mm,
+                    stop_requested=stop_requested,
+                    status_callback=status_callback,
+                    dwell_seconds=dwell_seconds,
+                )
+        self.controller.move_axis_to_target(
+            "DV",
+            dv,
+            step_mm=step_mm,
+            stop_requested=stop_requested,
+            status_callback=status_callback,
+            dwell_seconds=dwell_seconds,
+        )
+
     def start_drilling_round(self) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
@@ -2732,14 +2794,17 @@ class CraniotomyWindow(QMainWindow):
         progress = QProgressBar()
         progress.setRange(0, 1000)
         progress.setValue(0)
+        change_button = QPushButton("Change next target depth")
         pause_button = QPushButton("Pause")
         layout.addWidget(label)
         layout.addWidget(progress)
+        layout.addWidget(change_button)
         layout.addWidget(pause_button)
 
         duration_s = 10.0
         started_at = time.monotonic()
         paused = {"value": False}
+        target_depth = {"value": target_depth_mm}
 
         def pause_countdown() -> None:
             paused["value"] = True
@@ -2750,15 +2815,40 @@ class CraniotomyWindow(QMainWindow):
             elapsed_s = max(0.0, time.monotonic() - started_at)
             remaining_s = max(0.0, duration_s - elapsed_s)
             label.setText(
-                f"Will start a new round to drill to {target_depth_mm:.3f} mm in {remaining_s:0.1f} s."
+                f"Will start a new round to drill to {target_depth['value']:.3f} mm in {remaining_s:0.1f} s."
             )
             progress.setValue(int((elapsed_s / duration_s) * 1000))
             if remaining_s <= 0.0:
                 timer.stop()
                 dialog.accept()
 
+        def change_target_depth() -> None:
+            edit_dialog = QDialog(dialog)
+            edit_dialog.setWindowTitle("Next Target Depth")
+            edit_layout = QGridLayout(edit_dialog)
+            edit_layout.addWidget(QLabel("Next target depth (mm)"), 0, 0)
+            edit_box = QLineEdit(f"{target_depth['value']:.3f}")
+            edit_layout.addWidget(edit_box, 0, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(edit_dialog.accept)
+            buttons.rejected.connect(edit_dialog.reject)
+            edit_layout.addWidget(buttons, 1, 0, 1, 2)
+            if edit_dialog.exec() != QDialog.Accepted:
+                return
+            try:
+                value = float(edit_box.text())
+            except ValueError:
+                QMessageBox.warning(dialog, "Next Target Depth", "Enter a numeric depth in mm.")
+                return
+            value = max(0.0, min(value, max(0.0, self.drill_depth.value())))
+            target_depth["value"] = value
+            self.current_target_depth_mm = value
+            self.update_current_target_depth_label()
+            update_countdown()
+
         timer = QTimer(dialog)
         timer.timeout.connect(update_countdown)
+        change_button.clicked.connect(change_target_depth)
         pause_button.clicked.connect(pause_countdown)
         update_countdown()
         timer.start(100)
@@ -2825,7 +2915,7 @@ class CraniotomyWindow(QMainWindow):
                     in_air = False
                     active_drill_section = True
                 else:
-                    self.controller.move_to_position_nudged(
+                    self.move_to_position_alternating(
                         ap,
                         ml,
                         target_dv,
