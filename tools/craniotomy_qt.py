@@ -11,12 +11,10 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, S
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,7 +27,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -68,6 +65,55 @@ class BITMAPINFO(ctypes.Structure):
         ("bmiHeader", BITMAPINFOHEADER),
         ("bmiColors", ctypes.c_uint32 * 3),
     ]
+
+
+class NumericLineEdit(QLineEdit):
+    valueChanged = Signal(int)
+
+    def __init__(
+        self,
+        value: float | int = 0,
+        minimum: float | int = -100.0,
+        maximum: float | int = 100.0,
+        integer: bool = False,
+    ) -> None:
+        super().__init__()
+        self._minimum = minimum
+        self._maximum = maximum
+        self._integer = integer
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.setValue(value)
+        self.editingFinished.connect(self._commit_text)
+
+    def setRange(self, minimum: float | int, maximum: float | int) -> None:  # noqa: N802
+        self._minimum = minimum
+        self._maximum = maximum
+        self.setValue(self.value())
+
+    def value(self) -> float | int:
+        text = self.text().strip()
+        try:
+            value = float(text)
+        except ValueError:
+            value = float(self._minimum)
+        value = max(float(self._minimum), min(float(self._maximum), value))
+        if self._integer:
+            return int(round(value))
+        return value
+
+    def setValue(self, value: float | int) -> None:  # noqa: N802
+        value = max(float(self._minimum), min(float(self._maximum), float(value)))
+        if self._integer:
+            text = str(int(round(value)))
+        else:
+            text = f"{value:g}"
+        changed = self.text() != text
+        self.setText(text)
+        if changed and not self.signalsBlocked():
+            self.valueChanged.emit(int(round(value)))
+
+    def _commit_text(self) -> None:
+        self.setValue(self.value())
 
 
 user32.GetDC.argtypes = [ctypes.c_void_p]
@@ -499,8 +545,6 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
-        for spinbox in self.findChildren(QAbstractSpinBox):
-            spinbox.setButtonSymbols(QAbstractSpinBox.NoButtons)
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         QTimer.singleShot(250, self.update_syringe_position_from_scale)
@@ -593,13 +637,6 @@ class CraniotomyWindow(QMainWindow):
                 font-size: 12px;
                 font-weight: 700;
                 padding: 2px 8px;
-            }
-            QDoubleSpinBox, QSpinBox {
-                border: 1px solid #cfdbcf;
-                border-radius: 6px;
-                padding: 1px 3px;
-                background: white;
-                min-height: 14px;
             }
             QLineEdit {
                 border: 1px solid #cfdbcf;
@@ -1011,18 +1048,11 @@ class CraniotomyWindow(QMainWindow):
         self.update_injection_rate_label()
         self.refresh_injection_sequence_summary()
 
-    def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> QDoubleSpinBox:
-        widget = QDoubleSpinBox()
-        widget.setDecimals(2)
-        widget.setRange(minimum, maximum)
-        widget.setValue(value)
-        return widget
+    def _double_spinbox(self, value: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> NumericLineEdit:
+        return NumericLineEdit(value=value, minimum=minimum, maximum=maximum)
 
-    def _spinbox(self, value: int, minimum: int, maximum: int) -> QSpinBox:
-        widget = QSpinBox()
-        widget.setRange(minimum, maximum)
-        widget.setValue(value)
-        return widget
+    def _spinbox(self, value: int, minimum: int, maximum: int) -> NumericLineEdit:
+        return NumericLineEdit(value=value, minimum=minimum, maximum=maximum, integer=True)
 
     def _number_edit(self, value: float | int) -> QLineEdit:
         widget = QLineEdit()
@@ -1078,8 +1108,6 @@ class CraniotomyWindow(QMainWindow):
         key = event.key()
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
             focus_widget = QApplication.focusWidget()
-            if isinstance(focus_widget, QAbstractSpinBox):
-                focus_widget.interpretText()
             if focus_widget is not None:
                 focus_widget.clearFocus()
             self.setFocus(Qt.OtherFocusReason)
@@ -1123,7 +1151,7 @@ class CraniotomyWindow(QMainWindow):
 
     def _focus_is_editable(self) -> bool:
         focus_widget = QApplication.focusWidget()
-        return isinstance(focus_widget, (QLineEdit, QAbstractSpinBox, QComboBox))
+        return isinstance(focus_widget, (QLineEdit, QComboBox))
 
     def adjust_move_speed(self, direction: int) -> None:
         current_index = min(
@@ -1413,13 +1441,8 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
-    def _position_spinbox(self, value: float) -> QDoubleSpinBox:
-        widget = QDoubleSpinBox()
-        widget.setDecimals(3)
-        widget.setRange(-100.0, 100.0)
-        widget.setSingleStep(0.1)
-        widget.setValue(value)
-        return widget
+    def _position_spinbox(self, value: float) -> NumericLineEdit:
+        return NumericLineEdit(value=value, minimum=-100.0, maximum=100.0)
 
     def set_quick_location(self, slot: str) -> None:
         try:
