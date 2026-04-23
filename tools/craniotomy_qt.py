@@ -2943,6 +2943,41 @@ class CraniotomyWindow(QMainWindow):
             previous_index = index
         return max(1, total)
 
+    def _continuous_round_axis_travel_mm(
+        self,
+        surface_targets: list[tuple[float, float, float]],
+        frozen_points: list[bool],
+        traversal_order: list[int],
+    ) -> float:
+        total = 0.0
+        previous_index: int | None = None
+        for index in traversal_order:
+            if frozen_points[index]:
+                previous_index = None
+                continue
+            if previous_index is not None and index != previous_index:
+                start_ap, start_ml, _start_dv = surface_targets[previous_index]
+                end_ap, end_ml, _end_dv = surface_targets[index]
+                total += abs(end_ap - start_ap) + abs(end_ml - start_ml)
+            previous_index = index
+        return total
+
+    def _continuous_round_path_step_mm(
+        self,
+        surface_targets: list[tuple[float, float, float]],
+        frozen_points: list[bool],
+        traversal_order: list[int],
+        round_time_seconds: float,
+    ) -> float:
+        axis_travel_mm = self._continuous_round_axis_travel_mm(surface_targets, frozen_points, traversal_order)
+        # Benchmark-derived typical time for one AP/ML nudge including UI/readback overhead.
+        seconds_per_axis_nudge = 0.85
+        required_step = axis_travel_mm * seconds_per_axis_nudge / max(round_time_seconds, 1.0)
+        for candidate in (0.05, 0.1, 0.2, 0.5, 1.0):
+            if required_step <= candidate:
+                return candidate
+        return 1.0
+
     def _mark_continuous_round_point(self, index: int, target_depth: float, point_count: int) -> None:
         if index < len(self.drilled_depths):
             self.drilled_depths[index] = target_depth
@@ -2962,6 +2997,8 @@ class CraniotomyWindow(QMainWindow):
         end_index: int,
         target_depth: float,
         path_step_mm: float,
+        planar_tolerance_mm: float,
+        dv_tolerance_mm: float,
         completed_substeps: int,
         total_substeps: int,
         round_started_at: float,
@@ -2989,8 +3026,8 @@ class CraniotomyWindow(QMainWindow):
                 ml,
                 target_dv,
                 step_mm=path_step_mm,
-                planar_tolerance=0.015,
-                dv_tolerance=0.02,
+                planar_tolerance=planar_tolerance_mm,
+                dv_tolerance=dv_tolerance_mm,
                 stop_requested=self._should_abort_drilling,
                 status_callback=None,
                 dwell_seconds=0.0,
@@ -3027,7 +3064,17 @@ class CraniotomyWindow(QMainWindow):
                 return
             first_index = next(index for index, needed in enumerate(needs_drilling) if needed)
             traversal_order = [(first_index + offset) % point_count for offset in range(point_count + 1)]
-            path_step_mm = 0.05
+            path_step_mm = self._continuous_round_path_step_mm(
+                surface_targets,
+                frozen_points,
+                traversal_order,
+                round_time_seconds,
+            )
+            planar_tolerance_mm = max(0.015, min(0.08, path_step_mm * 0.25))
+            dv_tolerance_mm = max(0.02, min(0.05, path_step_mm * 0.25))
+            self.status_signal.emit(
+                f"Continuous tracing step {path_step_mm:.3f} mm, AP/ML tolerance {planar_tolerance_mm:.3f} mm."
+            )
             total_substeps = self._continuous_round_substep_count(
                 surface_targets,
                 frozen_points,
@@ -3107,6 +3154,8 @@ class CraniotomyWindow(QMainWindow):
                     index,
                     target_depth,
                     path_step_mm,
+                    planar_tolerance_mm,
+                    dv_tolerance_mm,
                     completed_substeps,
                     total_substeps,
                     round_started_at,
