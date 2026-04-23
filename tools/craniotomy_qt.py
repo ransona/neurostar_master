@@ -2641,6 +2641,11 @@ class CraniotomyWindow(QMainWindow):
         ]
         if surface_targets:
             self.active_surface_dv = surface_targets[0][2]
+        center_above_position = (
+            self.mid_ap.value(),
+            self.mid_ml.value(),
+            self._craniotomy_center_surface_dv() - 2.0,
+        )
         self.drill_thread = threading.Thread(
             target=self._run_drilling_round,
             args=(
@@ -2650,7 +2655,7 @@ class CraniotomyWindow(QMainWindow):
                 frozen_points,
                 round_time_seconds,
                 depth,
-                not self.auto_start_rounds.isChecked(),
+                center_above_position,
             ),
             daemon=True,
         )
@@ -2687,15 +2692,74 @@ class CraniotomyWindow(QMainWindow):
         self.current_target_depth_mm = min(max_depth, completed_depth + self.depth_per_round.value())
         self.update_current_target_depth_label()
         if self.auto_start_rounds.isChecked():
-            self.drilling_paused = False
-            self.start_round_btn.setText("Pause")
-            self.set_status(f"Starting next drilling round to {self.current_target_depth_mm:.3f} mm.")
-            QTimer.singleShot(100, self.start_drilling_round)
+            should_continue = self.show_next_round_countdown(self.current_target_depth_mm)
+            if should_continue:
+                self.drilling_paused = False
+                self.start_round_btn.setText("Pause")
+                self.set_status(f"Starting next drilling round to {self.current_target_depth_mm:.3f} mm.")
+                QTimer.singleShot(100, self.start_drilling_round)
+            else:
+                self.drilling_paused = True
+                self.start_round_btn.setText("Continue")
+                self.set_status(f"Paused before next round to {self.current_target_depth_mm:.3f} mm.")
         else:
             self.drilling_paused = True
             self.start_round_btn.setText("Continue")
             self.set_status(f"Round complete. Next target depth is {self.current_target_depth_mm:.3f} mm.")
         self.redraw_views()
+
+    def _craniotomy_center_surface_dv(self) -> float:
+        captured_dvs = [seed.dv for seed in self.seeds if seed.dv is not None]
+        if captured_dvs:
+            return (sum(captured_dvs) / len(captured_dvs)) + self.cut_offset.value()
+        if self.active_surface_dv is not None:
+            return self.active_surface_dv
+        return 0.0
+
+    def show_next_round_countdown(self, target_depth_mm: float) -> bool:
+        QApplication.beep()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Next Drilling Round")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        progress = QProgressBar()
+        progress.setRange(0, 1000)
+        progress.setValue(0)
+        pause_button = QPushButton("Pause")
+        layout.addWidget(label)
+        layout.addWidget(progress)
+        layout.addWidget(pause_button)
+
+        duration_s = 10.0
+        started_at = time.monotonic()
+        paused = {"value": False}
+
+        def pause_countdown() -> None:
+            paused["value"] = True
+            timer.stop()
+            dialog.reject()
+
+        def update_countdown() -> None:
+            elapsed_s = max(0.0, time.monotonic() - started_at)
+            remaining_s = max(0.0, duration_s - elapsed_s)
+            label.setText(
+                f"Will start a new round to drill to {target_depth_mm:.3f} mm in {remaining_s:0.1f} s."
+            )
+            progress.setValue(int((elapsed_s / duration_s) * 1000))
+            if remaining_s <= 0.0:
+                timer.stop()
+                dialog.accept()
+
+        timer = QTimer(dialog)
+        timer.timeout.connect(update_countdown)
+        pause_button.clicked.connect(pause_countdown)
+        update_countdown()
+        timer.start(100)
+        accepted = dialog.exec() == QDialog.Accepted
+        timer.stop()
+        return accepted and not paused["value"]
 
     def stop_drilling_round(self) -> None:
         self.drill_stop_requested.set()
@@ -2716,7 +2780,7 @@ class CraniotomyWindow(QMainWindow):
         frozen_points: list[bool],
         round_time_seconds: float,
         depth_mm: float,
-        retract_after_completion: bool,
+        center_above_position: tuple[float, float, float],
     ) -> None:
         point_count = len(surface_targets)
         per_point_budget = round_time_seconds / max(1, point_count)
@@ -2791,18 +2855,20 @@ class CraniotomyWindow(QMainWindow):
                     time.sleep(sleep_window)
                     remaining -= sleep_window
             if not self._should_abort_drilling():
-                if retract_after_completion and self.active_surface_dv is not None:
-                    self.status_signal.emit("Round complete. Retracting 2 mm above surface.")
-                    self.controller.move_axis_to_target(
-                        "DV",
-                        self.active_surface_dv - 2.0,
-                        step_mm=5.0,
-                        stop_requested=self._should_abort_drilling,
-                        status_callback=None,
-                        dwell_seconds=0.005,
-                    )
+                center_ap, center_ml, center_dv = center_above_position
+                self.status_signal.emit("Round complete. Returning above craniotomy center.")
+                self.controller.goto_position(center_ap, center_ml, center_dv, delay_seconds=0.5)
+                self.controller.wait_for_position(
+                    center_ap,
+                    center_ml,
+                    center_dv,
+                    tolerance_mm=0.02,
+                    timeout_seconds=60.0,
+                    poll_seconds=0.1,
+                    stop_requested=self._should_abort_drilling,
+                )
                 if not self._should_abort_drilling():
-                    self.status_signal.emit("Drilling round complete.")
+                    self.status_signal.emit("Drilling round complete. Returned above craniotomy center.")
         except Exception as exc:
             if not self._should_abort_drilling():
                 outcome = "error"
