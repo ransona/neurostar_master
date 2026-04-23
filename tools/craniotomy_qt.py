@@ -2902,6 +2902,7 @@ class CraniotomyWindow(QMainWindow):
                 ml,
                 target_dv,
                 step_mm=path_step_mm,
+                planar_tolerance=0.015,
                 stop_requested=self._should_abort_drilling,
                 status_callback=None,
                 dwell_seconds=0.005,
