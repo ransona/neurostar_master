@@ -1107,7 +1107,7 @@ class StereoDriveController:
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
-        self.move_planar_to_target(
+        self.move_planar_to_target_dda(
             ap,
             ml,
             step_mm=step_mm,
@@ -1116,6 +1116,83 @@ class StereoDriveController:
             dwell_seconds=dwell_seconds,
         )
         self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+
+    def move_planar_to_target_dda(
+        self,
+        ap: float,
+        ml: float,
+        step_mm: float = 5.0,
+        tolerance: float = 0.003,
+        stop_requested=None,
+        status_callback=None,
+        dwell_seconds: float = 0.02,
+    ) -> None:
+        max_iterations = 20000
+        start_ap, start_ml, _start_dv = self.get_current_position()
+        total_ap = ap - start_ap
+        total_ml = ml - start_ml
+        total_length_sq = total_ap * total_ap + total_ml * total_ml
+        if total_length_sq <= tolerance * tolerance:
+            return
+        directions = {
+            "AP": total_ap > 0.0,
+            "ML": total_ml > 0.0,
+        }
+        active_steps: dict[str, float] = {}
+        moved_counts: dict[str, int] = {"AP": 0, "ML": 0}
+
+        def within_segment(axis: str, current_value: float, target_value: float) -> bool:
+            if directions[axis]:
+                return current_value < target_value - tolerance
+            return current_value > target_value + tolerance
+
+        def projection_progress(current_ap: float, current_ml: float) -> float:
+            along = ((current_ap - start_ap) * total_ap + (current_ml - start_ml) * total_ml) / total_length_sq
+            return max(0.0, min(1.0, along))
+
+        def perpendicular_error_sq(candidate_ap: float, candidate_ml: float) -> float:
+            progress = projection_progress(candidate_ap, candidate_ml)
+            ideal_ap = start_ap + total_ap * progress
+            ideal_ml = start_ml + total_ml * progress
+            ap_error = candidate_ap - ideal_ap
+            ml_error = candidate_ml - ideal_ml
+            return ap_error * ap_error + ml_error * ml_error
+
+        for _ in range(max_iterations):
+            if stop_requested is not None and stop_requested():
+                raise StereoDriveError("Operation paused.")
+            current_ap, current_ml, _current_dv = self.get_current_position()
+            ap_diff = ap - current_ap
+            ml_diff = ml - current_ml
+            if abs(ap_diff) <= tolerance and abs(ml_diff) <= tolerance:
+                return
+
+            candidates: list[tuple[float, float, str, float]] = []
+            if abs(ap_diff) > tolerance and within_segment("AP", current_ap, ap):
+                ap_step = self.choose_nudge_step(ap_diff, max_step_mm=step_mm)
+                candidate_ap = current_ap + (ap_step if directions["AP"] else -ap_step)
+                candidates.append((perpendicular_error_sq(candidate_ap, current_ml), -abs(ap_diff), "AP", ap_step))
+            if abs(ml_diff) > tolerance and within_segment("ML", current_ml, ml):
+                ml_step = self.choose_nudge_step(ml_diff, max_step_mm=step_mm)
+                candidate_ml = current_ml + (ml_step if directions["ML"] else -ml_step)
+                candidates.append((perpendicular_error_sq(current_ap, candidate_ml), -abs(ml_diff), "ML", ml_step))
+            if not candidates:
+                return
+
+            _error, _distance, axis, chosen_step = min(candidates)
+            previous_step = active_steps.get(axis)
+            if previous_step is None or not abs(previous_step - chosen_step) < 1e-9:
+                self.set_nudge_step(axis, chosen_step)
+                active_steps[axis] = chosen_step
+            self.nudge_axis(axis, directions[axis])
+            moved_counts[axis] += 1
+            if status_callback is not None:
+                status_callback(
+                    f"DDA nudging XY toward [{ap:.3f}, {ml:.3f}] "
+                    f"(AP steps {moved_counts['AP']}, ML steps {moved_counts['ML']})"
+                )
+            time.sleep(dwell_seconds)
+        raise StereoDriveError(f"Timed out DDA moving AP/ML to target [{ap:.3f}, {ml:.3f}].")
 
     def move_planar_to_target(
         self,

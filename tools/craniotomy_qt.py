@@ -2639,60 +2639,6 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = completed_points
         self.redraw_views()
 
-    def move_to_position_alternating(
-        self,
-        ap: float,
-        ml: float,
-        dv: float,
-        step_mm: float,
-        stop_requested=None,
-        status_callback=None,
-        dwell_seconds: float = 0.005,
-    ) -> None:
-        tolerance_mm = 0.005
-        while True:
-            if stop_requested is not None and stop_requested():
-                return
-            current_ap, current_ml, _current_dv = self.controller.get_current_position()
-            ap_delta = ap - current_ap
-            ml_delta = ml - current_ml
-            ap_done = abs(ap_delta) <= tolerance_mm
-            ml_done = abs(ml_delta) <= tolerance_mm
-            if ap_done and ml_done:
-                break
-            if not ap_done:
-                next_ap = current_ap + max(-step_mm, min(step_mm, ap_delta))
-                self.controller.move_axis_to_target(
-                    "AP",
-                    next_ap,
-                    step_mm=step_mm,
-                    stop_requested=stop_requested,
-                    status_callback=status_callback,
-                    dwell_seconds=dwell_seconds,
-                )
-            if stop_requested is not None and stop_requested():
-                return
-            current_ap, current_ml, _current_dv = self.controller.get_current_position()
-            ml_delta = ml - current_ml
-            if abs(ml_delta) > tolerance_mm:
-                next_ml = current_ml + max(-step_mm, min(step_mm, ml_delta))
-                self.controller.move_axis_to_target(
-                    "ML",
-                    next_ml,
-                    step_mm=step_mm,
-                    stop_requested=stop_requested,
-                    status_callback=status_callback,
-                    dwell_seconds=dwell_seconds,
-                )
-        self.controller.move_axis_to_target(
-            "DV",
-            dv,
-            step_mm=step_mm,
-            stop_requested=stop_requested,
-            status_callback=status_callback,
-            dwell_seconds=dwell_seconds,
-        )
-
     def start_drilling_round(self) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
@@ -2938,7 +2884,7 @@ class CraniotomyWindow(QMainWindow):
                     in_air = False
                     active_drill_section = True
                 else:
-                    self.move_to_position_alternating(
+                    self.controller.move_to_position_nudged(
                         ap,
                         ml,
                         target_dv,
