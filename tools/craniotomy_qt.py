@@ -2491,6 +2491,17 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(self, "Craniotomy", "Generate seed points first.")
             return
         try:
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+                for seed in self.seeds:
+                    seed.dv = 0.0
+                    seed.sampled_ap = seed.ap
+                    seed.sampled_ml = seed.ml
+                self.current_seed_index = None
+                self.compute_trajectory()
+                self.update_seed_selector_label()
+                self.redraw_views()
+                self.set_status("Debug: set all seed surfaces to DV 0.00 and updated the trajectory.")
+                return
             ap, ml, dv = self.controller.get_current_position()
             seed = self.seeds[self.current_seed_index]
             seed.dv = dv
