@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -493,6 +494,7 @@ class CraniotomyWindow(QMainWindow):
     active_injection_site_signal = Signal(int)
     injection_finished_signal = Signal(str)
     drill_round_finished_signal = Signal(str)
+    benchmark_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
@@ -518,6 +520,7 @@ class CraniotomyWindow(QMainWindow):
         self.active_drill_depth_mm: float | None = None
         self.current_target_depth_mm = 0.0
         self.drilling_paused = False
+        self.benchmark_thread: threading.Thread | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
@@ -541,6 +544,7 @@ class CraniotomyWindow(QMainWindow):
         self.active_injection_site_signal.connect(self.set_active_injection_site)
         self.injection_finished_signal.connect(self.finish_injection)
         self.drill_round_finished_signal.connect(self.on_drill_round_finished)
+        self.benchmark_finished_signal.connect(self.show_benchmark_results)
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
@@ -707,6 +711,8 @@ class CraniotomyWindow(QMainWindow):
                 button.style().unpolish(button)
                 button.style().polish(button)
                 quick_buttons.append(button)
+        benchmark_btn = QPushButton("Benchmark")
+        benchmark_btn.clicked.connect(self.start_axis_benchmark)
         position_layout.addWidget(QLabel("AP"))
         position_layout.addWidget(self.current_ap_label)
         position_layout.addWidget(QLabel("ML"))
@@ -723,6 +729,7 @@ class CraniotomyWindow(QMainWindow):
         header_layout.addWidget(go_to_btn)
         for button in quick_buttons:
             header_layout.addWidget(button)
+        header_layout.addWidget(benchmark_btn)
         header_layout.addStretch(1)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
@@ -1443,6 +1450,75 @@ class CraniotomyWindow(QMainWindow):
 
     def _position_spinbox(self, value: float) -> NumericLineEdit:
         return NumericLineEdit(value=value, minimum=-100.0, maximum=100.0)
+
+    def start_axis_benchmark(self) -> None:
+        if self.benchmark_thread is not None and self.benchmark_thread.is_alive():
+            QMessageBox.information(self, "Benchmark", "Benchmark is already running.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Benchmark Axis Moves",
+            "This will move AP, ML, and DV out-and-back at several distances. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.set_status("Running axis movement benchmark...")
+        self.benchmark_thread = threading.Thread(target=self._run_axis_benchmark, daemon=True)
+        self.benchmark_thread.start()
+
+    def _run_axis_benchmark(self) -> None:
+        try:
+            rows = self.controller.benchmark_axis_moves(
+                axes=["AP", "ML", "DV"],
+                distances_mm=[0.02, 0.05, 0.1, 0.2, 0.5, 1.0],
+                repeats=3,
+                tolerance=0.003,
+            )
+            lines = [
+                "axis,distance_mm,direction,repeat,start,target,end,achieved_mm,elapsed_s,mm_per_s,error_mm"
+            ]
+            for row in rows:
+                mm_per_s = row["mm_per_s"]
+                lines.append(
+                    ",".join(
+                        [
+                            str(row["axis"]),
+                            f"{float(row['distance_mm']):.3f}",
+                            str(row["direction"]),
+                            str(row["repeat"]),
+                            f"{float(row['start']):.4f}",
+                            f"{float(row['target']):.4f}",
+                            f"{float(row['end']):.4f}",
+                            f"{float(row['achieved_mm']):.4f}",
+                            f"{float(row['elapsed_s']):.4f}",
+                            "" if mm_per_s is None else f"{float(mm_per_s):.5f}",
+                            f"{float(row['error_mm']):.4f}",
+                        ]
+                    )
+                )
+            self.benchmark_finished_signal.emit("\n".join(lines))
+        except Exception as exc:
+            self.benchmark_finished_signal.emit(f"Benchmark failed:\n{exc}")
+        finally:
+            self.benchmark_thread = None
+
+    def show_benchmark_results(self, text: str) -> None:
+        self.set_status("Axis movement benchmark complete.")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Axis Movement Benchmark")
+        layout = QVBoxLayout(dialog)
+        result_box = QPlainTextEdit()
+        result_box.setPlainText(text)
+        result_box.setReadOnly(True)
+        result_box.setMinimumWidth(900)
+        result_box.setMinimumHeight(500)
+        layout.addWidget(result_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def set_quick_location(self, slot: str) -> None:
         try:

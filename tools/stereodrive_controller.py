@@ -1097,6 +1097,52 @@ class StereoDriveController:
             time.sleep(dwell_seconds)
         raise StereoDriveError(f"Timed out moving {axis.upper()} to target {target:.3f}.")
 
+    def benchmark_axis_moves(
+        self,
+        axes: list[str] | None = None,
+        distances_mm: list[float] | None = None,
+        repeats: int = 3,
+        tolerance: float = 0.003,
+    ) -> list[dict[str, object]]:
+        axes = axes or ["AP", "ML", "DV"]
+        distances_mm = distances_mm or [0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
+        rows: list[dict[str, object]] = []
+        for axis in axes:
+            axis = axis.upper()
+            for distance_mm in distances_mm:
+                self.set_nudge_step(axis, distance_mm)
+                for repeat in range(1, repeats + 1):
+                    for direction, sign in (("+", 1.0), ("-", -1.0)):
+                        start = self.get_current_axis(axis)
+                        target = start + sign * distance_mm
+                        started_at = time.monotonic()
+                        self.move_axis_to_target(
+                            axis,
+                            target,
+                            step_mm=distance_mm,
+                            tolerance=tolerance,
+                            dwell_seconds=0.0,
+                        )
+                        elapsed = time.monotonic() - started_at
+                        end = self.get_current_axis(axis)
+                        achieved = abs(end - start)
+                        rows.append(
+                            {
+                                "axis": axis,
+                                "distance_mm": distance_mm,
+                                "direction": direction,
+                                "repeat": repeat,
+                                "start": start,
+                                "target": target,
+                                "end": end,
+                                "achieved_mm": achieved,
+                                "elapsed_s": elapsed,
+                                "mm_per_s": (achieved / elapsed) if elapsed > 0.0 else None,
+                                "error_mm": end - target,
+                            }
+                        )
+        return rows
+
     def move_to_position_nudged(
         self,
         ap: float,
