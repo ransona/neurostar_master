@@ -2914,9 +2914,10 @@ class CraniotomyWindow(QMainWindow):
                 target_dv,
                 step_mm=path_step_mm,
                 planar_tolerance=0.015,
+                dv_tolerance=0.02,
                 stop_requested=self._should_abort_drilling,
                 status_callback=None,
-                dwell_seconds=0.005,
+                dwell_seconds=0.0,
             )
             completed_substeps += 1
             target_elapsed = round_time_seconds * (completed_substeps / total_substeps)
@@ -2950,7 +2951,7 @@ class CraniotomyWindow(QMainWindow):
                 return
             first_index = next(index for index, needed in enumerate(needs_drilling) if needed)
             traversal_order = [(first_index + offset) % point_count for offset in range(point_count + 1)]
-            path_step_mm = 0.02
+            path_step_mm = 0.05
             total_substeps = self._continuous_round_substep_count(
                 surface_targets,
                 frozen_points,

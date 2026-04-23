@@ -1104,6 +1104,7 @@ class StereoDriveController:
         dv: float,
         step_mm: float = 0.005,
         planar_tolerance: float = 0.003,
+        dv_tolerance: float = 0.003,
         stop_requested=None,
         status_callback=None,
         dwell_seconds: float = 0.02,
@@ -1117,7 +1118,15 @@ class StereoDriveController:
             status_callback=status_callback,
             dwell_seconds=dwell_seconds,
         )
-        self.move_axis_to_target("DV", dv, step_mm=step_mm, stop_requested=stop_requested, status_callback=status_callback, dwell_seconds=dwell_seconds)
+        self.move_axis_to_target(
+            "DV",
+            dv,
+            step_mm=step_mm,
+            tolerance=dv_tolerance,
+            stop_requested=stop_requested,
+            status_callback=status_callback,
+            dwell_seconds=dwell_seconds,
+        )
 
     def move_planar_to_target_dda(
         self,
