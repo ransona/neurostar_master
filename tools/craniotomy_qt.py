@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -446,6 +447,7 @@ class CraniotomyWindow(QMainWindow):
     sequence_step_signal = Signal(int)
     active_injection_site_signal = Signal(int)
     injection_finished_signal = Signal(str)
+    drill_round_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
@@ -469,6 +471,8 @@ class CraniotomyWindow(QMainWindow):
         self.active_surface_dv: float | None = None
         self.active_depth_ratio: float | None = None
         self.active_drill_depth_mm: float | None = None
+        self.current_target_depth_mm = 0.0
+        self.drilling_paused = False
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
@@ -491,6 +495,7 @@ class CraniotomyWindow(QMainWindow):
         self.sequence_step_signal.connect(self.set_active_sequence_step)
         self.active_injection_site_signal.connect(self.set_active_injection_site)
         self.injection_finished_signal.connect(self.finish_injection)
+        self.drill_round_finished_signal.connect(self.on_drill_round_finished)
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
@@ -703,14 +708,16 @@ class CraniotomyWindow(QMainWindow):
 
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
-        self.diameter = self._double_spinbox(value=3.0, minimum=0.1, maximum=20.0)
+        self.diameter = self._double_spinbox(value=3.2, minimum=0.1, maximum=20.0)
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
         self.drill_depth = self._double_spinbox(value=0.10, minimum=0.0, maximum=5.0)
+        self.depth_per_round = self._double_spinbox(value=0.05, minimum=0.001, maximum=5.0)
         self.skull_thickness_mm = self._double_spinbox(value=0.25, minimum=0.001, maximum=5.0)
         self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
+        self.auto_start_rounds = QCheckBox("Auto start next round")
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
@@ -731,7 +738,7 @@ class CraniotomyWindow(QMainWindow):
 
         setup_layout.addWidget(QLabel("Cut Offset DV"), 2, 0)
         setup_layout.addWidget(self.cut_offset, 2, 1)
-        setup_layout.addWidget(QLabel("Drill Depth"), 2, 2)
+        setup_layout.addWidget(QLabel("Max Depth"), 2, 2)
         setup_layout.addWidget(self.drill_depth, 2, 3)
         setup_layout.addWidget(QLabel("Skull Thickness (mm)"), 2, 4)
         setup_layout.addWidget(self.skull_thickness_mm, 2, 5)
@@ -742,10 +749,13 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(self.drill_rate_mm_per_s, 3, 3)
         setup_layout.addWidget(QLabel("Round Time (s)"), 3, 4)
         setup_layout.addWidget(self.round_time_seconds, 3, 5)
+        setup_layout.addWidget(QLabel("Depth per round"), 4, 0)
+        setup_layout.addWidget(self.depth_per_round, 4, 1)
+        setup_layout.addWidget(self.auto_start_rounds, 4, 2, 1, 2)
 
         generate_btn = QPushButton("Generate Seeds")
         generate_btn.clicked.connect(self.generate_seeds)
-        self.move_seed_btn = QPushButton("Move To Current Seed")
+        self.move_seed_btn = QPushButton("Next seed")
         self.move_seed_btn.clicked.connect(self.move_to_current_seed)
         self.capture_surface_btn = QPushButton("Set Surface")
         self.capture_surface_btn.setProperty("variant", "primary")
@@ -759,18 +769,11 @@ class CraniotomyWindow(QMainWindow):
         stop_btn.clicked.connect(self.stop_motion)
         clear_btn = QPushButton("Clear Surface Measurements")
         clear_btn.clicked.connect(self.clear_surface_measurements)
-        self.start_round_btn = QPushButton("Start Drilling Round")
+        self.start_round_btn = QPushButton("Start Drilling")
         self.start_round_btn.setProperty("variant", "primary")
         self.start_round_btn.style().unpolish(self.start_round_btn)
         self.start_round_btn.style().polish(self.start_round_btn)
         self.start_round_btn.clicked.connect(self.start_drilling_round)
-        self.pause_round_btn = QPushButton("Pause Round")
-        self.pause_round_btn.clicked.connect(self.pause_drilling_round)
-        self.stop_drill_btn = QPushButton("Stop Drilling")
-        self.stop_drill_btn.setProperty("variant", "danger")
-        self.stop_drill_btn.style().unpolish(self.stop_drill_btn)
-        self.stop_drill_btn.style().polish(self.stop_drill_btn)
-        self.stop_drill_btn.clicked.connect(self.stop_drilling_round)
         self.freeze_draw_btn = QPushButton("Draw Freeze")
         self.freeze_draw_btn.setCheckable(True)
         self.freeze_draw_btn.toggled.connect(self.toggle_freeze_mode)
@@ -779,7 +782,7 @@ class CraniotomyWindow(QMainWindow):
         self.unfreeze_draw_btn.toggled.connect(self.toggle_unfreeze_mode)
         self.clear_freeze_btn = QPushButton("Clear Freeze")
         self.clear_freeze_btn.clicked.connect(self.clear_frozen_points)
-        setup_layout.addWidget(self.current_seed_coords, 4, 0, 1, 6)
+        setup_layout.addWidget(self.current_seed_coords, 5, 0, 1, 6)
 
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
@@ -793,9 +796,7 @@ class CraniotomyWindow(QMainWindow):
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
         button_layout.addWidget(self.clear_freeze_btn, 2, 1)
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
-        button_layout.addWidget(self.pause_round_btn, 3, 0)
-        button_layout.addWidget(self.stop_drill_btn, 3, 1, 1, 2)
-        setup_layout.addLayout(button_layout, 5, 0, 1, 6)
+        setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox()
         views_layout = QGridLayout(views_box)
@@ -816,14 +817,21 @@ class CraniotomyWindow(QMainWindow):
         self.round_elapsed_label = QLabel("Elapsed: --:--")
         self.round_remaining_label = QLabel("Remaining: --:--")
         self.round_percent_label = QLabel("Complete: --%")
+        self.current_target_depth_label = QLabel("Current Target Depth: -- mm")
+        self.change_target_depth_btn = QPushButton("Change")
+        self.change_target_depth_btn.clicked.connect(self.change_current_target_depth)
         self.round_elapsed_label.setProperty("role", "muted")
         self.round_remaining_label.setProperty("role", "muted")
         self.round_percent_label.setProperty("role", "muted")
+        self.current_target_depth_label.setProperty("role", "muted")
         legend_layout.addWidget(self.round_elapsed_label)
         legend_layout.addWidget(self.round_remaining_label)
         legend_layout.addWidget(self.round_percent_label)
+        legend_layout.addWidget(self.current_target_depth_label)
+        legend_layout.addWidget(self.change_target_depth_btn)
         legend_layout.addStretch(1)
         views_layout.addLayout(legend_layout, 0, 1)
+        self.update_current_target_depth_label()
         self.update_move_speed_label()
         self._build_injection_tab()
 
@@ -2346,26 +2354,75 @@ class CraniotomyWindow(QMainWindow):
                     )
                 )
             self.current_seed_index = 0
-            self.trajectory = []
+            self.trajectory = self._flat_circle_trajectory(mid_ap, mid_ml, radius)
             self.current_seed_spin.blockSignals(True)
             self.current_seed_spin.setRange(1, len(self.seeds))
             self.current_seed_spin.setValue(1)
             self.current_seed_spin.blockSignals(False)
             self.update_seed_selector_label()
             self.drill_completed_points = 0
-            self.drilled_depths = []
-            self.frozen_points = []
+            self.drilled_depths = [0.0] * len(self.trajectory)
+            self.frozen_points = [False] * len(self.trajectory)
+            self.current_target_depth_mm = self._initial_target_depth()
             self.active_surface_dv = None
             self.active_depth_ratio = None
             self.active_drill_depth_mm = None
+            self.drilling_paused = False
+            self.drill_pause_requested.clear()
+            self.drill_stop_requested.clear()
+            self.start_round_btn.setText("Start Drilling")
             if self.freeze_draw_btn.isChecked():
                 self.freeze_draw_btn.setChecked(False)
             if self.unfreeze_draw_btn.isChecked():
                 self.unfreeze_draw_btn.setChecked(False)
+            self.update_current_target_depth_label()
             self.redraw_views()
             self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
+            reply = QMessageBox.question(
+                self,
+                "Craniotomy",
+                "Move to first seed now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self.move_to_current_seed()
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
+
+    def _flat_circle_trajectory(self, mid_ap: float, mid_ml: float, radius: float) -> list[tuple[float, float, float]]:
+        point_count = self.trajectory_points.value()
+        return [
+            (
+                mid_ap + radius * math.cos(2.0 * math.pi * idx / point_count),
+                mid_ml + radius * math.sin(2.0 * math.pi * idx / point_count),
+                0.0,
+            )
+            for idx in range(point_count + 1)
+        ]
+
+    def _initial_target_depth(self) -> float:
+        return min(max(self.depth_per_round.value(), 0.0), self.drill_depth.value())
+
+    def update_current_target_depth_label(self) -> None:
+        self.current_target_depth_label.setText(f"Current Target Depth: {self.current_target_depth_mm:.3f} mm")
+
+    def change_current_target_depth(self) -> None:
+        max_depth = max(0.0, self.drill_depth.value())
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Current Target Depth",
+            "Current target depth (mm)",
+            self.current_target_depth_mm,
+            0.0,
+            max_depth,
+            3,
+        )
+        if not ok:
+            return
+        self.current_target_depth_mm = min(max(value, 0.0), max_depth)
+        self.update_current_target_depth_label()
+        self.redraw_views()
 
     def update_seed_selector_label(self) -> None:
         if self.current_seed_index is None or not self.seeds:
@@ -2438,6 +2495,9 @@ class CraniotomyWindow(QMainWindow):
         self.active_surface_dv = None
         self.active_depth_ratio = None
         self.active_drill_depth_mm = None
+        self.current_target_depth_mm = self._initial_target_depth()
+        self.drilling_paused = False
+        self.start_round_btn.setText("Start Drilling")
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
         if self.unfreeze_draw_btn.isChecked():
@@ -2448,6 +2508,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_seed_spin.setValue(1)
             self.current_seed_spin.blockSignals(False)
         self.update_seed_selector_label()
+        self.update_current_target_depth_label()
         self.redraw_views()
         self.set_status("Cleared all captured surface measurements.")
 
@@ -2544,28 +2605,35 @@ class CraniotomyWindow(QMainWindow):
 
     def start_drilling_round(self) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
+            self.pause_drilling_round()
             return
         if not self.trajectory or any(seed.dv is None for seed in self.seeds):
             QMessageBox.information(self, "Craniotomy", "Capture all seed surfaces before drilling.")
             return
+        max_depth = max(0.0, self.drill_depth.value())
+        if self.current_target_depth_mm <= 0.0:
+            self.current_target_depth_mm = self._initial_target_depth()
+        depth = min(self.current_target_depth_mm, max_depth)
+        self.current_target_depth_mm = depth
+        self.update_current_target_depth_label()
+        if depth <= 0.0:
+            QMessageBox.information(self, "Craniotomy", "Current target depth must be greater than zero.")
+            return
         self.drill_pause_requested.clear()
         self.drill_stop_requested.clear()
+        self.drilling_paused = False
         self.drill_completed_points = 0
-        depth = self.drill_depth.value()
         current_depths = list(self.drilled_depths or [0.0] * len(self.trajectory))
         frozen_points = list(self.frozen_points or [False] * len(self.trajectory))
         if not any((not frozen) and current_depth + 0.0005 < depth for current_depth, frozen in zip(current_depths, frozen_points, strict=False)):
-            QMessageBox.information(
-                self,
-                "Craniotomy",
-                "Requested depth has already been drilled in all unfrozen section",
-            )
+            self.on_drill_round_finished("completed")
             return
         round_time_seconds = self.round_time_seconds.value()
         self.drill_round_started_at = time.monotonic()
         self.drill_round_target_seconds = round_time_seconds
         self.active_drill_depth_mm = depth
         self.active_depth_ratio = 0.0
+        self.start_round_btn.setText("Pause")
         surface_targets = list(self.trajectory)
         target_depths = [
             current_depth if frozen else max(current_depth, depth)
@@ -2575,14 +2643,59 @@ class CraniotomyWindow(QMainWindow):
             self.active_surface_dv = surface_targets[0][2]
         self.drill_thread = threading.Thread(
             target=self._run_drilling_round,
-            args=(surface_targets, current_depths, target_depths, frozen_points, round_time_seconds, depth),
+            args=(
+                surface_targets,
+                current_depths,
+                target_depths,
+                frozen_points,
+                round_time_seconds,
+                depth,
+                not self.auto_start_rounds.isChecked(),
+            ),
             daemon=True,
         )
         self.drill_thread.start()
 
     def pause_drilling_round(self) -> None:
         self.drill_pause_requested.set()
-        self.set_status("Pausing drilling round and retracting to DV -2.00.")
+        self.set_status("Pausing drilling and retracting to 2 mm above surface.")
+
+    def on_drill_round_finished(self, outcome: str) -> None:
+        self.drill_round_started_at = None
+        self.drill_round_target_seconds = 0.0
+        self.drill_completed_points = 0
+        if outcome == "paused":
+            self.drilling_paused = True
+            self.start_round_btn.setText("Continue")
+            self.redraw_views()
+            return
+        if outcome in ("stopped", "error"):
+            self.drilling_paused = False
+            self.start_round_btn.setText("Start Drilling")
+            self.redraw_views()
+            return
+        max_depth = max(0.0, self.drill_depth.value())
+        completed_depth = self.current_target_depth_mm
+        if completed_depth >= max_depth - 0.0005:
+            self.current_target_depth_mm = max_depth
+            self.drilling_paused = False
+            self.start_round_btn.setText("Start Drilling")
+            self.update_current_target_depth_label()
+            self.set_status("Drilling complete to max depth.")
+            self.redraw_views()
+            return
+        self.current_target_depth_mm = min(max_depth, completed_depth + self.depth_per_round.value())
+        self.update_current_target_depth_label()
+        if self.auto_start_rounds.isChecked():
+            self.drilling_paused = False
+            self.start_round_btn.setText("Pause")
+            self.set_status(f"Starting next drilling round to {self.current_target_depth_mm:.3f} mm.")
+            QTimer.singleShot(100, self.start_drilling_round)
+        else:
+            self.drilling_paused = True
+            self.start_round_btn.setText("Continue")
+            self.set_status(f"Round complete. Next target depth is {self.current_target_depth_mm:.3f} mm.")
+        self.redraw_views()
 
     def stop_drilling_round(self) -> None:
         self.drill_stop_requested.set()
@@ -2603,17 +2716,22 @@ class CraniotomyWindow(QMainWindow):
         frozen_points: list[bool],
         round_time_seconds: float,
         depth_mm: float,
+        retract_after_completion: bool,
     ) -> None:
         point_count = len(surface_targets)
         per_point_budget = round_time_seconds / max(1, point_count)
         in_air = False
         active_drill_section = False
+        outcome = "completed"
         try:
             for index, (ap, ml, surface_dv) in enumerate(surface_targets):
                 if self._should_abort_drilling():
                     break
                 current_depth = current_depths[index]
                 target_depth = target_depths[index]
+                if frozen_points[index] or target_depth <= current_depth + 0.0005:
+                    self.drill_progress_signal.emit(index + 1)
+                    continue
                 current_dv_target = surface_dv + current_depth
                 target_dv = surface_dv + target_depth
                 self.active_surface_dv = surface_dv
@@ -2624,72 +2742,48 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_signal.emit()
                 self.status_signal.emit(f"Moving to {int(index / max(1, point_count) * 100)}%")
                 started_at = time.monotonic()
-                if frozen_points[index]:
-                    if not in_air:
-                        self.status_signal.emit("Frozen section: retracting to DV 1.00")
-                        self.controller.move_axis_to_target(
-                            "DV",
-                            1.0,
-                            step_mm=5.0,
-                            stop_requested=self._should_abort_drilling,
-                            status_callback=None,
-                            dwell_seconds=0.005,
-                        )
-                        in_air = True
-                        active_drill_section = False
+                if index == 0 or in_air or (not active_drill_section):
+                    self.controller.goto_position(ap, ml, current_dv_target, delay_seconds=0.5)
+                    self.controller.wait_for_position(
+                        ap,
+                        ml,
+                        current_dv_target,
+                        tolerance_mm=0.02,
+                        timeout_seconds=60.0,
+                        poll_seconds=0.1,
+                        stop_requested=self._should_abort_drilling,
+                    )
+                    in_air = False
+                    active_drill_section = True
+                else:
                     self.controller.move_to_position_nudged(
                         ap,
                         ml,
-                        1.0,
+                        target_dv,
                         step_mm=5.0,
                         stop_requested=self._should_abort_drilling,
                         status_callback=None,
                         dwell_seconds=0.005,
                     )
-                else:
-                    if index == 0 or in_air or (not active_drill_section):
-                        self.controller.goto_position(ap, ml, current_dv_target, delay_seconds=0.5)
-                        self.controller.wait_for_position(
-                            ap,
-                            ml,
-                            current_dv_target,
-                            tolerance_mm=0.02,
-                            timeout_seconds=60.0,
-                            poll_seconds=0.1,
-                            stop_requested=self._should_abort_drilling,
-                        )
-                        in_air = False
-                        active_drill_section = True
-                    else:
-                        self.controller.move_to_position_nudged(
-                            ap,
-                            ml,
-                            target_dv,
-                            step_mm=5.0,
-                            stop_requested=self._should_abort_drilling,
-                            status_callback=None,
-                            dwell_seconds=0.005,
-                        )
-                    if target_depth > current_depth + 0.0005:
-                        self.status_signal.emit(
-                            f"Drilling down at {int(index / max(1, point_count) * 100)}% to DV {target_dv:.2f}"
-                        )
-                        dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
-                        self.controller.move_axis_to_target(
-                            "DV",
-                            target_dv,
-                            step_mm=0.005,
-                            stop_requested=self._should_abort_drilling,
-                            status_callback=None,
-                            dwell_seconds=dwell_seconds,
-                        )
-                        current_depths[index] = target_depth
-                        self.drilled_depths[index] = target_depth
-                        self.active_depth_ratio = max(
-                            0.0,
-                            min(1.0, target_depth / max(self.skull_thickness_mm.value(), 0.001)),
-                        )
-                        self.redraw_signal.emit()
+                self.status_signal.emit(
+                    f"Drilling down at {int(index / max(1, point_count) * 100)}% to DV {target_dv:.2f}"
+                )
+                dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
+                self.controller.move_axis_to_target(
+                    "DV",
+                    target_dv,
+                    step_mm=0.005,
+                    stop_requested=self._should_abort_drilling,
+                    status_callback=None,
+                    dwell_seconds=dwell_seconds,
+                )
+                current_depths[index] = target_depth
+                self.drilled_depths[index] = target_depth
+                self.active_depth_ratio = max(
+                    0.0,
+                    min(1.0, target_depth / max(self.skull_thickness_mm.value(), 0.001)),
+                )
+                self.redraw_signal.emit()
                 self.drill_progress_signal.emit(index + 1)
                 remaining = per_point_budget - (time.monotonic() - started_at)
                 while remaining > 0 and not self._should_abort_drilling():
@@ -2697,40 +2791,41 @@ class CraniotomyWindow(QMainWindow):
                     time.sleep(sleep_window)
                     remaining -= sleep_window
             if not self._should_abort_drilling():
-                midpoint_ap = self.mid_ap.value()
-                midpoint_ml = self.mid_ml.value()
-                self.status_signal.emit("Drilling round complete. Returning to midpoint.")
-                self.controller.goto_position(midpoint_ap, midpoint_ml, -1.0, delay_seconds=0.5)
-                self.controller.wait_for_position(
-                    midpoint_ap,
-                    midpoint_ml,
-                    -1.0,
-                    tolerance_mm=0.02,
-                    timeout_seconds=60.0,
-                    poll_seconds=0.1,
-                    stop_requested=self._should_abort_drilling,
-                )
+                if retract_after_completion and self.active_surface_dv is not None:
+                    self.status_signal.emit("Round complete. Retracting 2 mm above surface.")
+                    self.controller.move_axis_to_target(
+                        "DV",
+                        self.active_surface_dv - 2.0,
+                        step_mm=5.0,
+                        stop_requested=self._should_abort_drilling,
+                        status_callback=None,
+                        dwell_seconds=0.005,
+                    )
                 if not self._should_abort_drilling():
-                    self.status_signal.emit("Drilling round complete. Returned to midpoint.")
+                    self.status_signal.emit("Drilling round complete.")
         except Exception as exc:
             if not self._should_abort_drilling():
+                outcome = "error"
                 self.status_signal.emit(str(exc))
         finally:
             if self.drill_pause_requested.is_set():
+                outcome = "paused"
                 try:
+                    retract_dv = (self.active_surface_dv - 2.0) if self.active_surface_dv is not None else -2.0
                     self.controller.move_axis_to_target(
                         "DV",
-                        -2.0,
+                        retract_dv,
                         step_mm=5.0,
                         stop_requested=None,
                         status_callback=None,
                         dwell_seconds=0.005,
                     )
-                    self.status_signal.emit("Round paused at DV -2.00.")
+                    self.status_signal.emit("Drilling paused 2 mm above surface.")
                 except Exception as retract_exc:
                     self.status_signal.emit(str(retract_exc))
                 self.drill_pause_requested.clear()
             elif self.drill_stop_requested.is_set():
+                outcome = "stopped"
                 self.status_signal.emit("Drilling round stopped.")
                 self.drill_stop_requested.clear()
             self.drill_round_started_at = None
@@ -2740,6 +2835,7 @@ class CraniotomyWindow(QMainWindow):
             self.active_drill_depth_mm = None
             self.drill_thread = None
             self.redraw_signal.emit()
+            self.drill_round_finished_signal.emit(outcome)
 
     def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
         top_points: list[tuple[float, float, float]] = []
