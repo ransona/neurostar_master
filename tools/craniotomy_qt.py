@@ -2515,7 +2515,12 @@ class CraniotomyWindow(QMainWindow):
     def compute_trajectory(self) -> None:
         captured = [seed for seed in self.seeds if seed.dv is not None]
         if len(captured) < 2:
-            self.trajectory = []
+            radius = self.diameter.value() / 2.0
+            self.trajectory = self._flat_circle_trajectory(self.mid_ap.value(), self.mid_ml.value(), radius)
+            if len(self.drilled_depths) != len(self.trajectory):
+                self.drilled_depths = [0.0] * len(self.trajectory)
+            if len(self.frozen_points) != len(self.trajectory):
+                self.frozen_points = [False] * len(self.trajectory)
             self.redraw_views()
             return
         known = sorted(
