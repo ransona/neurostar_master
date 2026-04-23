@@ -2836,6 +2836,85 @@ class CraniotomyWindow(QMainWindow):
     def _should_abort_drilling(self) -> bool:
         return self.drill_pause_requested.is_set() or self.drill_stop_requested.is_set()
 
+    def _continuous_round_substep_count(
+        self,
+        surface_targets: list[tuple[float, float, float]],
+        frozen_points: list[bool],
+        traversal_order: list[int],
+        path_step_mm: float,
+    ) -> int:
+        total = 0
+        previous_index: int | None = None
+        for index in traversal_order:
+            if frozen_points[index]:
+                previous_index = None
+                continue
+            if previous_index is not None and index != previous_index:
+                start_ap, start_ml, _start_dv = surface_targets[previous_index]
+                end_ap, end_ml, _end_dv = surface_targets[index]
+                total += max(1, int(math.ceil(math.hypot(end_ap - start_ap, end_ml - start_ml) / path_step_mm)))
+            previous_index = index
+        return max(1, total)
+
+    def _mark_continuous_round_point(self, index: int, target_depth: float, point_count: int) -> None:
+        if index < len(self.drilled_depths):
+            self.drilled_depths[index] = target_depth
+        if index == 0 and point_count < len(self.drilled_depths):
+            self.drilled_depths[point_count] = target_depth
+        self.active_depth_ratio = max(
+            0.0,
+            min(1.0, target_depth / max(self.skull_thickness_mm.value(), 0.001)),
+        )
+        self.redraw_signal.emit()
+        self.drill_progress_signal.emit(index + 1)
+
+    def _follow_continuous_round_segment(
+        self,
+        surface_targets: list[tuple[float, float, float]],
+        start_index: int,
+        end_index: int,
+        target_depth: float,
+        path_step_mm: float,
+        completed_substeps: int,
+        total_substeps: int,
+        round_started_at: float,
+        round_time_seconds: float,
+        point_count: int,
+    ) -> int:
+        start_ap, start_ml, start_surface_dv = surface_targets[start_index]
+        end_ap, end_ml, end_surface_dv = surface_targets[end_index]
+        distance = math.hypot(end_ap - start_ap, end_ml - start_ml)
+        substeps = max(1, int(math.ceil(distance / path_step_mm)))
+        for substep in range(1, substeps + 1):
+            if self._should_abort_drilling():
+                break
+            fraction = substep / substeps
+            ap = start_ap + (end_ap - start_ap) * fraction
+            ml = start_ml + (end_ml - start_ml) * fraction
+            surface_dv = start_surface_dv + (end_surface_dv - start_surface_dv) * fraction
+            target_dv = surface_dv + target_depth
+            self.active_surface_dv = surface_dv
+            self.status_signal.emit(
+                f"Continuous cutting at {int(((end_index % point_count) / max(1, point_count)) * 100)}%"
+            )
+            self.controller.move_to_position_nudged(
+                ap,
+                ml,
+                target_dv,
+                step_mm=path_step_mm,
+                stop_requested=self._should_abort_drilling,
+                status_callback=None,
+                dwell_seconds=0.005,
+            )
+            completed_substeps += 1
+            target_elapsed = round_time_seconds * (completed_substeps / total_substeps)
+            while not self._should_abort_drilling():
+                remaining = target_elapsed - (time.monotonic() - round_started_at)
+                if remaining <= 0.0:
+                    break
+                time.sleep(min(0.05, remaining))
+        return completed_substeps
+
     def _run_drilling_round(
         self,
         surface_targets: list[tuple[float, float, float]],
@@ -2846,31 +2925,64 @@ class CraniotomyWindow(QMainWindow):
         depth_mm: float,
         center_above_position: tuple[float, float, float],
     ) -> None:
-        point_count = len(surface_targets)
-        per_point_budget = round_time_seconds / max(1, point_count)
-        in_air = False
-        active_drill_section = False
+        point_count = max(1, len(surface_targets) - 1)
         outcome = "completed"
         try:
-            for index, (ap, ml, surface_dv) in enumerate(surface_targets):
+            if point_count <= 0:
+                return
+            needs_drilling = [
+                (not frozen_points[index]) and current_depths[index] + 0.0005 < target_depths[index]
+                for index in range(point_count)
+            ]
+            if not any(needs_drilling):
+                return
+            first_index = next(index for index, needed in enumerate(needs_drilling) if needed)
+            traversal_order = [(first_index + offset) % point_count for offset in range(point_count + 1)]
+            path_step_mm = 0.02
+            total_substeps = self._continuous_round_substep_count(
+                surface_targets,
+                frozen_points,
+                traversal_order,
+                path_step_mm,
+            )
+            completed_substeps = 0
+            round_started_at = time.monotonic()
+            at_cutting_depth = False
+            previous_index: int | None = None
+
+            for order_position, index in enumerate(traversal_order):
                 if self._should_abort_drilling():
                     break
+                ap, ml, surface_dv = surface_targets[index]
                 current_depth = current_depths[index]
                 target_depth = target_depths[index]
-                if frozen_points[index] or target_depth <= current_depth + 0.0005:
+                if frozen_points[index]:
+                    if at_cutting_depth and self.active_surface_dv is not None:
+                        self.status_signal.emit("Frozen section: retracting before crossing gap.")
+                        self.controller.move_axis_to_target(
+                            "DV",
+                            self.active_surface_dv - 2.0,
+                            step_mm=5.0,
+                            stop_requested=self._should_abort_drilling,
+                            status_callback=None,
+                            dwell_seconds=0.005,
+                        )
                     self.drill_progress_signal.emit(index + 1)
+                    at_cutting_depth = False
+                    previous_index = None
                     continue
-                current_dv_target = surface_dv + current_depth
-                target_dv = surface_dv + target_depth
-                self.active_surface_dv = surface_dv
-                self.active_depth_ratio = max(
-                    0.0,
-                    min(1.0, current_depth / max(self.skull_thickness_mm.value(), 0.001)),
-                )
-                self.redraw_signal.emit()
-                self.status_signal.emit(f"Moving to {int(index / max(1, point_count) * 100)}%")
-                started_at = time.monotonic()
-                if index == 0 or in_air or (not active_drill_section):
+                if not at_cutting_depth:
+                    current_dv_target = surface_dv + current_depth
+                    target_dv = surface_dv + target_depth
+                    self.active_surface_dv = surface_dv
+                    self.active_depth_ratio = max(
+                        0.0,
+                        min(1.0, current_depth / max(self.skull_thickness_mm.value(), 0.001)),
+                    )
+                    self.redraw_signal.emit()
+                    self.status_signal.emit(
+                        f"Moving to start continuous cut at {int(order_position / max(1, point_count) * 100)}%"
+                    )
                     self.controller.goto_position(ap, ml, current_dv_target, delay_seconds=0.5)
                     self.controller.wait_for_position(
                         ap,
@@ -2881,43 +2993,39 @@ class CraniotomyWindow(QMainWindow):
                         poll_seconds=0.1,
                         stop_requested=self._should_abort_drilling,
                     )
-                    in_air = False
-                    active_drill_section = True
-                else:
-                    self.controller.move_to_position_nudged(
-                        ap,
-                        ml,
+                    self.status_signal.emit(f"Entering continuous cut to DV {target_dv:.2f}")
+                    dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
+                    self.controller.move_axis_to_target(
+                        "DV",
                         target_dv,
-                        step_mm=5.0,
+                        step_mm=0.005,
                         stop_requested=self._should_abort_drilling,
                         status_callback=None,
-                        dwell_seconds=0.005,
+                        dwell_seconds=dwell_seconds,
                     )
-                self.status_signal.emit(
-                    f"Drilling down at {int(index / max(1, point_count) * 100)}% to DV {target_dv:.2f}"
+                    at_cutting_depth = True
+                    previous_index = index
+                    self._mark_continuous_round_point(index, target_depths[index], point_count)
+                    continue
+                if previous_index is None:
+                    previous_index = index
+                    continue
+                if index == previous_index:
+                    continue
+                completed_substeps = self._follow_continuous_round_segment(
+                    surface_targets,
+                    previous_index,
+                    index,
+                    target_depth,
+                    path_step_mm,
+                    completed_substeps,
+                    total_substeps,
+                    round_started_at,
+                    round_time_seconds,
+                    point_count,
                 )
-                dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
-                self.controller.move_axis_to_target(
-                    "DV",
-                    target_dv,
-                    step_mm=0.005,
-                    stop_requested=self._should_abort_drilling,
-                    status_callback=None,
-                    dwell_seconds=dwell_seconds,
-                )
-                current_depths[index] = target_depth
-                self.drilled_depths[index] = target_depth
-                self.active_depth_ratio = max(
-                    0.0,
-                    min(1.0, target_depth / max(self.skull_thickness_mm.value(), 0.001)),
-                )
-                self.redraw_signal.emit()
-                self.drill_progress_signal.emit(index + 1)
-                remaining = per_point_budget - (time.monotonic() - started_at)
-                while remaining > 0 and not self._should_abort_drilling():
-                    sleep_window = min(0.05, remaining)
-                    time.sleep(sleep_window)
-                    remaining -= sleep_window
+                self._mark_continuous_round_point(index, target_depth, point_count)
+                previous_index = index
             if not self._should_abort_drilling():
                 center_ap, center_ml, center_dv = center_above_position
                 self.status_signal.emit("Round complete. Returning above craniotomy center.")
