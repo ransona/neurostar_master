@@ -530,7 +530,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
-        self.block_prompt_continue = True
+        self.block_prompt_result = "clear"
         self.warning_auto_confirm_stop = threading.Event()
         self.setWindowTitle("Craniotomy Planner")
         self.setFocusPolicy(Qt.StrongFocus)
@@ -1043,13 +1043,16 @@ class CraniotomyWindow(QMainWindow):
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
         clear_sites_btn = QPushButton("Clear Sites")
         clear_sites_btn.clicked.connect(self.clear_injection_sites)
+        resume_selected_btn = QPushButton("Resume From Selected")
+        resume_selected_btn.clicked.connect(self.resume_injection_from_selected)
         self.block_check = QCheckBox("Check blockage after each site")
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
         sites_layout.addWidget(clear_sites_btn, 0, 2)
-        sites_layout.addWidget(self.block_check, 0, 3, 1, 2)
-        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 5)
+        sites_layout.addWidget(resume_selected_btn, 0, 3)
+        sites_layout.addWidget(self.block_check, 0, 4, 1, 2)
+        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 6)
         layout.addStretch(1)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
@@ -1608,7 +1611,10 @@ class CraniotomyWindow(QMainWindow):
             "then move normally to 1.000 mm above the surface."
         )
         if self.block_check.isChecked():
-            steps.append("Run the blockage test from 1.000 mm above the stored surface.")
+            steps.append(
+                "Run the blockage test from 1.000 mm above the stored surface; only continue if confirmed not blocked, "
+                "otherwise offer repeated test injections until declined."
+            )
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
             font = item.font()
@@ -1692,29 +1698,96 @@ class CraniotomyWindow(QMainWindow):
             if self.block_check.isChecked():
                 required_volume_nl += test_volume_nl * len(sites)
             self.ensure_total_syringe_capacity(required_volume_nl)
-            self.injection_pause_requested.clear()
-            self.injection_stop_requested.clear()
-            self.injection_progress.setValue(0)
-            self.injection_site_progress.setValue(0)
-            self.set_status(
-                f"Ready: {len(sites)} site(s), {settings.main_volume_nl} nl; insertion {settings.insertion_rate_nl_min:.1f}, main {settings.main_rate_nl_min:.1f} nl/min"
-            )
-            self.start_injection_btn.setEnabled(False)
-            self.pause_injection_btn.setText("Pause")
-            self.injection_thread = threading.Thread(
-                target=self._run_injection_protocol,
-                args=(
-                    sites,
-                    settings,
-                    injection_plan,
-                    self.block_check.isChecked(),
-                    test_volume_nl,
+            self._start_injection_sequence(
+                sites=sites,
+                settings=settings,
+                injection_plan=injection_plan,
+                check_blocked=self.block_check.isChecked(),
+                test_volume_nl=test_volume_nl,
+                start_site_offset=0,
+                total_site_count=len(sites),
+                initial_status=(
+                    f"Ready: {len(sites)} site(s), {settings.main_volume_nl} nl; insertion "
+                    f"{settings.insertion_rate_nl_min:.1f}, main {settings.main_rate_nl_min:.1f} nl/min"
                 ),
-                daemon=True,
             )
-            self.injection_thread.start()
         except Exception as exc:
             QMessageBox.warning(self, "Injection", str(exc))
+
+    def resume_injection_from_selected(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        if not self.injection_sites:
+            QMessageBox.information(self, "Injection", "Resume from selected requires stored injection sites.")
+            return
+        row = self.injection_sites_list.currentRow()
+        if not (0 <= row < len(self.injection_sites)):
+            QMessageBox.information(self, "Injection", "Select the site to resume from in the injection site list.")
+            return
+        try:
+            settings = self._injection_protocol_settings()
+            self._set_number_edit(self.single_injection_volume_nl, settings.main_volume_nl)
+            self._set_number_edit(self.insertion_injection_rate_nl_min, settings.insertion_rate_nl_min)
+            self._set_number_edit(self.main_injection_rate_nl_min, settings.main_rate_nl_min)
+            self._set_number_edit(self.injection_depth_mm, settings.injection_depth_mm)
+            self._set_number_edit(self.insert_retract_speed_um_s, settings.insert_retract_speed_um_s)
+            self._set_number_edit(self.movement_overshoot_mm, settings.overshoot_mm)
+            self._set_number_edit(self.post_inject_pause_s, settings.post_inject_pause_s)
+            remaining_sites = list(self.injection_sites[row:])
+            injection_plan = self._main_injection_step_plan(settings.main_volume_nl)
+            if not injection_plan:
+                return
+            self.sync_syringe_position_before_injection()
+            required_volume_nl = settings.main_volume_nl * len(remaining_sites)
+            test_volume_nl = self._rounded_test_volume()
+            if self.block_check.isChecked():
+                required_volume_nl += test_volume_nl * len(remaining_sites)
+            self.ensure_total_syringe_capacity(required_volume_nl)
+            self._start_injection_sequence(
+                sites=remaining_sites,
+                settings=settings,
+                injection_plan=injection_plan,
+                check_blocked=self.block_check.isChecked(),
+                test_volume_nl=test_volume_nl,
+                start_site_offset=row,
+                total_site_count=len(self.injection_sites),
+                initial_status=f"Resuming from selected site {row + 1}/{len(self.injection_sites)}",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Injection", str(exc))
+
+    def _start_injection_sequence(
+        self,
+        sites: list[InjectionSite],
+        settings: InjectionProtocolSettings,
+        injection_plan: list[int],
+        check_blocked: bool,
+        test_volume_nl: int,
+        start_site_offset: int,
+        total_site_count: int,
+        initial_status: str,
+    ) -> None:
+        self.injection_pause_requested.clear()
+        self.injection_stop_requested.clear()
+        self.injection_progress.setValue(int((start_site_offset / max(1, total_site_count)) * 100))
+        self.injection_site_progress.setValue(0)
+        self.set_status(initial_status)
+        self.start_injection_btn.setEnabled(False)
+        self.pause_injection_btn.setText("Pause")
+        self.injection_thread = threading.Thread(
+            target=self._run_injection_protocol,
+            args=(
+                sites,
+                settings,
+                injection_plan,
+                check_blocked,
+                test_volume_nl,
+                start_site_offset,
+                total_site_count,
+            ),
+            daemon=True,
+        )
+        self.injection_thread.start()
 
     def pause_resume_injection(self) -> None:
         if self.injection_thread is None or not self.injection_thread.is_alive():
@@ -1749,18 +1822,21 @@ class CraniotomyWindow(QMainWindow):
         injection_plan: list[int],
         check_blocked: bool,
         test_volume_nl: int,
+        start_site_offset: int = 0,
+        total_site_count: int | None = None,
     ) -> None:
         try:
-            total_units = max(1, len(sites))
+            total_units = max(1, total_site_count if total_site_count is not None else len(sites))
             step_indexes = self._sequence_step_indexes(settings, check_blocked)
-            for site_index, site in enumerate(sites, start=1):
+            for relative_site_index, site in enumerate(sites, start=1):
+                site_index = start_site_offset + relative_site_index
                 if self.injection_stop_requested.is_set():
                     break
                 self.active_injection_site_signal.emit(site_index - 1)
                 self.sequence_step_signal.emit(step_indexes["approach"])
                 self.injection_progress_signal.emit(
                     int(((site_index - 1) / total_units) * 100),
-                    f"Moving to 1 mm above surface for site {site_index}/{len(sites)}",
+                    f"Moving to 1 mm above surface for site {site_index}/{total_units}",
                 )
                 above_dv = self._above_surface_dv(site)
                 self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
@@ -1781,7 +1857,7 @@ class CraniotomyWindow(QMainWindow):
                     injection_plan,
                     step_indexes,
                     site_index,
-                    len(sites),
+                    total_units,
                 )
                 if check_blocked and not self.injection_stop_requested.is_set():
                     self.sequence_step_signal.emit(step_indexes["block"])
@@ -2047,30 +2123,41 @@ class CraniotomyWindow(QMainWindow):
             poll_seconds=0.1,
             stop_requested=self.injection_stop_requested.is_set,
         )
-        QApplication.beep()
-        for remaining in range(5, 0, -1):
+        while not self.injection_stop_requested.is_set():
+            QApplication.beep()
+            for remaining in range(5, 0, -1):
+                if self.injection_stop_requested.is_set():
+                    return
+                self.injection_progress_signal.emit(100, f"Verifying no blockage in {remaining}s")
+                time.sleep(1.0)
+            for step_nl in self._injection_step_plan(test_volume_nl):
+                if self.injection_stop_requested.is_set():
+                    return
+                self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
+                self.ensure_syringe_move_allowed(step_nl, False)
+                self.controller.syringe_step(
+                    f"{step_nl} nl",
+                    up=False,
+                    stop_requested=self.injection_stop_requested.is_set,
+                )
+                self.track_injection_delivery(step_nl)
+            self.block_prompt_event = threading.Event()
+            self.block_prompt_result = "clear"
+            self.block_prompt_signal.emit()
+            while not self.injection_stop_requested.is_set():
+                if self.block_prompt_event.wait(timeout=0.1):
+                    break
             if self.injection_stop_requested.is_set():
                 return
-            self.injection_progress_signal.emit(100, f"Verifying no blockage in {remaining}s")
-            time.sleep(1.0)
-        for step_nl in self._injection_step_plan(test_volume_nl):
-            if self.injection_stop_requested.is_set():
+            if self.block_prompt_result == "clear":
+                self.injection_progress_signal.emit(100, "Blockage test confirmed clear")
                 return
-            self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
-            self.ensure_syringe_move_allowed(step_nl, False)
-            self.controller.syringe_step(
-                f"{step_nl} nl",
-                up=False,
-                stop_requested=self.injection_stop_requested.is_set,
-            )
-            self.track_injection_delivery(step_nl)
-        self.block_prompt_event = threading.Event()
-        self.block_prompt_continue = True
-        self.block_prompt_signal.emit()
-        self.block_prompt_event.wait(timeout=6.0)
-        if not self.block_prompt_continue:
-            self.injection_pause_requested.set()
-            self.injection_progress_signal.emit(100, "Paused after blockage test")
+            if self.block_prompt_result == "retest":
+                self.injection_progress_signal.emit(100, "Repeating blockage test injection")
+                continue
+            self.injection_stop_requested.set()
+            self.injection_progress_signal.emit(100, "Sequence stopped after blockage test")
+            return
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
@@ -2124,15 +2211,24 @@ class CraniotomyWindow(QMainWindow):
         self.injection_thread = None
 
     def show_block_prompt(self) -> None:
+        result = "clear"
         box = QMessageBox(self)
         box.setWindowTitle("Blockage Check")
-        box.setText("Test injection complete. Continue protocol?")
-        continue_button = box.addButton("Continue", QMessageBox.AcceptRole)
-        pause_button = box.addButton("Pause", QMessageBox.RejectRole)
-        box.setDefaultButton(continue_button)
-        QTimer.singleShot(5000, continue_button.click)
+        box.setText("Is the test injection confirmed not blocked?")
+        clear_button = box.addButton("Not blocked", QMessageBox.AcceptRole)
+        blocked_button = box.addButton("Blocked", QMessageBox.RejectRole)
+        box.setDefaultButton(clear_button)
         box.exec()
-        self.block_prompt_continue = box.clickedButton() != pause_button
+        if box.clickedButton() == blocked_button:
+            retry_box = QMessageBox(self)
+            retry_box.setWindowTitle("Blockage Check")
+            retry_box.setText("Blocked reported. Do another test injection?")
+            retry_button = retry_box.addButton("Another test", QMessageBox.AcceptRole)
+            stop_button = retry_box.addButton("No", QMessageBox.RejectRole)
+            retry_box.setDefaultButton(retry_button)
+            retry_box.exec()
+            result = "retest" if retry_box.clickedButton() == retry_button else "stop"
+        self.block_prompt_result = result
         if self.block_prompt_event is not None:
             self.block_prompt_event.set()
 
