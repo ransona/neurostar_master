@@ -1,0 +1,93 @@
+[Version]
+Signature = "$Windows NT$"
+Class = CustomUSBDevices
+ClassGuid= {a503e2d3-a031-49dc-b684-c99085dbfe92}
+Provider = %MFGNAME%
+DriverVer=12/03/2012,1.0.0.7
+CatalogFile=NSTR-TS5.cat
+
+
+[Manufacturer]
+%MFGNAME% = NSTR_TS5,NTx86,NTamd64
+
+[NSTR_TS5.NTx86]
+%DESCRIPTION% =USB_Install, USB\VID_04d8&PID_0053
+
+[NSTR_TS5.NTamd64]
+%DESCRIPTION% =USB_Install, USB\VID_04d8&PID_0053
+
+
+[ClassInstall32]
+AddReg=ClassInstall_AddReg
+
+[ClassInstall_AddReg]
+HKR,,,,%DEVICEMANAGERCATEGORY%
+HKR,,Icon,,"-20"
+
+
+; =================== Installation ===================
+
+[USB_Install]
+Include=winusb.inf
+Needs=WINUSB.NT
+
+[USB_Install.Services]
+Include=winusb.inf
+AddService=WinUSB,0x00000002,WinUSB_ServiceInstall
+
+[WinUSB_ServiceInstall]
+DisplayName     = %WinUSB_SvcDesc%
+ServiceType     = 1
+StartType       = 3
+ErrorControl    = 1
+ServiceBinary   = %12%\WinUSB.sys
+
+[USB_Install.Wdf]
+KmdfService=WINUSB, WinUsb_Install
+
+[WinUSB_Install]
+KmdfLibraryVersion=1.11
+
+[USB_Install.HW]
+AddReg=Dev_AddReg
+
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{AE9745BD-3C1E-4CEB-ABAB-02AB64C69B26}"
+
+[USB_Install.CoInstallers]
+AddReg=CoInstallers_AddReg
+CopyFiles=CoInstallers_CopyFiles
+
+[CoInstallers_AddReg]
+HKR,,CoInstallers32,0x00010000,"WdfCoInstaller01011.dll,WdfCoInstaller","WinUSBCoInstaller2.dll"
+
+[CoInstallers_CopyFiles]
+WinUSBCoInstaller2.dll
+WdfCoInstaller01011.dll
+
+[DestinationDirs]
+CoInstallers_CopyFiles=11
+
+; ================= Source Media Section =====================
+
+[SourceDisksNames]
+1 = %DISK_NAME%,,,\i386
+2 = %DISK_NAME%,,,\amd64
+
+[SourceDisksFiles.x86]
+WinUSBCoInstaller2.dll=1
+WdfCoInstaller01011.dll=1
+
+[SourceDisksFiles.amd64]
+WinUSBCoInstaller2.dll=2
+WdfCoInstaller01011.dll=2
+
+; =================== Strings ===================
+
+[Strings]
+MFGNAME="Neurostar GmbH."
+DESCRIPTION="TS5 Controller"
+WinUSB_SvcDesc="TS5 Controller"
+DISK_NAME="Neurostar TS5 Controller Install Disk"
+DEVICEMANAGERCATEGORY="Custom USB Devices"
+
