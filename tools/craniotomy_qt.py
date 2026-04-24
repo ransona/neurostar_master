@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QFileDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -187,6 +188,20 @@ class InjectionProtocolSettings:
     insert_retract_speed_um_s: float
     overshoot_mm: float
     post_inject_pause_s: float
+
+
+@dataclass
+class CraniotomyConfig:
+    diameter_mm: float
+    seed_count: int
+    trajectory_points: int
+    cut_offset_dv_mm: float
+    max_depth_mm: float
+    depth_per_round_mm: float
+    skull_thickness_mm: float
+    round_time_seconds: float
+    drill_rate_mm_per_s: float
+    auto_start_rounds: bool
 
 
 class ProjectionWidget(QWidget):
@@ -549,6 +564,7 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
+        self._load_last_used_configs()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         QTimer.singleShot(250, self.update_syringe_position_from_scale)
@@ -570,6 +586,10 @@ class CraniotomyWindow(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        try:
+            self._save_last_used_configs()
+        except Exception:
+            pass
         self.warning_auto_confirm_stop.set()
         super().closeEvent(event)
 
@@ -769,11 +789,17 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_coords = QLabel("Seed: -")
         self.current_seed_coords.setWordWrap(True)
         self.current_seed_coords.setProperty("role", "muted")
+        self.craniotomy_save_btn = QPushButton("Save Craniotomy Config")
+        self.craniotomy_save_btn.clicked.connect(self.save_craniotomy_config)
+        self.craniotomy_load_btn = QPushButton("Load Craniotomy Config")
+        self.craniotomy_load_btn.clicked.connect(self.load_craniotomy_config)
 
         setup_layout.addWidget(QLabel("Mid AP"), 0, 0)
         setup_layout.addWidget(self.mid_ap, 0, 1)
         setup_layout.addWidget(QLabel("Mid ML"), 0, 2)
         setup_layout.addWidget(self.mid_ml, 0, 3)
+        setup_layout.addWidget(self.craniotomy_load_btn, 0, 4)
+        setup_layout.addWidget(self.craniotomy_save_btn, 0, 5)
 
         setup_layout.addWidget(QLabel("Diameter (mm)"), 1, 0)
         setup_layout.addWidget(self.diameter, 1, 1)
@@ -988,6 +1014,10 @@ class CraniotomyWindow(QMainWindow):
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
         self.stop_injection_btn.style().polish(self.stop_injection_btn)
         self.stop_injection_btn.clicked.connect(self.stop_injection)
+        self.injection_save_btn = QPushButton("Save Injection Config")
+        self.injection_save_btn.clicked.connect(self.save_injection_config)
+        self.injection_load_btn = QPushButton("Load Injection Config")
+        self.injection_load_btn.clicked.connect(self.load_injection_config)
         self.sequence_steps_list = QListWidget()
         self.sequence_steps_list.setSpacing(0)
         self.sequence_steps_list.setUniformItemSizes(True)
@@ -1019,6 +1049,8 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.post_inject_pause_s, 2, 1)
         single_layout.addWidget(QLabel("Test volume (nl)"), 2, 2)
         single_layout.addWidget(self.block_test_volume_nl, 2, 3)
+        single_layout.addWidget(self.injection_load_btn, 2, 4)
+        single_layout.addWidget(self.injection_save_btn, 2, 5)
         single_layout.addWidget(QLabel("Program sequence"), 3, 0, 1, 6)
         single_layout.addWidget(self.sequence_steps_list, 4, 0, 1, 6)
         single_layout.addWidget(QLabel("Overall sequence progress"), 5, 0)
@@ -1043,9 +1075,13 @@ class CraniotomyWindow(QMainWindow):
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
         clear_sites_btn = QPushButton("Clear Sites")
         clear_sites_btn.clicked.connect(self.clear_injection_sites)
-        resume_selected_btn = QPushButton("Resume From Selected")
+        resume_selected_btn = QPushButton("Start From Selected")
+        resume_selected_btn.setProperty("variant", "quick-green")
+        resume_selected_btn.style().unpolish(resume_selected_btn)
+        resume_selected_btn.style().polish(resume_selected_btn)
         resume_selected_btn.clicked.connect(self.resume_injection_from_selected)
         self.block_check = QCheckBox("Check blockage after each site")
+        self.block_check.setChecked(True)
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
@@ -1090,6 +1126,240 @@ class CraniotomyWindow(QMainWindow):
             widget.setText(str(value))
         else:
             widget.setText(f"{value:g}")
+
+    def _config_root_dir(self) -> Path:
+        return Path.home() / "Documents" / "Neurostar_Master" / "Configs"
+
+    def _config_dir(self, kind: str) -> Path:
+        mapping = {
+            "injection": self._config_root_dir() / "Injection",
+            "craniotomy": self._config_root_dir() / "Craniotomy",
+        }
+        directory = mapping[kind]
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _last_used_config_path(self, kind: str) -> Path:
+        return self._config_dir(kind) / "last_used.json"
+
+    def _craniotomy_config(self) -> CraniotomyConfig:
+        return CraniotomyConfig(
+            diameter_mm=float(self.diameter.value()),
+            seed_count=int(self.seed_count.value()),
+            trajectory_points=int(self.trajectory_points.value()),
+            cut_offset_dv_mm=float(self.cut_offset.value()),
+            max_depth_mm=float(self.drill_depth.value()),
+            depth_per_round_mm=float(self.depth_per_round.value()),
+            skull_thickness_mm=float(self.skull_thickness_mm.value()),
+            round_time_seconds=float(self.round_time_seconds.value()),
+            drill_rate_mm_per_s=float(self.drill_rate_mm_per_s.value()),
+            auto_start_rounds=bool(self.auto_start_rounds.isChecked()),
+        )
+
+    def _apply_craniotomy_config(self, config: CraniotomyConfig) -> None:
+        self.diameter.setValue(config.diameter_mm)
+        self.seed_count.setValue(config.seed_count)
+        self.trajectory_points.setValue(config.trajectory_points)
+        self.cut_offset.setValue(config.cut_offset_dv_mm)
+        self.drill_depth.setValue(config.max_depth_mm)
+        self.depth_per_round.setValue(config.depth_per_round_mm)
+        self.skull_thickness_mm.setValue(config.skull_thickness_mm)
+        self.round_time_seconds.setValue(config.round_time_seconds)
+        self.drill_rate_mm_per_s.setValue(config.drill_rate_mm_per_s)
+        self.auto_start_rounds.setChecked(config.auto_start_rounds)
+        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
+        self.update_current_target_depth_label()
+        self.redraw_views()
+
+    def _injection_config_dict(self) -> dict[str, object]:
+        settings = self._injection_protocol_settings()
+        return {
+            "main_volume_nl": settings.main_volume_nl,
+            "insertion_rate_nl_min": settings.insertion_rate_nl_min,
+            "main_rate_nl_min": settings.main_rate_nl_min,
+            "injection_depth_mm": settings.injection_depth_mm,
+            "insert_retract_speed_um_s": settings.insert_retract_speed_um_s,
+            "overshoot_mm": settings.overshoot_mm,
+            "post_inject_pause_s": settings.post_inject_pause_s,
+            "block_test_volume_nl": self._rounded_test_volume(),
+            "block_check_enabled": bool(self.block_check.isChecked()),
+        }
+
+    def _apply_injection_config_dict(self, config: dict[str, object]) -> None:
+        self._set_number_edit(self.single_injection_volume_nl, int(round(float(config.get("main_volume_nl", 100)))))
+        self._set_number_edit(self.insertion_injection_rate_nl_min, float(config.get("insertion_rate_nl_min", 100.0)))
+        self._set_number_edit(self.main_injection_rate_nl_min, float(config.get("main_rate_nl_min", 100.0)))
+        self._set_number_edit(self.injection_depth_mm, float(config.get("injection_depth_mm", 0.2)))
+        self._set_number_edit(self.insert_retract_speed_um_s, float(config.get("insert_retract_speed_um_s", 20.0)))
+        self._set_number_edit(self.movement_overshoot_mm, float(config.get("overshoot_mm", 0.05)))
+        self._set_number_edit(self.post_inject_pause_s, float(config.get("post_inject_pause_s", 5.0)))
+        self._set_number_edit(self.block_test_volume_nl, int(round(float(config.get("block_test_volume_nl", 50)))))
+        self.block_check.setChecked(bool(config.get("block_check_enabled", True)))
+        self.round_single_injection_volume_up()
+        self.round_test_volume_to_supported()
+        self.update_injection_rate_label()
+        self.refresh_injection_sequence_summary()
+
+    def _write_config_file(self, path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _read_config_file(self, path: Path) -> dict[str, object]:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _save_last_used_configs(self) -> None:
+        self._write_config_file(
+            self._last_used_config_path("injection"),
+            self._injection_config_dict(),
+        )
+        self._write_config_file(
+            self._last_used_config_path("craniotomy"),
+            {
+                "diameter_mm": self._craniotomy_config().diameter_mm,
+                "seed_count": self._craniotomy_config().seed_count,
+                "trajectory_points": self._craniotomy_config().trajectory_points,
+                "cut_offset_dv_mm": self._craniotomy_config().cut_offset_dv_mm,
+                "max_depth_mm": self._craniotomy_config().max_depth_mm,
+                "depth_per_round_mm": self._craniotomy_config().depth_per_round_mm,
+                "skull_thickness_mm": self._craniotomy_config().skull_thickness_mm,
+                "round_time_seconds": self._craniotomy_config().round_time_seconds,
+                "drill_rate_mm_per_s": self._craniotomy_config().drill_rate_mm_per_s,
+                "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
+            },
+        )
+
+    def _load_last_used_configs(self) -> None:
+        injection_path = self._last_used_config_path("injection")
+        if injection_path.exists():
+            try:
+                self._apply_injection_config_dict(self._read_config_file(injection_path))
+            except Exception:
+                pass
+        craniotomy_path = self._last_used_config_path("craniotomy")
+        if craniotomy_path.exists():
+            try:
+                self._apply_craniotomy_config(
+                    CraniotomyConfig(
+                        diameter_mm=float(self._read_config_file(craniotomy_path).get("diameter_mm", 3.2)),
+                        seed_count=int(self._read_config_file(craniotomy_path).get("seed_count", 6)),
+                        trajectory_points=int(self._read_config_file(craniotomy_path).get("trajectory_points", 60)),
+                        cut_offset_dv_mm=float(self._read_config_file(craniotomy_path).get("cut_offset_dv_mm", 0.0)),
+                        max_depth_mm=float(self._read_config_file(craniotomy_path).get("max_depth_mm", 0.2)),
+                        depth_per_round_mm=float(self._read_config_file(craniotomy_path).get("depth_per_round_mm", 0.05)),
+                        skull_thickness_mm=float(self._read_config_file(craniotomy_path).get("skull_thickness_mm", 0.25)),
+                        round_time_seconds=float(self._read_config_file(craniotomy_path).get("round_time_seconds", 60.0)),
+                        drill_rate_mm_per_s=float(self._read_config_file(craniotomy_path).get("drill_rate_mm_per_s", 0.01)),
+                        auto_start_rounds=bool(self._read_config_file(craniotomy_path).get("auto_start_rounds", True)),
+                    )
+                )
+            except Exception:
+                pass
+
+    def save_injection_config(self) -> None:
+        directory = self._config_dir("injection")
+        path_str, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Save Injection Config",
+            str(directory / "injection_config.json"),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        payload = self._injection_config_dict()
+        self._write_config_file(path, payload)
+        self._write_config_file(self._last_used_config_path("injection"), payload)
+        self.set_status(f"Saved injection config to {path}")
+
+    def load_injection_config(self) -> None:
+        directory = self._config_dir("injection")
+        path_str, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Load Injection Config",
+            str(directory),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        payload = self._read_config_file(path)
+        self._apply_injection_config_dict(payload)
+        self._write_config_file(self._last_used_config_path("injection"), self._injection_config_dict())
+        self.set_status(f"Loaded injection config from {path}")
+
+    def save_craniotomy_config(self) -> None:
+        directory = self._config_dir("craniotomy")
+        path_str, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Save Craniotomy Config",
+            str(directory / "craniotomy_config.json"),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        config = self._craniotomy_config()
+        payload = {
+            "diameter_mm": config.diameter_mm,
+            "seed_count": config.seed_count,
+            "trajectory_points": config.trajectory_points,
+            "cut_offset_dv_mm": config.cut_offset_dv_mm,
+            "max_depth_mm": config.max_depth_mm,
+            "depth_per_round_mm": config.depth_per_round_mm,
+            "skull_thickness_mm": config.skull_thickness_mm,
+            "round_time_seconds": config.round_time_seconds,
+            "drill_rate_mm_per_s": config.drill_rate_mm_per_s,
+            "auto_start_rounds": config.auto_start_rounds,
+        }
+        self._write_config_file(path, payload)
+        self._write_config_file(self._last_used_config_path("craniotomy"), payload)
+        self.set_status(f"Saved craniotomy config to {path}")
+
+    def load_craniotomy_config(self) -> None:
+        directory = self._config_dir("craniotomy")
+        path_str, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Load Craniotomy Config",
+            str(directory),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        payload = self._read_config_file(path)
+        config = CraniotomyConfig(
+            diameter_mm=float(payload.get("diameter_mm", 3.2)),
+            seed_count=int(payload.get("seed_count", 6)),
+            trajectory_points=int(payload.get("trajectory_points", 60)),
+            cut_offset_dv_mm=float(payload.get("cut_offset_dv_mm", 0.0)),
+            max_depth_mm=float(payload.get("max_depth_mm", 0.2)),
+            depth_per_round_mm=float(payload.get("depth_per_round_mm", 0.05)),
+            skull_thickness_mm=float(payload.get("skull_thickness_mm", 0.25)),
+            round_time_seconds=float(payload.get("round_time_seconds", 60.0)),
+            drill_rate_mm_per_s=float(payload.get("drill_rate_mm_per_s", 0.01)),
+            auto_start_rounds=bool(payload.get("auto_start_rounds", True)),
+        )
+        self._apply_craniotomy_config(config)
+        self._write_config_file(
+            self._last_used_config_path("craniotomy"),
+            {
+                "diameter_mm": config.diameter_mm,
+                "seed_count": config.seed_count,
+                "trajectory_points": config.trajectory_points,
+                "cut_offset_dv_mm": config.cut_offset_dv_mm,
+                "max_depth_mm": config.max_depth_mm,
+                "depth_per_round_mm": config.depth_per_round_mm,
+                "skull_thickness_mm": config.skull_thickness_mm,
+                "round_time_seconds": config.round_time_seconds,
+                "drill_rate_mm_per_s": config.drill_rate_mm_per_s,
+                "auto_start_rounds": config.auto_start_rounds,
+            },
+        )
+        self.set_status(f"Loaded craniotomy config from {path}")
 
     def set_status(self, message: str) -> None:
         self.current_action = message or "Trajectory"
