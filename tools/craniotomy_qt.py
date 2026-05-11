@@ -3642,7 +3642,16 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Craniotomy Planner")
     app.setFont(QFont("Segoe UI", 9))
-    window = CraniotomyWindow()
+    try:
+        window = CraniotomyWindow()
+    except StereoDriveError:
+        QMessageBox.warning(
+            None,
+            "StereoDrive Not Found",
+            "StereoDrive main window was not found.\n\n"
+            "Open StereoDrive first, then start Craniotomy Planner again.",
+        )
+        return
     window.show()
     sys.exit(app.exec())
 
