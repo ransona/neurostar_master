@@ -171,7 +171,8 @@ class SeedPoint:
 class InjectionSite:
     ap: float
     ml: float
-    dv: float
+    dv: float | None = None
+    generated: bool = False
 
 
 @dataclass
@@ -662,6 +663,7 @@ class CraniotomyWindow(QMainWindow):
         self.anchor_axis: tuple[float, float, float] | None = None
         self.anchor_bregma: tuple[float, float, float] | None = None
         self.injection_sites: list[InjectionSite] = []
+        self.recent_injection_grid_configs: list[dict[str, object]] = []
         self.quick_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
@@ -1288,8 +1290,15 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites_list = QListWidget()
         add_site_btn = QPushButton("Add Injection Site")
         add_site_btn.clicked.connect(self.add_injection_site)
+        add_grid_btn = QPushButton("Add Grid")
+        add_grid_btn.clicked.connect(self.add_injection_site_grid)
         remove_site_btn = QPushButton("Remove Selected Site")
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
+        validate_sites_btn = QPushButton("Validate Sites")
+        validate_sites_btn.setProperty("variant", "primary")
+        validate_sites_btn.style().unpolish(validate_sites_btn)
+        validate_sites_btn.style().polish(validate_sites_btn)
+        validate_sites_btn.clicked.connect(self.start_injection_site_validation)
         clear_sites_btn = QPushButton("Clear Sites")
         clear_sites_btn.clicked.connect(self.clear_injection_sites)
         resume_selected_btn = QPushButton("Start From Selected")
@@ -1301,11 +1310,13 @@ class CraniotomyWindow(QMainWindow):
         self.block_check.setChecked(True)
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
         sites_layout.addWidget(add_site_btn, 0, 0)
-        sites_layout.addWidget(remove_site_btn, 0, 1)
-        sites_layout.addWidget(clear_sites_btn, 0, 2)
-        sites_layout.addWidget(resume_selected_btn, 1, 0, 1, 2)
-        sites_layout.addWidget(self.block_check, 1, 2)
-        sites_layout.addWidget(self.injection_sites_list, 2, 0, 1, 3)
+        sites_layout.addWidget(add_grid_btn, 0, 1)
+        sites_layout.addWidget(remove_site_btn, 0, 2)
+        sites_layout.addWidget(validate_sites_btn, 1, 0)
+        sites_layout.addWidget(clear_sites_btn, 1, 1)
+        sites_layout.addWidget(resume_selected_btn, 1, 2)
+        sites_layout.addWidget(self.block_check, 2, 0, 1, 3)
+        sites_layout.addWidget(self.injection_sites_list, 3, 0, 1, 3)
 
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
@@ -1588,6 +1599,7 @@ class CraniotomyWindow(QMainWindow):
             "bregma_axis": self.bregma_axis,
             "anchor_axis": self.anchor_axis,
             "anchor_bregma": self.anchor_bregma,
+            "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "window_geometry": getattr(self, "window_geometry", None),
         }
         self._write_config_file(self._general_settings_path(), payload)
@@ -1618,6 +1630,14 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
             self.window_geometry = payload.get("window_geometry")
+            recent_grids = payload.get("recent_injection_grid_configs", [])
+            if isinstance(recent_grids, list):
+                self.recent_injection_grid_configs = [
+                    item for item in recent_grids
+                    if isinstance(item, dict)
+                ][:8]
+            if hasattr(self, "injection_grid_recent_combo"):
+                self._refresh_injection_grid_recent_combo()
             self.update_coordinate_mode_buttons()
             self.top_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
             self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
@@ -2536,10 +2556,122 @@ class CraniotomyWindow(QMainWindow):
     def add_injection_site(self) -> None:
         try:
             ap, ml, dv = self.get_gui_position()
-            self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=dv))
+            self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=dv, generated=False))
             self.refresh_injection_sites_list()
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    @staticmethod
+    def _grid_config_label(config: dict[str, object]) -> str:
+        return (
+            f"{int(config['ap_count'])} AP × {int(config['ml_count'])} ML; "
+            f"AP {float(config['ap_spacing_mm']):g} mm, ML {float(config['ml_spacing_mm']):g} mm"
+        )
+
+    def _refresh_injection_grid_recent_combo(self) -> None:
+        if not hasattr(self, "injection_grid_recent_combo"):
+            return
+        combo = self.injection_grid_recent_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Recently used…", None)
+        for config in self.recent_injection_grid_configs:
+            try:
+                combo.addItem(self._grid_config_label(config), config)
+            except (KeyError, TypeError, ValueError):
+                continue
+        combo.blockSignals(False)
+
+    def _remember_injection_grid_config(self, config: dict[str, object]) -> None:
+        keys = ("ap_count", "ml_count", "ap_spacing_mm", "ml_spacing_mm")
+        self.recent_injection_grid_configs = [
+            item for item in self.recent_injection_grid_configs
+            if any(item.get(key) != config[key] for key in keys)
+        ]
+        self.recent_injection_grid_configs.insert(0, config)
+        self.recent_injection_grid_configs = self.recent_injection_grid_configs[:8]
+        self._save_general_settings()
+
+    def add_injection_site_grid(self) -> None:
+        if self.coordinate_mode != "bregma" or self.bregma_axis is None:
+            QMessageBox.information(
+                self,
+                "Add Injection Grid",
+                "Set Bregma and select Bregma coordinates before creating a grid.",
+            )
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Injection Grid")
+        layout = QGridLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(6)
+        layout.addWidget(QLabel("The grid is centred on the current Bregma AP/ML position. New sites remain unvalidated."), 0, 0, 1, 2)
+        self.injection_grid_recent_combo = QComboBox()
+        self._refresh_injection_grid_recent_combo()
+        layout.addWidget(QLabel("Recently used"), 1, 0)
+        layout.addWidget(self.injection_grid_recent_combo, 1, 1)
+        ap_count = NumericLineEdit(2, minimum=1, maximum=20, integer=True)
+        ml_count = NumericLineEdit(2, minimum=1, maximum=20, integer=True)
+        ap_spacing = QLineEdit()
+        ml_spacing = QLineEdit()
+        ap_spacing.setPlaceholderText("mm")
+        ml_spacing.setPlaceholderText("mm")
+        layout.addWidget(QLabel("AP sites"), 2, 0)
+        layout.addWidget(ap_count, 2, 1)
+        layout.addWidget(QLabel("ML sites"), 3, 0)
+        layout.addWidget(ml_count, 3, 1)
+        layout.addWidget(QLabel("AP spacing (mm)"), 4, 0)
+        layout.addWidget(ap_spacing, 4, 1)
+        layout.addWidget(QLabel("ML spacing (mm)"), 5, 0)
+        layout.addWidget(ml_spacing, 5, 1)
+
+        def copy_spacing(source: QLineEdit, destination: QLineEdit) -> None:
+            if source.text().strip() and not destination.text().strip():
+                destination.setText(source.text().strip())
+
+        ap_spacing.editingFinished.connect(lambda: copy_spacing(ap_spacing, ml_spacing))
+        ml_spacing.editingFinished.connect(lambda: copy_spacing(ml_spacing, ap_spacing))
+
+        def use_recent(index: int) -> None:
+            config = self.injection_grid_recent_combo.itemData(index)
+            if not isinstance(config, dict):
+                return
+            ap_count.setValue(int(config["ap_count"]))
+            ml_count.setValue(int(config["ml_count"]))
+            ap_spacing.setText(f"{float(config['ap_spacing_mm']):g}")
+            ml_spacing.setText(f"{float(config['ml_spacing_mm']):g}")
+
+        self.injection_grid_recent_combo.currentIndexChanged.connect(use_recent)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons, 6, 0, 1, 2)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            config = {
+                "ap_count": int(ap_count.value()),
+                "ml_count": int(ml_count.value()),
+                "ap_spacing_mm": float(ap_spacing.text().strip().replace(",", ".")),
+                "ml_spacing_mm": float(ml_spacing.text().strip().replace(",", ".")),
+            }
+            if config["ap_spacing_mm"] <= 0 or config["ml_spacing_mm"] <= 0:
+                raise ValueError("Spacing must be greater than zero.")
+            center_ap, center_ml, _center_dv = self.get_gui_position()
+            for ap_index in range(int(config["ap_count"])):
+                ap = center_ap + (ap_index - (int(config["ap_count"]) - 1) / 2.0) * float(config["ap_spacing_mm"])
+                for ml_index in range(int(config["ml_count"])):
+                    ml = center_ml + (ml_index - (int(config["ml_count"]) - 1) / 2.0) * float(config["ml_spacing_mm"])
+                    self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=None, generated=True))
+            self._remember_injection_grid_config(config)
+            self.refresh_injection_sites_list()
+            self.set_status(f"Added {int(config['ap_count']) * int(config['ml_count'])} unvalidated injection sites.")
+        except (TypeError, ValueError) as exc:
+            QMessageBox.warning(self, "Add Injection Grid", f"Enter valid grid settings. {exc}")
+        finally:
+            if hasattr(self, "injection_grid_recent_combo"):
+                del self.injection_grid_recent_combo
 
     def remove_selected_injection_site(self) -> None:
         row = self.injection_sites_list.currentRow()
@@ -2551,19 +2683,144 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites.clear()
         self.refresh_injection_sites_list()
 
-    def refresh_injection_sites_list(self) -> None:
+    def start_injection_site_validation(self) -> None:
+        if self._motion_is_active():
+            QMessageBox.warning(self, "Validate Sites", "Wait for the current movement, drill, injection, benchmark, or probe to finish first.")
+            return
+        if not self.injection_sites:
+            QMessageBox.information(self, "Validate Sites", "Add one or more injection sites first.")
+            return
+        if self.coordinate_mode != "bregma" or self.bregma_axis is None:
+            QMessageBox.information(
+                self,
+                "Validate Sites",
+                "Set Bregma and select Bregma coordinates before validating sites.",
+            )
+            return
+        choice = QMessageBox(self)
+        choice.setWindowTitle("Validate Injection Sites")
+        choice.setText("Choose which sites to step through.")
+        validate_all = choice.addButton("Validate all", QMessageBox.AcceptRole)
+        validate_unvalidated = choice.addButton("Validate unvalidated", QMessageBox.ActionRole)
+        choice.addButton(QMessageBox.Cancel)
+        choice.exec()
+        if choice.clickedButton() == validate_all:
+            self._run_injection_site_validation(0, validate_all_sites=True)
+        elif choice.clickedButton() == validate_unvalidated:
+            start_index = next((index for index, site in enumerate(self.injection_sites) if site.dv is None), None)
+            if start_index is None:
+                QMessageBox.information(self, "Validate Sites", "All injection sites are already validated.")
+                return
+            self._run_injection_site_validation(start_index, validate_all_sites=False)
+
+    def _move_to_injection_site_for_validation(self, site: InjectionSite) -> None:
+        """Approach a site at Bregma DV -0.5 mm before manual surface finding."""
+        target_axis = self._bregma_to_axis((site.ap, site.ml, -0.5))
+        self.controller.goto_axis_position(*target_axis)
+        self.controller.wait_for_axis_position(*target_axis, tolerance_mm=0.03, timeout_seconds=60.0)
+
+    def _validation_dialog(self, index: int, total: int, site: InjectionSite) -> tuple[str, QDialog]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Validate Injection Site")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        state = "unvalidated" if site.dv is None else f"surface DV {site.dv:.2f} mm"
+        layout.addWidget(QLabel(
+            f"Site {index + 1} of {total}: AP {site.ap:.2f}, ML {site.ml:.2f} ({state})\n\n"
+            "The manipulator is at this site, 0.5 mm above Bregma DV zero. Use the normal keyboard nudges "
+            "to refine AP/ML and lower DV until the tool touches surface."
+        ))
+        buttons = QDialogButtonBox()
+        validate_button = buttons.addButton("Validate and Next", QDialogButtonBox.AcceptRole)
+        next_button = buttons.addButton("Next Without Validating", QDialogButtonBox.ActionRole)
+        delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
+        cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        dialog.exec()
+        clicked = buttons.clickedButton()
+        if clicked == validate_button:
+            return "validate", dialog
+        if clicked == next_button:
+            return "next", dialog
+        if clicked == delete_button:
+            return "delete", dialog
+        if clicked == cancel_button:
+            return "cancel", dialog
+        return "cancel", dialog
+
+    def _next_validation_index(self, index: int, validate_all_sites: bool) -> int | None:
+        if validate_all_sites:
+            return index + 1 if index + 1 < len(self.injection_sites) else None
+        for candidate in range(index + 1, len(self.injection_sites)):
+            if self.injection_sites[candidate].dv is None:
+                return candidate
+        return None
+
+    def _run_injection_site_validation(self, start_index: int, validate_all_sites: bool) -> None:
+        index: int | None = start_index
+        try:
+            while index is not None and index < len(self.injection_sites):
+                site = self.injection_sites[index]
+                self.refresh_injection_sites_list(active_index=index)
+                self.set_status(f"Moving to injection site {index + 1}/{len(self.injection_sites)} for validation.")
+                self._move_to_injection_site_for_validation(site)
+                action, _dialog = self._validation_dialog(index, len(self.injection_sites), site)
+                if action == "cancel":
+                    self.set_status("Injection-site validation stopped.")
+                    break
+                if action == "validate":
+                    ap, ml, dv = self.get_gui_position()
+                    self.injection_sites[index] = InjectionSite(ap=ap, ml=ml, dv=dv, generated=False)
+                    self.set_status(f"Validated injection site {index + 1}.")
+                elif action == "delete":
+                    del self.injection_sites[index]
+                    self.set_status(f"Deleted injection site {index + 1}.")
+                    if validate_all_sites:
+                        index = index if index < len(self.injection_sites) else None
+                    else:
+                        index = next(
+                            (candidate for candidate in range(index, len(self.injection_sites))
+                            if self.injection_sites[candidate].dv is None),
+                            None,
+                        )
+                    continue
+                index = self._next_validation_index(index, validate_all_sites)
+            else:
+                self.set_status("Injection-site validation complete.")
+                QMessageBox.information(self, "Validate Sites", "No more sites remain in this validation pass.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Validate Sites", str(exc))
+        finally:
+            self.refresh_injection_sites_list()
+
+    def refresh_injection_sites_list(self, active_index: int | None = None) -> None:
         self.injection_sites_list.clear()
         for index, site in enumerate(self.injection_sites, start=1):
-            item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}")
+            if site.dv is None:
+                item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f} — unvalidated")
+                item.setForeground(QColor("#a3a3a3"))
+            else:
+                item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}")
+                item.setForeground(QColor("#111827"))
             font = item.font()
             font.setBold(False)
             item.setFont(font)
             self.injection_sites_list.addItem(item)
+        if active_index is not None and 0 <= active_index < self.injection_sites_list.count():
+            item = self.injection_sites_list.item(active_index)
+            item.setBackground(QColor("#2563eb"))
+            item.setForeground(QColor("#ffffff"))
+            self.injection_sites_list.setCurrentRow(active_index)
+            self.injection_sites_list.scrollToItem(item)
         if hasattr(self, "injection_sites_view"):
             self.redraw_views()
 
     def _active_injection_sites(self) -> list[InjectionSite]:
         if self.injection_sites:
+            unvalidated = [index + 1 for index, site in enumerate(self.injection_sites) if site.dv is None]
+            if unvalidated:
+                numbers = ", ".join(str(index) for index in unvalidated)
+                raise StereoDriveError(f"Validate injection site(s) {numbers} before starting an injection.")
             return list(self.injection_sites)
         ap, ml, dv = self.get_gui_position()
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
@@ -2615,6 +2872,14 @@ class CraniotomyWindow(QMainWindow):
         row = self.injection_sites_list.currentRow()
         if not (0 <= row < len(self.injection_sites)):
             QMessageBox.information(self, "Injection", "Select the site to resume from in the injection site list.")
+            return
+        unvalidated = [index + 1 for index, site in enumerate(self.injection_sites[row:], start=row) if site.dv is None]
+        if unvalidated:
+            QMessageBox.warning(
+                self,
+                "Injection",
+                f"Validate injection site(s) {', '.join(str(index) for index in unvalidated)} before resuming.",
+            )
             return
         try:
             settings = self._injection_protocol_settings()
