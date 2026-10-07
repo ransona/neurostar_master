@@ -1220,12 +1220,38 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.pause_injection_btn, 7, 1)
         single_layout.addWidget(self.stop_injection_btn, 7, 2, 1, 4)
 
+        layout.addStretch(1)
+        self._build_injection_sites_tab()
+        self.update_manual_volume_label()
+        self.update_injection_rate_label()
+        self.refresh_injection_sequence_summary()
+
+    def _build_injection_sites_tab(self) -> None:
+        """Build the site list beside a live copy of the craniotomy map."""
+        sites_tab = QWidget()
+        sites_outer_layout = QHBoxLayout(sites_tab)
+        sites_outer_layout.setContentsMargins(7, 6, 7, 7)
+        sites_outer_layout.setSpacing(8)
+        self.tabs.addTab(sites_tab, "Injection Sites")
+
+        map_box = QGroupBox("Map")
+        map_layout = QVBoxLayout(map_box)
+        self.injection_sites_view = ProjectionWidget("ML", "AP")
+        self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
+        self.injection_sites_view.setMinimumSize(380, 380)
+        map_layout.addWidget(self.injection_sites_view, 1)
+        self.injection_sites_zoom_combo = QComboBox()
+        self.injection_sites_zoom_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
+        self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
+        map_layout.addWidget(self.injection_sites_zoom_combo)
+        sites_outer_layout.addWidget(map_box, 1)
+
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
         sites_layout.setContentsMargins(7, 6, 7, 7)
         sites_layout.setHorizontalSpacing(8)
         sites_layout.setVerticalSpacing(3)
-        layout.addWidget(sites_box)
+        sites_outer_layout.addWidget(sites_box, 1)
 
         self.injection_sites_list = QListWidget()
         add_site_btn = QPushButton("Add Injection Site")
@@ -1245,13 +1271,9 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(remove_site_btn, 0, 1)
         sites_layout.addWidget(clear_sites_btn, 0, 2)
-        sites_layout.addWidget(resume_selected_btn, 0, 3)
-        sites_layout.addWidget(self.block_check, 0, 4, 1, 2)
-        sites_layout.addWidget(self.injection_sites_list, 1, 0, 1, 6)
-        layout.addStretch(1)
-        self.update_manual_volume_label()
-        self.update_injection_rate_label()
-        self.refresh_injection_sequence_summary()
+        sites_layout.addWidget(resume_selected_btn, 1, 0, 1, 2)
+        sites_layout.addWidget(self.block_check, 1, 2)
+        sites_layout.addWidget(self.injection_sites_list, 2, 0, 1, 3)
 
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
@@ -2125,6 +2147,7 @@ class CraniotomyWindow(QMainWindow):
         self.coordinate_mode = mode
         self.update_coordinate_mode_buttons()
         self.top_view.set_coordinate_mode_bregma(mode == "bregma")
+        self.injection_sites_view.set_coordinate_mode_bregma(mode == "bregma")
         self.refresh_live_position()
         self.set_status(f"Using {mode.title()} coordinates.")
 
@@ -3375,6 +3398,7 @@ class CraniotomyWindow(QMainWindow):
             except (OSError, ValueError, json.JSONDecodeError):
                 calibration = None
         self.top_view.set_overlay_image(image, calibration)
+        self.injection_sites_view.set_overlay_image(image, calibration)
         self.set_status("Overlay cleared." if not path else f"Overlay selected: {Path(path).name}")
         self.refresh_live_position()
 
@@ -3452,6 +3476,10 @@ class CraniotomyWindow(QMainWindow):
 
     def set_zoom_mode(self, index: int) -> None:
         self.top_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
+        self.redraw_views()
+
+    def set_injection_sites_zoom_mode(self, index: int) -> None:
+        self.injection_sites_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
@@ -4235,6 +4263,12 @@ class CraniotomyWindow(QMainWindow):
         self.depth_legend.set_current_depth_ratio(current_depth_ratio)
         self._update_round_status_labels()
         self.top_view.set_data(
+            top_points,
+            top_seeds,
+            frozen_points=self.frozen_points,
+            current_point=current_point,
+        )
+        self.injection_sites_view.set_data(
             top_points,
             top_seeds,
             frozen_points=self.frozen_points,
