@@ -835,6 +835,9 @@ class CraniotomyWindow(QMainWindow):
         options_btn = QPushButton("Options")
         options_btn.clicked.connect(self.open_options_dialog)
         header_layout.addWidget(options_btn)
+        update_btn = QPushButton("Update")
+        update_btn.clicked.connect(self.update_from_github)
+        header_layout.addWidget(update_btn)
         header_layout.addWidget(QLabel("Overlay:"))
         self.overlay_combo = QComboBox()
         self.overlay_combo.addItem("None", None)
@@ -3120,7 +3123,10 @@ class CraniotomyWindow(QMainWindow):
     def refresh_live_position(self) -> None:
         try:
             axis_position = self.controller.get_current_axis_position()
-            ap, ml, dv = axis_position if self.coordinate_mode == "axis" else self._axis_to_bregma(axis_position)
+            if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+                ap, ml, dv = self._axis_to_bregma(axis_position)
+            else:
+                ap, ml, dv = axis_position
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
@@ -3141,6 +3147,7 @@ class CraniotomyWindow(QMainWindow):
                 calibration = None
         self.top_view.set_overlay_image(image, calibration)
         self.set_status("Overlay cleared." if not path else f"Overlay selected: {Path(path).name}")
+        self.refresh_live_position()
 
     def generate_seeds(self) -> None:
         try:
