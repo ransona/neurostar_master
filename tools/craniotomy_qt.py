@@ -1263,10 +1263,17 @@ class CraniotomyWindow(QMainWindow):
         # without forcing the tab taller than a normal application window.
         self.injection_sites_view.setMinimumSize(260, 260)
         map_layout.addWidget(self.injection_sites_view, 1)
+        injection_map_controls = QHBoxLayout()
+        self.show_craniotomy_on_injection_map = QCheckBox("Show craniotomy")
+        self.show_craniotomy_on_injection_map.setChecked(True)
+        self.show_craniotomy_on_injection_map.toggled.connect(lambda _checked: self.redraw_views())
+        injection_map_controls.addWidget(self.show_craniotomy_on_injection_map)
+        injection_map_controls.addStretch(1)
         self.injection_sites_zoom_combo = QComboBox()
         self.injection_sites_zoom_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
         self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
-        map_layout.addWidget(self.injection_sites_zoom_combo)
+        injection_map_controls.addWidget(self.injection_sites_zoom_combo)
+        map_layout.addLayout(injection_map_controls)
         sites_outer_layout.addWidget(map_box, 1)
 
         sites_box = QGroupBox("Injection Sites")
@@ -4295,9 +4302,10 @@ class CraniotomyWindow(QMainWindow):
             frozen_points=self.frozen_points,
             current_point=current_point,
         )
+        show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
         self.injection_sites_view.set_data(
-            top_points,
-            top_seeds,
+            top_points if show_craniotomy else [],
+            [],
             frozen_points=self.frozen_points,
             current_point=current_point,
             injection_sites=[(site.ml, site.ap) for site in self.injection_sites],
