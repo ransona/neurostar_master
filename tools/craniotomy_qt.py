@@ -771,6 +771,7 @@ class CraniotomyWindow(QMainWindow):
         self.validation_move_active = False
         self.validation_move_cancel_callback = None
         self.quick_locations: dict[str, StoredLocation] = {}
+        self.named_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
@@ -1729,7 +1730,7 @@ class CraniotomyWindow(QMainWindow):
         return self._config_root_dir() / "project_session.json"
 
     def _has_recoverable_project_state(self) -> bool:
-        return bool(self.seeds or self.trajectory or self.injection_sites or self.quick_locations)
+        return bool(self.seeds or self.trajectory or self.injection_sites or self.quick_locations or self.named_locations)
 
     def _project_session_dict(self) -> dict[str, object]:
         return {
@@ -1771,6 +1772,10 @@ class CraniotomyWindow(QMainWindow):
             "quick_locations": {
                 name: {"ap": location.ap, "ml": location.ml, "dv": location.dv}
                 for name, location in self.quick_locations.items()
+            },
+            "named_locations": {
+                name: {"ap": location.ap, "ml": location.ml, "dv": location.dv}
+                for name, location in self.named_locations.items()
             },
             "overlay_name": Path(str(self.overlay_combo.currentData())).name if self.overlay_combo.currentData() else None,
             "top_zoom_index": self.zoom_mode_combo.currentIndex(),
@@ -1892,6 +1897,14 @@ class CraniotomyWindow(QMainWindow):
             for name, raw_location in raw_locations.items():
                 if isinstance(name, str) and isinstance(raw_location, dict):
                     self.quick_locations[name] = StoredLocation(
+                        ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
+                    )
+        self.named_locations = {}
+        raw_named_locations = payload.get("named_locations")
+        if isinstance(raw_named_locations, dict):
+            for name, raw_location in raw_named_locations.items():
+                if isinstance(name, str) and isinstance(raw_location, dict):
+                    self.named_locations[name] = StoredLocation(
                         ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
                     )
         overlay_name = payload.get("overlay_name")
@@ -2752,7 +2765,11 @@ class CraniotomyWindow(QMainWindow):
 
     def open_goto_dialog(self) -> None:
         try:
-            current_ap, current_ml, current_dv = self.get_gui_position()
+            axis_position = self.controller.get_current_axis_position()
+            using_bregma = self.bregma_axis is not None
+            current_ap, current_ml, current_dv = (
+                self._axis_to_bregma(axis_position) if using_bregma else axis_position
+            )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
             return
@@ -2767,17 +2784,102 @@ class CraniotomyWindow(QMainWindow):
         ap_box = self._position_spinbox(current_ap)
         ml_box = self._position_spinbox(current_ml)
         dv_box = self._position_spinbox(current_dv)
-        layout.addWidget(QLabel("AP"), 0, 0)
-        layout.addWidget(ap_box, 0, 1)
-        layout.addWidget(QLabel("ML"), 1, 0)
-        layout.addWidget(ml_box, 1, 1)
-        layout.addWidget(QLabel("DV"), 2, 0)
-        layout.addWidget(dv_box, 2, 1)
+
+        saved_combo = QComboBox()
+        name_edit = QLineEdit()
+        save_location_btn = QPushButton("Save Position")
+        delete_location_btn = QPushButton("Delete Saved Position")
+
+        def populate_saved_positions(selected_name: str | None = None) -> None:
+            saved_combo.blockSignals(True)
+            saved_combo.clear()
+            saved_combo.addItem("Saved positions…", None)
+            for name in sorted(self.named_locations, key=str.casefold):
+                saved_combo.addItem(name, name)
+            if selected_name is not None:
+                selected_index = saved_combo.findData(selected_name)
+                if selected_index >= 0:
+                    saved_combo.setCurrentIndex(selected_index)
+            saved_combo.blockSignals(False)
+
+        def load_saved_position(index: int) -> None:
+            name = saved_combo.itemData(index)
+            if not isinstance(name, str):
+                return
+            location = self.named_locations.get(name)
+            if location is None:
+                return
+            name_edit.setText(name)
+            ap_box.setValue(location.ap)
+            ml_box.setValue(location.ml)
+            dv_box.setValue(location.dv)
+
+        def save_named_position() -> None:
+            if not using_bregma:
+                QMessageBox.information(
+                    dialog,
+                    "Save Position",
+                    "Set Bregma before saving named positions. Named positions are always stored in Bregma coordinates.",
+                )
+                return
+            name = name_edit.text().strip()
+            if not name:
+                QMessageBox.information(dialog, "Save Position", "Enter a name for this position.")
+                return
+            if name in self.named_locations:
+                response = QMessageBox.question(
+                    dialog, "Replace Saved Position?",
+                    f"Replace the saved Bregma position '{name}'?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                )
+                if response != QMessageBox.Yes:
+                    return
+            self.named_locations[name] = StoredLocation(ap_box.value(), ml_box.value(), dv_box.value())
+            populate_saved_positions(name)
+            self._autosave_project_session()
+            self.set_status(f"Saved Bregma position '{name}'.")
+
+        def delete_named_position() -> None:
+            name = saved_combo.currentData()
+            if not isinstance(name, str) or name not in self.named_locations:
+                QMessageBox.information(dialog, "Delete Saved Position", "Select a saved position to delete.")
+                return
+            del self.named_locations[name]
+            name_edit.clear()
+            populate_saved_positions()
+            self._autosave_project_session()
+            self.set_status(f"Deleted saved Bregma position '{name}'.")
+
+        populate_saved_positions()
+        saved_combo.currentIndexChanged.connect(load_saved_position)
+        save_location_btn.clicked.connect(save_named_position)
+        delete_location_btn.clicked.connect(delete_named_position)
+
+        coordinate_label = "Bregma" if using_bregma else "Axis (set Bregma to save named positions)"
+        layout.addWidget(QLabel("Saved position"), 0, 0)
+        layout.addWidget(saved_combo, 0, 1)
+        layout.addWidget(QLabel("Name"), 1, 0)
+        layout.addWidget(name_edit, 1, 1)
+        location_buttons = QHBoxLayout()
+        location_buttons.addWidget(save_location_btn)
+        location_buttons.addWidget(delete_location_btn)
+        layout.addLayout(location_buttons, 2, 0, 1, 2)
+        layout.addWidget(QLabel(f"{coordinate_label} AP"), 3, 0)
+        layout.addWidget(ap_box, 3, 1)
+        layout.addWidget(QLabel(f"{coordinate_label} ML"), 4, 0)
+        layout.addWidget(ml_box, 4, 1)
+        layout.addWidget(QLabel(f"{coordinate_label} DV"), 5, 0)
+        layout.addWidget(dv_box, 5, 1)
+        if not using_bregma:
+            save_location_btn.setEnabled(False)
+            delete_location_btn.setEnabled(False)
+            saved_combo.setEnabled(False)
+            name_edit.setEnabled(False)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons, 3, 0, 1, 2)
+        layout.addWidget(buttons, 6, 0, 1, 2)
 
         if dialog.exec() != QDialog.Accepted:
             return
@@ -2786,13 +2888,23 @@ class CraniotomyWindow(QMainWindow):
         ml = ml_box.value()
         dv = dv_box.value()
         try:
-            self.goto_gui_position(
-                ap, ml, dv,
-                title="Moving to Position",
-                message="Moving to the requested position. Waiting for StereoDrive to report arrival…",
-                show_progress=True,
-            )
-            self.set_status(f"Moving to AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
+            if using_bregma:
+                target_axis = self._bregma_to_axis((ap, ml, dv))
+                if not self._move_to_axis_position_with_progress(
+                    target_axis,
+                    title="Moving to Position",
+                    message="Moving to the requested Bregma position. Waiting for StereoDrive to report arrival…",
+                ):
+                    return
+                self.set_status(f"Moved to Bregma AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
+            else:
+                self.goto_gui_position(
+                    ap, ml, dv,
+                    title="Moving to Position",
+                    message="Moving to the requested position. Waiting for StereoDrive to report arrival…",
+                    show_progress=True,
+                )
+                self.set_status(f"Moved to Axis AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
