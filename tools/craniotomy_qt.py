@@ -220,6 +220,7 @@ class ProjectionWidget(QWidget):
         self.trajectory: list[tuple[float, float, float]] = []
         self.seed_points: list[tuple[float, float, bool]] = []
         self.injection_site_points: list[tuple[float, float]] = []
+        self.anchor_point: tuple[float, float] | None = None
         self.frozen_points: list[bool] = []
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
@@ -280,10 +281,12 @@ class ProjectionWidget(QWidget):
         frozen_points: list[bool] | None = None,
         current_point: tuple[float, float] | None = None,
         injection_sites: list[tuple[float, float]] | None = None,
+        anchor_point: tuple[float, float] | None = None,
     ) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
         self.injection_site_points = injection_sites or []
+        self.anchor_point = anchor_point
         self.frozen_points = frozen_points or [False] * len(trajectory)
         self.current_point = current_point
         self.update()
@@ -410,6 +413,7 @@ class ProjectionWidget(QWidget):
             not self.trajectory
             and not self.seed_points
             and not self.injection_site_points
+            and self.anchor_point is None
             and self.current_point is None
             and self.overlay_image is None
         ):
@@ -419,6 +423,9 @@ class ProjectionWidget(QWidget):
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points] + [p[0] for p in self.injection_site_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points] + [p[1] for p in self.injection_site_points]
+        if self.anchor_point is not None:
+            xs.append(self.anchor_point[0])
+            ys.append(self.anchor_point[1])
         if self.view_focus_points:
             xs = [point[0] for point in self.view_focus_points]
             ys = [point[1] for point in self.view_focus_points]
@@ -546,6 +553,14 @@ class ProjectionWidget(QWidget):
             painter.drawEllipse(pt, 8, 8)
             painter.setPen(QColor("#3b0764"))
             painter.drawText(QRectF(pt.x() - 6, pt.y() - 8, 12, 16), Qt.AlignCenter, str(idx))
+
+        if self.anchor_point is not None:
+            pt = map_point(self.anchor_point[0], self.anchor_point[1])
+            painter.setPen(QPen(QColor("#2563eb"), 3))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(pt, 9, 9)
+            painter.setPen(QColor("#1d4ed8"))
+            painter.drawText(pt + QPointF(11, -10), "Anchor")
 
         if self.current_point is not None:
             pt = map_point(self.current_point[0], self.current_point[1])
@@ -2387,7 +2402,8 @@ class CraniotomyWindow(QMainWindow):
             self.update_coordinate_mode_buttons()
             self._save_general_settings()
             self.refresh_live_position()
-            self.set_status("GUI Bregma set at the current Axis position.")
+            self.redraw_views()
+            self.set_status("GUI Bregma set at the current Axis position; any previous anchor was cleared.")
         except Exception as exc:
             QMessageBox.critical(self, "Bregma Coordinates", str(exc))
 
@@ -2398,6 +2414,7 @@ class CraniotomyWindow(QMainWindow):
             self.anchor_axis = self.controller.get_current_axis_position()
             self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
             self._save_general_settings()
+            self.redraw_views()
             self.set_status(
                 f"Anchor set at Bregma [{self.anchor_bregma[0]:.2f}, {self.anchor_bregma[1]:.2f}, {self.anchor_bregma[2]:.2f}]."
             )
@@ -2408,24 +2425,38 @@ class CraniotomyWindow(QMainWindow):
         try:
             if self.bregma_axis is None or self.anchor_bregma is None:
                 raise StereoDriveError("Set Bregma and Set Anchor before using At Anchor.")
+            response = QMessageBox.warning(
+                self,
+                "Recalibrate Bregma from Anchor?",
+                "This recalibrates the GUI Bregma origin using the current position and the stored anchor. "
+                "The craniotomy, injection-site, and position displays will update to the recalibrated Bregma coordinates.",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if response != QMessageBox.Yes:
+                return
             current_anchor_axis = self.controller.get_current_axis_position()
             self.bregma_axis = tuple(
                 current_anchor_axis[index] - self.anchor_bregma[index] for index in range(3)
             )
             self.anchor_axis = current_anchor_axis
+            self.coordinate_mode = "bregma"
+            self.update_coordinate_mode_buttons()
+            self.top_view.set_coordinate_mode_bregma(True)
+            self.injection_sites_view.set_coordinate_mode_bregma(True)
             self._save_general_settings()
-            self.refresh_live_position()
+            current_ap, current_ml, current_dv = self._axis_to_bregma(current_anchor_axis)
+            self.current_ap_label.setText(f"{current_ap:.2f}")
+            self.current_ml_label.setText(f"{current_ml:.2f}")
+            self.current_dv_label.setText(f"{current_dv:.2f}")
+            self.refresh_injection_sites_list()
+            self.redraw_views(current_point=(current_ml, current_ap))
             self.set_status("Bregma recalibrated from the current anchor position.")
         except Exception as exc:
             QMessageBox.critical(self, "At Anchor", str(exc))
 
     def set_current_location_to_bregma(self) -> None:
-        try:
-            self.controller.set_current_location_to_bregma()
-            self.refresh_live_position()
-            self.set_status("Current location set to Bregma. AP/ML/DV verified at 0.")
-        except Exception as exc:
-            QMessageBox.critical(self, "StereoDrive", str(exc))
+        self.set_local_bregma()
 
     def activate_stereodrive_drill(self) -> None:
         answer = QMessageBox.warning(
@@ -4926,7 +4957,7 @@ class CraniotomyWindow(QMainWindow):
             point_depth_ratio = max(0.0, min(1.0, depth_mm / skull_thickness_mm))
             top_points.append((ml, ap, point_depth_ratio))
         top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
-        if current_point is None and (self.seeds or self.top_view.overlay_image is not None):
+        if current_point is None and (self.seeds or self.injection_sites or self.top_view.overlay_image is not None):
             try:
                 current_ap, current_ml, current_dv = self.controller.get_current_axis_position()
                 if self.coordinate_mode == "bregma":
@@ -4952,6 +4983,8 @@ class CraniotomyWindow(QMainWindow):
             top_seeds,
             frozen_points=self.frozen_points,
             current_point=current_point,
+            anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
+            if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
         )
         show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
         injection_site_points = [(site.ml, site.ap) for site in self.injection_sites]
@@ -4966,6 +4999,8 @@ class CraniotomyWindow(QMainWindow):
             frozen_points=self.frozen_points,
             current_point=current_point,
             injection_sites=injection_site_points,
+            anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
+            if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
         )
         self.injection_sites_view.set_view_focus_points(focus_points or None)
         self.update_seed_selector_label()
