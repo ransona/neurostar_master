@@ -1,4 +1,5 @@
 import ctypes
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -284,6 +285,16 @@ class StereoDriveController:
                 if 0.0 <= value <= 5000.0:
                     numeric_candidates.append(row | {"value": value})
         return numeric_candidates
+
+    def scan_stereodrive_controls(self) -> str:
+        """Return a copyable snapshot of the current StereoDrive control tree."""
+        self._refresh_main_window()
+        main_window = next((window for window in self._top_level_windows() if window.hwnd == self.main_hwnd), None)
+        if main_window is None:
+            raise StereoDriveError("StereoDrive main window could not be scanned.")
+        main_row = self._control_row(main_window)
+        children = [self._control_row(control) for control in self._child_controls()]
+        return json.dumps({"main_window": main_row, "controls": children}, indent=2, sort_keys=True)
 
     def _control_handle(self, control_id: int, timeout_seconds: float = 5.0, poll_seconds: float = 0.2) -> int:
         deadline = time.monotonic() + timeout_seconds

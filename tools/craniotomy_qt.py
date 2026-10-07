@@ -769,6 +769,9 @@ class CraniotomyWindow(QMainWindow):
             header_layout.addWidget(button)
         header_layout.addWidget(benchmark_btn)
         header_layout.addStretch(1)
+        options_btn = QPushButton("Options")
+        options_btn.clicked.connect(self.open_options_dialog)
+        header_layout.addWidget(options_btn)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
         header_container.addWidget(self.action_status_label)
@@ -782,52 +785,63 @@ class CraniotomyWindow(QMainWindow):
         content.setSpacing(4)
         self.tabs.addTab(craniotomy_tab, "Craniotomy")
 
-        options_tab = QWidget()
-        options_layout = QVBoxLayout(options_tab)
-        options_box = QGroupBox("Movement Keyboard Controls")
+        self._build_options_dialog()
+
+    def _build_options_dialog(self) -> None:
+        self.options_dialog = QDialog(self)
+        self.options_dialog.setWindowTitle("Options")
+        self.options_dialog.resize(760, 700)
+        options_layout = QVBoxLayout(self.options_dialog)
+        options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
-        options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 3)
+        options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 2)
         self.movement_key_edits = {}
-        movement_options = (
-            ("ml_left", "ML left"),
-            ("ml_right", "ML right"),
-            ("ap_anterior", "AP anterior"),
-            ("ap_posterior", "AP posterior"),
-            ("dv_up", "DV up"),
-            ("dv_down", "DV down"),
-        )
-        for row, (name, label) in enumerate(movement_options, start=1):
-            edit = QKeySequenceEdit(QKeySequence(self.movement_key_bindings[name]))
-            edit.setMaximumSequenceLength(1)
-            edit.keySequenceChanged.connect(
-                lambda sequence, binding_name=name: self._movement_key_sequence_changed(binding_name, sequence)
-            )
-            self.movement_key_edits[name] = edit
-            options_grid.addWidget(QLabel(label), row, 0)
-            options_grid.addWidget(edit, row, 1)
-        options_grid.addWidget(QLabel("Syringe Controls"), 7, 0, 1, 2)
-        syringe_options = (
-            ("volume_down", "Decrease injection volume"),
-            ("volume_up", "Increase injection volume"),
-            ("syringe_up", "Syringe step up"),
-            ("syringe_down", "Syringe step down"),
+        key_options = (
+            ("ml_left", "ML left"), ("ml_right", "ML right"),
+            ("ap_anterior", "AP anterior"), ("ap_posterior", "AP posterior"),
+            ("dv_up", "DV up"), ("dv_down", "DV down"),
+            ("volume_down", "Decrease injection volume"), ("volume_up", "Increase injection volume"),
+            ("syringe_up", "Syringe step up"), ("syringe_down", "Syringe step down"),
             ("stop_injection", "Stop injection"),
         )
-        for row, (name, label) in enumerate(syringe_options, start=8):
-            edit = QKeySequenceEdit(QKeySequence(self.syringe_key_bindings[name]))
+        for row, (name, label) in enumerate(key_options, start=1):
+            bindings = self.syringe_key_bindings if name in self.syringe_key_bindings else self.movement_key_bindings
+            edit = QKeySequenceEdit(QKeySequence(bindings[name]))
             edit.setMaximumSequenceLength(1)
-            edit.keySequenceChanged.connect(
-                lambda sequence, binding_name=name: self._syringe_key_sequence_changed(binding_name, sequence)
-            )
+            callback = self._syringe_key_sequence_changed if name in self.syringe_key_bindings else self._movement_key_sequence_changed
+            edit.keySequenceChanged.connect(lambda sequence, binding_name=name, handler=callback: handler(binding_name, sequence))
             self.movement_key_edits[name] = edit
             options_grid.addWidget(QLabel(label), row, 0)
             options_grid.addWidget(edit, row, 1)
-        reset_keys_btn = QPushButton("Reset movement keys")
+        reset_keys_btn = QPushButton("Reset keyboard shortcuts")
         reset_keys_btn.clicked.connect(self.reset_movement_key_bindings)
-        options_grid.addWidget(reset_keys_btn, 13, 0, 1, 2)
+        options_grid.addWidget(reset_keys_btn, len(key_options) + 1, 0, 1, 2)
         options_layout.addWidget(options_box)
-        options_layout.addStretch(1)
-        self.tabs.addTab(options_tab, "Options")
+
+        scan_box = QGroupBox("StereoDrive Control Scan")
+        scan_layout = QVBoxLayout(scan_box)
+        scan_layout.addWidget(QLabel("Scan the current StereoDrive window to identify control IDs and labels."))
+        scan_btn = QPushButton("Scan StereoDrive")
+        scan_btn.clicked.connect(self.scan_stereodrive)
+        scan_layout.addWidget(scan_btn)
+        self.stereodrive_scan_output = QPlainTextEdit()
+        self.stereodrive_scan_output.setReadOnly(False)
+        self.stereodrive_scan_output.setPlaceholderText("Scan results will appear here for copying into chat.")
+        scan_layout.addWidget(self.stereodrive_scan_output, 1)
+        options_layout.addWidget(scan_box, 1)
+
+    def open_options_dialog(self) -> None:
+        self.options_dialog.show()
+        self.options_dialog.raise_()
+        self.options_dialog.activateWindow()
+
+    def scan_stereodrive(self) -> None:
+        try:
+            self.stereodrive_scan_output.setPlainText(self.controller.scan_stereodrive_controls())
+            self.set_status("StereoDrive control scan complete.")
+        except Exception as exc:
+            self.stereodrive_scan_output.setPlainText(f"Scan failed: {exc}")
+            self.set_status("StereoDrive control scan failed.")
 
     def _movement_key_sequence_changed(self, name: str, sequence: QKeySequence) -> None:
         if sequence.isEmpty():
