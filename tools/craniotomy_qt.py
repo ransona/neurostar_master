@@ -1259,6 +1259,8 @@ class CraniotomyWindow(QMainWindow):
         map_layout = QVBoxLayout(map_box)
         self.injection_sites_view = ProjectionWidget("ML", "AP")
         self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
+        self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
+        self.injection_sites_view.set_overlay_image(self.top_view.overlay_image, self.top_view.overlay_calibration)
         # This lives in the lower half of the Injection tab, so keep it usable
         # without forcing the tab taller than a normal application window.
         self.injection_sites_view.setMinimumSize(260, 260)
@@ -3432,7 +3434,8 @@ class CraniotomyWindow(QMainWindow):
             except (OSError, ValueError, json.JSONDecodeError):
                 calibration = None
         self.top_view.set_overlay_image(image, calibration)
-        self.injection_sites_view.set_overlay_image(image, calibration)
+        if hasattr(self, "injection_sites_view"):
+            self.injection_sites_view.set_overlay_image(image, calibration)
         self.set_status("Overlay cleared." if not path else f"Overlay selected: {Path(path).name}")
         self.refresh_live_position()
 
