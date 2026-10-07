@@ -30,6 +30,12 @@ EN_UPDATE = 0x0400
 TARGET_AP_ID = 1147
 TARGET_ML_ID = 1148
 TARGET_DV_ID = 1149
+AXIS_CURRENT_AP_ID = 1138
+AXIS_CURRENT_ML_ID = 1139
+AXIS_CURRENT_DV_ID = 1140
+AXIS_TARGET_AP_ID = 1141
+AXIS_TARGET_ML_ID = 1142
+AXIS_TARGET_DV_ID = 1143
 CURRENT_AP_ID = 1144
 CURRENT_ML_ID = 1145
 CURRENT_DV_ID = 1146
@@ -1039,6 +1045,14 @@ class StereoDriveController:
             self._parse_float(CURRENT_DV_ID),
         )
 
+    def get_current_axis_position(self) -> tuple[float, float, float]:
+        """Read AP/ML/DV from StereoDrive's mechanical Axis fields."""
+        return (
+            self._parse_float(AXIS_CURRENT_AP_ID),
+            self._parse_float(AXIS_CURRENT_ML_ID),
+            self._parse_float(AXIS_CURRENT_DV_ID),
+        )
+
     def get_current_axis(self, axis: str) -> float:
         current_id, _step_id, _positive_id = self._axis_ids(axis)
         return self._parse_float(current_id)
@@ -1325,6 +1339,20 @@ class StereoDriveController:
         time.sleep(0.2)
         self._verify_target_position(ap, ml, dv)
 
+    def set_axis_target_position(self, ap: float, ml: float, dv: float) -> None:
+        """Write a target directly to StereoDrive's Axis target fields."""
+        self._set_edit_control_text(AXIS_TARGET_AP_ID, f"{ap:.2f}")
+        self._set_edit_control_text(AXIS_TARGET_ML_ID, f"{ml:.2f}")
+        self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
+        actual = (
+            float(self._get_text(self._control_handle(AXIS_TARGET_AP_ID))),
+            float(self._get_text(self._control_handle(AXIS_TARGET_ML_ID))),
+            float(self._get_text(self._control_handle(AXIS_TARGET_DV_ID))),
+        )
+        requested = (ap, ml, dv)
+        if any(round(a, 2) != round(b, 2) for a, b in zip(actual, requested)):
+            raise StereoDriveError(f"Failed to set Axis target fields to [{ap:.2f}, {ml:.2f}, {dv:.2f}].")
+
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
         actual_ap_text = self._get_text(self._control_handle(TARGET_AP_ID))
         actual_ml_text = self._get_text(self._control_handle(TARGET_ML_ID))
@@ -1346,6 +1374,13 @@ class StereoDriveController:
 
     def goto_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
         self.set_target_position(ap, ml, dv)
+        time.sleep(delay_seconds)
+        self._click(GOTO_ID)
+        self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
+        self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
+
+    def goto_axis_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
+        self.set_axis_target_position(ap, ml, dv)
         time.sleep(delay_seconds)
         self._click(GOTO_ID)
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
