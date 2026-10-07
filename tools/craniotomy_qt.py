@@ -1849,6 +1849,11 @@ class CraniotomyWindow(QMainWindow):
 
     def set_local_bregma(self) -> None:
         try:
+            # Preserve StereoDrive's established synchronization sequence. It
+            # opens the reference panel, activates the drill, sets the
+            # reference to Bregma, sets the drill to Bregma, verifies the
+            # displayed Bregma coordinates, and closes the panel.
+            self.controller.set_current_location_to_bregma()
             self.bregma_axis = self.controller.get_current_axis_position()
             self.anchor_axis = None
             self.anchor_bregma = None
