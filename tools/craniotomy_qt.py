@@ -2004,6 +2004,20 @@ class CraniotomyWindow(QMainWindow):
             raise StereoDriveError("GUI Bregma has not been set.")
         return tuple(self.bregma_axis[index] + bregma_position[index] for index in range(3))
 
+    def get_gui_position(self) -> tuple[float, float, float]:
+        axis_position = self.controller.get_current_axis_position()
+        if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+            return self._axis_to_bregma(axis_position)
+        return axis_position
+
+    def goto_gui_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
+        axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
+        self.controller.goto_axis_position(*axis_position, delay_seconds=delay_seconds)
+
+    def wait_for_gui_position(self, ap: float, ml: float, dv: float, **kwargs) -> None:
+        axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
+        self.controller.wait_for_position(*axis_position, **kwargs)
+
     def set_local_bregma(self) -> None:
         try:
             # Preserve StereoDrive's established synchronization sequence. It
@@ -2074,14 +2088,14 @@ class CraniotomyWindow(QMainWindow):
 
     def goto_bregma(self) -> None:
         try:
-            self.controller.goto_position(0.0, 0.0, 0.0)
+            self.goto_gui_position(0.0, 0.0, 0.0)
             self.set_status("Moving to Bregma: AP 0.00, ML 0.00, DV 0.00.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def open_goto_dialog(self) -> None:
         try:
-            current_ap, current_ml, current_dv = self.controller.get_current_position()
+            current_ap, current_ml, current_dv = self.get_gui_position()
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
             return
@@ -2115,7 +2129,7 @@ class CraniotomyWindow(QMainWindow):
         ml = ml_box.value()
         dv = dv_box.value()
         try:
-            self.controller.goto_position(ap, ml, dv)
+            self.goto_gui_position(ap, ml, dv)
             self.set_status(f"Moving to AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -2194,7 +2208,7 @@ class CraniotomyWindow(QMainWindow):
 
     def set_quick_location(self, slot: str) -> None:
         try:
-            ap, ml, dv = self.controller.get_current_position()
+            ap, ml, dv = self.get_gui_position()
             self.quick_locations[slot] = StoredLocation(ap=ap, ml=ml, dv=dv)
             self.set_status(f"Stored location {slot}: AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
@@ -2206,7 +2220,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(self, "Stored Location", f"Location {slot} has not been set.")
             return
         try:
-            self.controller.goto_position(location.ap, location.ml, location.dv, delay_seconds=0.5)
+            self.goto_gui_position(location.ap, location.ml, location.dv, delay_seconds=0.5)
             self.set_status(
                 f"Moving to location {slot}: AP {location.ap:.2f}, ML {location.ml:.2f}, DV {location.dv:.2f}."
             )
@@ -2314,7 +2328,7 @@ class CraniotomyWindow(QMainWindow):
 
     def add_injection_site(self) -> None:
         try:
-            ap, ml, dv = self.controller.get_current_position()
+            ap, ml, dv = self.get_gui_position()
             self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=dv))
             self.refresh_injection_sites_list()
         except Exception as exc:
@@ -2342,7 +2356,7 @@ class CraniotomyWindow(QMainWindow):
     def _active_injection_sites(self) -> list[InjectionSite]:
         if self.injection_sites:
             return list(self.injection_sites)
-        ap, ml, dv = self.controller.get_current_position()
+        ap, ml, dv = self.get_gui_position()
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
 
     def start_single_injection(self) -> None:
@@ -2508,8 +2522,8 @@ class CraniotomyWindow(QMainWindow):
                     f"Moving to 1 mm above surface for site {site_index}/{total_units}",
                 )
                 above_dv = self._above_surface_dv(site)
-                self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-                self.controller.wait_for_position(
+                self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
+                self.wait_for_gui_position(
                     site.ap,
                     site.ml,
                     above_dv,
@@ -2566,8 +2580,8 @@ class CraniotomyWindow(QMainWindow):
             int(((site_index - 1) / max(1, site_count)) * 100),
             f"Moving to surface for injection site {site_index}/{site_count}",
         )
-        self.controller.goto_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
-        self.controller.wait_for_position(
+        self.goto_gui_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
+        self.wait_for_gui_position(
             site.ap,
             site.ml,
             site.dv,
@@ -2686,8 +2700,8 @@ class CraniotomyWindow(QMainWindow):
             int((site_index / max(1, site_count)) * 100),
             f"Moving normally to 1 mm above surface for site {site_index}/{site_count}",
         )
-        self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-        self.controller.wait_for_position(
+        self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
+        self.wait_for_gui_position(
             site.ap,
             site.ml,
             above_dv,
@@ -2782,8 +2796,8 @@ class CraniotomyWindow(QMainWindow):
     ) -> None:
         self.injection_progress_signal.emit(100, "Retracting pipette")
         above_dv = self._above_surface_dv(site)
-        self.controller.goto_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-        self.controller.wait_for_position(
+        self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
+        self.wait_for_gui_position(
             site.ap,
             site.ml,
             above_dv,
@@ -3216,7 +3230,7 @@ class CraniotomyWindow(QMainWindow):
 
     def generate_seeds(self) -> None:
         try:
-            ap, ml, _dv = self.controller.get_current_position()
+            ap, ml, _dv = self.get_gui_position()
             self.mid_ap.setValue(ap)
             self.mid_ml.setValue(ml)
             diameter = self.diameter.value()
@@ -3382,7 +3396,7 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             seed = self.seeds[self.current_seed_index]
-            self.controller.goto_position(seed.ap, seed.ml, -1.0, delay_seconds=1.0)
+            self.goto_gui_position(seed.ap, seed.ml, -1.0, delay_seconds=1.0)
             self.set_status(
                 f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'Set Surface'."
             )
@@ -3405,7 +3419,7 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_views()
                 self.set_status("Debug: set all seed surfaces to DV 0.00 and updated the trajectory.")
                 return
-            ap, ml, dv = self.controller.get_current_position()
+            ap, ml, dv = self.get_gui_position()
             seed = self.seeds[self.current_seed_index]
             seed.dv = dv
             seed.sampled_ap = ap
@@ -3946,8 +3960,8 @@ class CraniotomyWindow(QMainWindow):
                     self.status_signal.emit(
                         f"Moving to start continuous cut at {int(order_position / max(1, point_count) * 100)}%"
                     )
-                    self.controller.goto_position(ap, ml, current_dv_target, delay_seconds=0.5)
-                    self.controller.wait_for_position(
+                    self.goto_gui_position(ap, ml, current_dv_target, delay_seconds=0.5)
+                    self.wait_for_gui_position(
                         ap,
                         ml,
                         current_dv_target,
@@ -3994,8 +4008,8 @@ class CraniotomyWindow(QMainWindow):
             if not self._should_abort_drilling():
                 center_ap, center_ml, center_dv = center_above_position
                 self.status_signal.emit("Round complete. Returning above craniotomy center.")
-                self.controller.goto_position(center_ap, center_ml, center_dv, delay_seconds=0.5)
-                self.controller.wait_for_position(
+                self.goto_gui_position(center_ap, center_ml, center_dv, delay_seconds=0.5)
+                self.wait_for_gui_position(
                     center_ap,
                     center_ml,
                     center_dv,
@@ -4059,7 +4073,7 @@ class CraniotomyWindow(QMainWindow):
                 current_point = None
         if self.drill_thread is not None and self.drill_thread.is_alive() and self.active_surface_dv is not None:
             try:
-                _current_ap, _current_ml, current_dv = self.controller.get_current_position()
+                _current_ap, _current_ml, current_dv = self.get_gui_position()
                 current_depth_mm = max(0.0, current_dv - self.active_surface_dv)
                 computed_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
                 if self.active_depth_ratio is None or abs(computed_ratio - self.active_depth_ratio) >= 0.0005:
