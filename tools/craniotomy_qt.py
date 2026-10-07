@@ -724,6 +724,7 @@ class CraniotomyWindow(QMainWindow):
         self.anchor_bregma: tuple[float, float, float] | None = None
         self.injection_sites: list[InjectionSite] = []
         self.recent_injection_grid_configs: list[dict[str, object]] = []
+        self.validation_modal_active = False
         self.quick_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
@@ -1990,40 +1991,45 @@ class CraniotomyWindow(QMainWindow):
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
         combined_key = int(key) | event.modifiers().value
-        if combined_key == self.syringe_key_bindings["volume_down"]:
+        validation_active = self.validation_modal_active
+        if not validation_active and self._key_matches_binding(self.syringe_key_bindings["volume_down"], key, combined_key):
             self.adjust_manual_injection_volume(-1)
             return True
-        if combined_key == self.syringe_key_bindings["volume_up"]:
+        if not validation_active and self._key_matches_binding(self.syringe_key_bindings["volume_up"], key, combined_key):
             self.adjust_manual_injection_volume(1)
             return True
-        if combined_key == self.syringe_key_bindings["syringe_up"]:
+        if not validation_active and self._key_matches_binding(self.syringe_key_bindings["syringe_up"], key, combined_key):
             self.manual_syringe_step(up=True)
             return True
-        if combined_key == self.syringe_key_bindings["syringe_down"]:
+        if not validation_active and self._key_matches_binding(self.syringe_key_bindings["syringe_down"], key, combined_key):
             self.manual_syringe_step(up=False)
             return True
-        if combined_key == self.syringe_key_bindings["stop_injection"]:
+        if not validation_active and self._key_matches_binding(self.syringe_key_bindings["stop_injection"], key, combined_key):
             self.stop_injection()
             return True
-        if combined_key == self.movement_key_bindings["speed_decrease"]:
+        if self._key_matches_binding(self.movement_key_bindings["speed_decrease"], key, combined_key):
             self.adjust_move_speed(-1)
             return True
-        if combined_key == self.movement_key_bindings["speed_increase"]:
+        if self._key_matches_binding(self.movement_key_bindings["speed_increase"], key, combined_key):
             self.adjust_move_speed(1)
             return True
-        key_map = {
-            self.movement_key_bindings["ml_left"]: ("ML", False, "ML left"),
-            self.movement_key_bindings["ml_right"]: ("ML", True, "ML right"),
-            self.movement_key_bindings["ap_anterior"]: ("AP", True, "AP anterior"),
-            self.movement_key_bindings["ap_posterior"]: ("AP", False, "AP posterior"),
-            self.movement_key_bindings["dv_up"]: ("DV", False, "DV up"),
-            self.movement_key_bindings["dv_down"]: ("DV", True, "DV down"),
-        }
-        if combined_key not in key_map:
-            return super().eventFilter(watched, event)
-        axis, positive, label = key_map[combined_key]
-        self.keyboard_nudge(axis, positive, label)
-        return True
+        for binding, axis, positive, label in (
+            (self.movement_key_bindings["ml_left"], "ML", False, "ML left"),
+            (self.movement_key_bindings["ml_right"], "ML", True, "ML right"),
+            (self.movement_key_bindings["ap_anterior"], "AP", True, "AP anterior"),
+            (self.movement_key_bindings["ap_posterior"], "AP", False, "AP posterior"),
+            (self.movement_key_bindings["dv_up"], "DV", False, "DV up"),
+            (self.movement_key_bindings["dv_down"], "DV", True, "DV down"),
+        ):
+            if self._key_matches_binding(binding, key, combined_key):
+                self.keyboard_nudge(axis, positive, label)
+                return True
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _key_matches_binding(binding: int, key: int, combined_key: int) -> bool:
+        """Match normal shortcuts and modifier-only keys such as Shift."""
+        return combined_key == binding or int(key) == binding
 
     def _focus_is_editable(self) -> bool:
         focus_widget = QApplication.focusWidget()
@@ -2797,7 +2803,11 @@ class CraniotomyWindow(QMainWindow):
         delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
         cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
         layout.addWidget(buttons)
-        dialog.exec()
+        self.validation_modal_active = True
+        try:
+            dialog.exec()
+        finally:
+            self.validation_modal_active = False
         clicked = buttons.clickedButton()
         if clicked == validate_button:
             return "validate", dialog
