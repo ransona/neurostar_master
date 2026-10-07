@@ -3124,7 +3124,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
-            if self.seeds:
+            if self.seeds or self.top_view.overlay_image is not None:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
             self.set_status(str(exc))
@@ -3933,9 +3933,11 @@ class CraniotomyWindow(QMainWindow):
             point_depth_ratio = max(0.0, min(1.0, depth_mm / skull_thickness_mm))
             top_points.append((ml, ap, point_depth_ratio))
         top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
-        if current_point is None and self.seeds:
+        if current_point is None and (self.seeds or self.top_view.overlay_image is not None):
             try:
-                current_ap, current_ml, current_dv = self.controller.get_current_position()
+                current_ap, current_ml, current_dv = self.controller.get_current_axis_position()
+                if self.coordinate_mode == "bregma":
+                    current_ap, current_ml, current_dv = self._axis_to_bregma((current_ap, current_ml, current_dv))
                 current_point = (current_ml, current_ap)
             except Exception:
                 current_point = None
