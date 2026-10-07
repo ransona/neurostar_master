@@ -2584,12 +2584,15 @@ class CraniotomyWindow(QMainWindow):
             settings,
             site_count,
         )
+        expected_duration_s = self._estimated_total_protocol_seconds(settings, site_count)
         self.sequence_steps_list.clear()
         steps = [
             (
                 f"Total syringe volume required: {total_volume_nl:g} nl for {site_count} site(s) "
                 f"(main {settings.main_volume_nl:g} nl/site + insertion {insertion_volume_nl:g} nl/site"
                 + (f" + two blockage tests {test_volume_total_nl / site_count:g} nl/site)." if test_volume_total_nl else ").")
+                + f" Expected timed protocol duration: {self._format_duration(expected_duration_s)} "
+                "(excluding travel and blockage-confirmation time)."
             ),
             "Move to 1.000 mm above the stored surface, then move normally to the surface.",
             (
@@ -2633,6 +2636,13 @@ class CraniotomyWindow(QMainWindow):
             test_volume_total_nl = 2.0 * self._rounded_test_volume() * site_count
         total_volume_nl = site_count * (settings.main_volume_nl + insertion_volume_nl) + test_volume_total_nl
         return total_volume_nl, insertion_volume_nl, test_volume_total_nl
+
+    def _estimated_total_protocol_seconds(self, settings: InjectionProtocolSettings, site_count: int) -> float:
+        """Timed portion only; positioning and user blockage decisions are not predictable."""
+        speed_mm_s = max(settings.insert_retract_speed_um_s / 1000.0, 0.0001)
+        return_time_s = settings.injection_depth_mm / speed_mm_s
+        per_site_s = self._main_injection_duration_s(settings) + settings.post_inject_pause_s + return_time_s
+        return max(0.0, site_count * per_site_s)
 
     def _sequence_step_indexes(self, settings: InjectionProtocolSettings, check_blocked: bool) -> dict[str, int]:
         indexes = {
@@ -3554,6 +3564,16 @@ class CraniotomyWindow(QMainWindow):
         self.injection_thread = None
 
     def show_block_prompt(self) -> None:
+        def exec_with_alert(box: QMessageBox) -> None:
+            alert_timer = QTimer(box)
+            alert_timer.timeout.connect(QApplication.beep)
+            QApplication.beep()
+            alert_timer.start(900)
+            try:
+                box.exec()
+            finally:
+                alert_timer.stop()
+
         result = "clear"
         box = QMessageBox(self)
         box.setWindowTitle("Blockage Check")
@@ -3561,7 +3581,7 @@ class CraniotomyWindow(QMainWindow):
         clear_button = box.addButton("Not blocked", QMessageBox.AcceptRole)
         blocked_button = box.addButton("Blocked", QMessageBox.RejectRole)
         box.setDefaultButton(clear_button)
-        box.exec()
+        exec_with_alert(box)
         if box.clickedButton() == blocked_button:
             retry_box = QMessageBox(self)
             retry_box.setWindowTitle("Blockage Check")
@@ -3569,7 +3589,7 @@ class CraniotomyWindow(QMainWindow):
             retry_button = retry_box.addButton("Another test", QMessageBox.AcceptRole)
             stop_button = retry_box.addButton("No", QMessageBox.RejectRole)
             retry_box.setDefaultButton(retry_button)
-            retry_box.exec()
+            exec_with_alert(retry_box)
             result = "retest" if retry_box.clickedButton() == retry_button else "stop"
         self.block_prompt_result = result
         if self.block_prompt_event is not None:
