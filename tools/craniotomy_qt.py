@@ -1115,6 +1115,8 @@ class CraniotomyWindow(QMainWindow):
         stop_btn.clicked.connect(self.stop_motion)
         clear_btn = QPushButton("Clear Surface Measurements")
         clear_btn.clicked.connect(self.clear_surface_measurements)
+        clear_craniotomy_btn = QPushButton("Clear Craniotomy")
+        clear_craniotomy_btn.clicked.connect(self.clear_craniotomy)
         self.start_round_btn = QPushButton("Start Drilling")
         self.start_round_btn.setProperty("variant", "primary")
         self.start_round_btn.style().unpolish(self.start_round_btn)
@@ -1135,13 +1137,14 @@ class CraniotomyWindow(QMainWindow):
         button_layout.setVerticalSpacing(3)
         button_layout.addWidget(generate_btn, 0, 0)
         button_layout.addWidget(clear_btn, 0, 1)
-        button_layout.addWidget(stop_btn, 0, 2)
+        button_layout.addWidget(clear_craniotomy_btn, 0, 2)
         button_layout.addWidget(self.move_seed_btn, 1, 0)
         button_layout.addWidget(self.capture_surface_btn, 1, 1)
         button_layout.addWidget(self.start_round_btn, 1, 2)
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
         button_layout.addWidget(self.clear_freeze_btn, 2, 1)
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
+        button_layout.addWidget(stop_btn, 3, 0, 1, 3)
         setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox()
@@ -4556,6 +4559,57 @@ class CraniotomyWindow(QMainWindow):
         self.update_current_target_depth_label()
         self.redraw_views()
         self.set_status("Cleared all captured surface measurements.")
+
+    def clear_craniotomy(self) -> None:
+        """Discard the active craniotomy plan without changing injection or calibration data."""
+        if self._motion_is_active():
+            QMessageBox.warning(
+                self,
+                "Clear Craniotomy",
+                "Wait for the current movement, drilling, injection, benchmark, or probe to finish first.",
+            )
+            return
+        if not self.seeds and not self.trajectory:
+            self.set_status("There is no active craniotomy to clear.")
+            return
+        response = QMessageBox.warning(
+            self,
+            "Clear Craniotomy?",
+            "This removes the current craniotomy seeds, surface measurements, trajectory, drill progress, and frozen points. "
+            "It does not change injection sites, Bregma/anchor calibration, or the craniotomy setup values.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
+        self.seeds.clear()
+        self.trajectory.clear()
+        self.drilled_depths.clear()
+        self.frozen_points.clear()
+        self.current_seed_index = None
+        self.current_seed_spin.blockSignals(True)
+        self.current_seed_spin.setRange(1, 1)
+        self.current_seed_spin.setValue(1)
+        self.current_seed_spin.blockSignals(False)
+        self.drill_completed_points = 0
+        self.drill_round_started_at = None
+        self.drill_round_target_seconds = 0.0
+        self.active_surface_dv = None
+        self.active_depth_ratio = None
+        self.active_drill_depth_mm = None
+        self.current_target_depth_mm = self._initial_target_depth()
+        self.drilling_paused = False
+        self.drill_pause_requested.clear()
+        self.drill_stop_requested.clear()
+        self.start_round_btn.setText("Start Drilling")
+        if self.freeze_draw_btn.isChecked():
+            self.freeze_draw_btn.setChecked(False)
+        if self.unfreeze_draw_btn.isChecked():
+            self.unfreeze_draw_btn.setChecked(False)
+        self.update_seed_selector_label()
+        self.update_current_target_depth_label()
+        self.redraw_views()
+        self.set_status("Cleared the current craniotomy.")
 
     def compute_trajectory(self) -> None:
         captured = [seed for seed in self.seeds if seed.dv is not None]
