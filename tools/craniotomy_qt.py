@@ -555,6 +555,10 @@ class CraniotomyWindow(QMainWindow):
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
+        self.coordinate_mode = "axis"
+        self.bregma_axis: tuple[float, float, float] | None = None
+        self.anchor_axis: tuple[float, float, float] | None = None
+        self.anchor_bregma: tuple[float, float, float] | None = None
         self.injection_sites: list[InjectionSite] = []
         self.quick_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
@@ -732,6 +736,12 @@ class CraniotomyWindow(QMainWindow):
         header_stop_btn.style().unpolish(header_stop_btn)
         header_stop_btn.style().polish(header_stop_btn)
         header_stop_btn.clicked.connect(self.stop_motion)
+        self.axis_mode_btn = QPushButton("Axis")
+        self.bregma_mode_btn = QPushButton("Bregma")
+        self.axis_mode_btn.clicked.connect(lambda: self.set_coordinate_mode("axis"))
+        self.bregma_mode_btn.clicked.connect(lambda: self.set_coordinate_mode("bregma"))
+        position_layout.addWidget(self.axis_mode_btn)
+        position_layout.addWidget(self.bregma_mode_btn)
         quick_specs = (
             ("A", "quick-green"),
             ("B", "quick-blue"),
@@ -772,6 +782,15 @@ class CraniotomyWindow(QMainWindow):
         options_btn = QPushButton("Options")
         options_btn.clicked.connect(self.open_options_dialog)
         header_layout.addWidget(options_btn)
+        set_bregma_local_btn = QPushButton("Set Bregma")
+        set_bregma_local_btn.clicked.connect(self.set_local_bregma)
+        set_anchor_btn = QPushButton("Set Anchor")
+        set_anchor_btn.clicked.connect(self.set_anchor)
+        at_anchor_btn = QPushButton("At Anchor")
+        at_anchor_btn.clicked.connect(self.at_anchor)
+        header_layout.addWidget(set_bregma_local_btn)
+        header_layout.addWidget(set_anchor_btn)
+        header_layout.addWidget(at_anchor_btn)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
         header_container.addWidget(self.action_status_label)
@@ -1230,10 +1249,15 @@ class CraniotomyWindow(QMainWindow):
             if not sequence.isEmpty():
                 bindings[name] = int(sequence[0].toCombined())
         self._config_root_dir().mkdir(parents=True, exist_ok=True)
-        self._write_config_file(self._general_settings_path(), {
+        payload = {
             "movement_keys": {name: bindings[name] for name in self.movement_key_bindings if name in bindings},
             "syringe_keys": {name: bindings[name] for name in self.syringe_key_bindings if name in bindings},
-        })
+            "coordinate_mode": self.coordinate_mode,
+            "bregma_axis": self.bregma_axis,
+            "anchor_axis": self.anchor_axis,
+            "anchor_bregma": self.anchor_bregma,
+        }
+        self._write_config_file(self._general_settings_path(), payload)
 
     def _load_general_settings(self) -> None:
         path = self._general_settings_path()
@@ -1253,6 +1277,14 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(value, int) and value:
                     self.syringe_key_bindings[name] = value
                     self.movement_key_edits[name].setKeySequence(QKeySequence(value))
+            mode = payload.get("coordinate_mode")
+            if mode in {"axis", "bregma"}:
+                self.coordinate_mode = mode
+            for name in ("bregma_axis", "anchor_axis", "anchor_bregma"):
+                value = payload.get(name)
+                if isinstance(value, list) and len(value) == 3:
+                    setattr(self, name, tuple(float(item) for item in value))
+            self.update_coordinate_mode_buttons()
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             self.set_status(f"Could not read settings from {path}")
 
@@ -1789,6 +1821,72 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Emptying syringe to 0")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def update_coordinate_mode_buttons(self) -> None:
+        active = "background: #108a54; color: white; font-weight: 700;"
+        inactive = ""
+        self.axis_mode_btn.setStyleSheet(active if self.coordinate_mode == "axis" else inactive)
+        self.bregma_mode_btn.setStyleSheet(active if self.coordinate_mode == "bregma" else inactive)
+
+    def set_coordinate_mode(self, mode: str) -> None:
+        if mode == "bregma" and self.bregma_axis is None:
+            QMessageBox.information(self, "Bregma Coordinates", "Set Bregma in this GUI before using Bregma coordinates.")
+            return
+        self.coordinate_mode = mode
+        self.update_coordinate_mode_buttons()
+        self.refresh_live_position()
+        self.set_status(f"Using {mode.title()} coordinates.")
+
+    def _axis_to_bregma(self, axis_position: tuple[float, float, float]) -> tuple[float, float, float]:
+        if self.bregma_axis is None:
+            raise StereoDriveError("GUI Bregma has not been set.")
+        return tuple(axis_position[index] - self.bregma_axis[index] for index in range(3))
+
+    def _bregma_to_axis(self, bregma_position: tuple[float, float, float]) -> tuple[float, float, float]:
+        if self.bregma_axis is None:
+            raise StereoDriveError("GUI Bregma has not been set.")
+        return tuple(self.bregma_axis[index] + bregma_position[index] for index in range(3))
+
+    def set_local_bregma(self) -> None:
+        try:
+            self.bregma_axis = self.controller.get_current_axis_position()
+            self.anchor_axis = None
+            self.anchor_bregma = None
+            self.coordinate_mode = "bregma"
+            self.update_coordinate_mode_buttons()
+            self._save_general_settings()
+            self.refresh_live_position()
+            self.set_status("GUI Bregma set at the current Axis position.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Bregma Coordinates", str(exc))
+
+    def set_anchor(self) -> None:
+        try:
+            if self.bregma_axis is None:
+                raise StereoDriveError("Set GUI Bregma before setting an anchor.")
+            self.anchor_axis = self.controller.get_current_axis_position()
+            self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
+            self._save_general_settings()
+            self.set_status(
+                f"Anchor set at Bregma [{self.anchor_bregma[0]:.2f}, {self.anchor_bregma[1]:.2f}, {self.anchor_bregma[2]:.2f}]."
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Anchor", str(exc))
+
+    def at_anchor(self) -> None:
+        try:
+            if self.bregma_axis is None or self.anchor_bregma is None:
+                raise StereoDriveError("Set Bregma and Set Anchor before using At Anchor.")
+            current_anchor_axis = self.controller.get_current_axis_position()
+            self.bregma_axis = tuple(
+                current_anchor_axis[index] - self.anchor_bregma[index] for index in range(3)
+            )
+            self.anchor_axis = current_anchor_axis
+            self._save_general_settings()
+            self.refresh_live_position()
+            self.set_status("Bregma recalibrated from the current anchor position.")
+        except Exception as exc:
+            QMessageBox.critical(self, "At Anchor", str(exc))
 
     def set_current_location_to_bregma(self) -> None:
         try:
@@ -2927,7 +3025,8 @@ class CraniotomyWindow(QMainWindow):
 
     def refresh_live_position(self) -> None:
         try:
-            ap, ml, dv = self.controller.get_current_position()
+            axis_position = self.controller.get_current_axis_position()
+            ap, ml, dv = axis_position if self.coordinate_mode == "axis" else self._axis_to_bregma(axis_position)
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
