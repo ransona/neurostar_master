@@ -2579,8 +2579,18 @@ class CraniotomyWindow(QMainWindow):
         settings = self._injection_protocol_settings()
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
         injection_duration_s = self._main_injection_duration_s(settings)
+        site_count = len(self.injection_sites) or 1
+        total_volume_nl, insertion_volume_nl, test_volume_total_nl = self._estimated_total_syringe_volume_nl(
+            settings,
+            site_count,
+        )
         self.sequence_steps_list.clear()
         steps = [
+            (
+                f"Total syringe volume required: {total_volume_nl:g} nl for {site_count} site(s) "
+                f"(main {settings.main_volume_nl:g} nl/site + insertion {insertion_volume_nl:g} nl/site"
+                + (f" + two blockage tests {test_volume_total_nl / site_count:g} nl/site)." if test_volume_total_nl else ").")
+            ),
             "Move to 1.000 mm above the stored surface, then move normally to the surface.",
             (
                 f"Insert from surface to {settings.injection_depth_mm + settings.overshoot_mm:.3f} mm below surface at "
@@ -2609,6 +2619,20 @@ class CraniotomyWindow(QMainWindow):
             item = QListWidgetItem(f"{index}. {text}")
             item.setSizeHint(QSize(0, 15))
             self.sequence_steps_list.addItem(item)
+
+    def _estimated_total_syringe_volume_nl(
+        self,
+        settings: InjectionProtocolSettings,
+        site_count: int,
+    ) -> tuple[float, float, float]:
+        """Conservative preparation volume: main, insertion delivery, and two tests/site."""
+        insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+        insertion_volume_nl = settings.insertion_rate_nl_min * (insertion_time_s + retract_time_s) / 60.0
+        test_volume_total_nl = 0.0
+        if self.block_check.isChecked():
+            test_volume_total_nl = 2.0 * self._rounded_test_volume() * site_count
+        total_volume_nl = site_count * (settings.main_volume_nl + insertion_volume_nl) + test_volume_total_nl
+        return total_volume_nl, insertion_volume_nl, test_volume_total_nl
 
     def _sequence_step_indexes(self, settings: InjectionProtocolSettings, check_blocked: bool) -> dict[str, int]:
         indexes = {
@@ -2967,6 +2991,7 @@ class CraniotomyWindow(QMainWindow):
             item.setForeground(QColor("#ffffff"))
             self.injection_sites_list.setCurrentRow(active_index)
             self.injection_sites_list.scrollToItem(item)
+        self.refresh_injection_sequence_summary()
         if hasattr(self, "injection_sites_view"):
             self.redraw_views()
 
@@ -2997,10 +3022,11 @@ class CraniotomyWindow(QMainWindow):
             if not injection_plan:
                 return
             self.sync_syringe_position_before_injection()
-            required_volume_nl = settings.main_volume_nl * len(sites)
+            required_volume_nl, _insertion_volume_nl, _test_volume_total_nl = self._estimated_total_syringe_volume_nl(
+                settings,
+                len(sites),
+            )
             test_volume_nl = self._rounded_test_volume()
-            if self.block_check.isChecked():
-                required_volume_nl += test_volume_nl * len(sites)
             self.ensure_total_syringe_capacity(required_volume_nl)
             self._start_injection_sequence(
                 sites=sites,
@@ -3050,10 +3076,11 @@ class CraniotomyWindow(QMainWindow):
             if not injection_plan:
                 return
             self.sync_syringe_position_before_injection()
-            required_volume_nl = settings.main_volume_nl * len(remaining_sites)
+            required_volume_nl, _insertion_volume_nl, _test_volume_total_nl = self._estimated_total_syringe_volume_nl(
+                settings,
+                len(remaining_sites),
+            )
             test_volume_nl = self._rounded_test_volume()
-            if self.block_check.isChecked():
-                required_volume_nl += test_volume_nl * len(remaining_sites)
             self.ensure_total_syringe_capacity(required_volume_nl)
             self._start_injection_sequence(
                 sites=remaining_sites,
