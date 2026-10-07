@@ -1381,12 +1381,13 @@ class StereoDriveController:
         try:
             actual = self._axis_target_position()
         except StereoDriveError as exc:
-            # Some StereoDrive versions clear an Axis target box as soon as
-            # direct entry has been actioned. The caller confirms arrival from
-            # the live Axis display, so a blank transient target is not an error.
+            # Some StereoDrive versions clear an Axis target box after a
+            # direct entry has already been actioned. If the live Axis display
+            # confirms arrival, do not click GoTo again. Otherwise permit the
+            # normal GoTo click: blank target fields alone do not prove that a
+            # move was started.
             if "target field is blank" in str(exc):
-                self._wait_for_axis_position_match(ap, ml, dv, timeout_seconds=0.25)
-                return True
+                return self._wait_for_axis_position_match(ap, ml, dv, timeout_seconds=0.25)
             raise
         requested = (ap, ml, dv)
         if any(round(a, 2) != round(b, 2) for a, b in zip(actual, requested)):
