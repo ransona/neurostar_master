@@ -222,8 +222,13 @@ class ProjectionWidget(QWidget):
         self.unfreeze_mode = False
         self._trajectory_screen_points: list[QPointF] = []
         self._inner_ring_screen_points: list[QPointF] = []
+        self.overlay_image: QImage | None = None
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_overlay_image(self, image: QImage | None) -> None:
+        self.overlay_image = image
+        self.update()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return True
@@ -314,6 +319,20 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
+        if self.overlay_image is not None and not self.overlay_image.isNull():
+            painter.save()
+            painter.setOpacity(0.42)
+            scaled = self.overlay_image.scaled(
+                int(draw_rect.width()), int(draw_rect.height()),
+                Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
+            overlay_rect = QRectF(
+                draw_rect.center().x() - scaled.width() / 2,
+                draw_rect.center().y() - scaled.height() / 2,
+                scaled.width(), scaled.height(),
+            )
+            painter.drawImage(overlay_rect, scaled)
+            painter.restore()
 
         if not self.trajectory and not self.seed_points:
             painter.setPen(QColor("#8b9a8d"))
@@ -788,6 +807,14 @@ class CraniotomyWindow(QMainWindow):
         options_btn = QPushButton("Options")
         options_btn.clicked.connect(self.open_options_dialog)
         header_layout.addWidget(options_btn)
+        header_layout.addWidget(QLabel("Overlay:"))
+        self.overlay_combo = QComboBox()
+        self.overlay_combo.addItem("None", None)
+        overlay_dir = Path(__file__).resolve().parents[1] / "assets" / "background_images"
+        for image_path in sorted(overlay_dir.glob("*.png")):
+            self.overlay_combo.addItem(image_path.stem, str(image_path))
+        self.overlay_combo.currentIndexChanged.connect(self.select_overlay)
+        header_layout.addWidget(self.overlay_combo)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
         header_container.addWidget(self.action_status_label)
@@ -3039,6 +3066,12 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
             self.set_status(str(exc))
+
+    def select_overlay(self) -> None:
+        path = self.overlay_combo.currentData()
+        image = QImage(path) if path else None
+        self.top_view.set_overlay_image(image)
+        self.set_status("Overlay cleared." if not path else f"Overlay selected: {Path(path).name}")
 
     def generate_seeds(self) -> None:
         try:
