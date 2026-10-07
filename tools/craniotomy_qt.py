@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -1264,7 +1264,16 @@ class CraniotomyWindow(QMainWindow):
             subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=True, capture_output=True, text=True)
             subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=True, capture_output=True, text=True)
             subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=True, capture_output=True, text=True)
-            QMessageBox.information(self, "Update Complete", "The repository was updated to origin/main. Restart the app to use the new version.")
+            restart = QMessageBox.question(
+                self,
+                "Update Complete",
+                "The repository was updated to origin/main. Restart the app now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if restart == QMessageBox.Yes:
+                QProcess.startDetached(sys.executable, [str(Path(__file__).resolve())])
+                self.close()
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or str(exc)).strip()
             QMessageBox.critical(self, "Update Failed", detail)
