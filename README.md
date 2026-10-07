@@ -130,6 +130,40 @@ Assignments are saved automatically in
 `Documents/Neurostar_Master/Configs/settings.json` and restored when the app
 restarts. Shortcuts are ignored while a text box or combo box is being edited.
 
+## USB Controller Probe
+
+The **Options → USB Controller Probe** is a manual correlation tool for
+investigating the USB traffic produced by one StereoDrive axis nudge. It does
+not listen to USB by itself, and it never replays or injects captured packets.
+Instead, after an explicit confirmation it performs exactly one small positive
+Axis nudge and, only after the Axis field confirms the expected movement,
+performs the matching negative nudge. Its copyable log records local timestamps
+and Axis readings for matching against the capture.
+
+### Install packet capture on the StereoDrive Windows computer
+
+1. Install [Wireshark](https://www.wireshark.org/download.html) using its
+   official Windows installer. Select the optional **USBPcap** component if the
+   installer offers it. If it does not, install the signed Windows installer
+   from the [USBPcap project](https://desowin.org/usbpcap/). Administrator
+   rights are required; restart Windows if the installer requests it.
+2. Start Wireshark as appropriate for your local installation and select the
+   USBPcap interface for the root hub that contains the StereoDrive controller.
+   If the correct root hub is unknown, capture one at a time and identify the
+   controller from its USB address and descriptor traffic.
+3. Start the capture **before** running a single probe in Options. Run only one
+   selected Axis/step pair at a time, then stop and save the capture.
+4. Copy the probe log from the options dialog. Match the `FORWARD_NUDGE` and
+   `REVERSE_NUDGE` timestamps with the adjacent USB request blocks in Wireshark.
+   Record the controller USB address and VID/PID before applying display
+   filters to later captures.
+
+USBPcap records Windows USB request blocks (URBs), not electrical signals on a
+USB wire. Use a dedicated hardware USB analyser if firmware-level or physical
+line timing is required. Do not attempt to replay captured traffic to a live
+stereotaxic controller: the diagnostic is intended only to observe a movement
+that StereoDrive itself issued.
+
 ## Setup Panel
 
 The **Setup** panel contains the craniotomy planning controls.

@@ -594,6 +594,8 @@ class CraniotomyWindow(QMainWindow):
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
+    usb_probe_log_signal = Signal(str)
+    usb_probe_finished_signal = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -634,6 +636,7 @@ class CraniotomyWindow(QMainWindow):
         self.current_target_depth_mm = 0.0
         self.drilling_paused = False
         self.benchmark_thread: threading.Thread | None = None
+        self.usb_probe_thread: threading.Thread | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
@@ -665,6 +668,8 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
+        self.usb_probe_log_signal.connect(self._append_usb_probe_log)
+        self.usb_probe_finished_signal.connect(self._finish_usb_probe)
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
@@ -1251,7 +1256,7 @@ class CraniotomyWindow(QMainWindow):
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
         self.options_dialog.setWindowTitle("Options")
-        self.options_dialog.resize(760, 700)
+        self.options_dialog.resize(760, 860)
         options_layout = QVBoxLayout(self.options_dialog)
         options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
@@ -1288,6 +1293,37 @@ class CraniotomyWindow(QMainWindow):
         scan_layout.addWidget(self.stereodrive_scan_output, 1)
         options_layout.addWidget(scan_box, 1)
 
+        usb_probe_box = QGroupBox("USB Controller Probe")
+        usb_probe_layout = QVBoxLayout(usb_probe_box)
+        usb_probe_layout.addWidget(QLabel(
+            "Use this only while recording with USBPcap/Wireshark. The app logs timestamps and performs one "
+            "small, confirmed Axis nudge followed by its reversal; it does not capture, replay, or inject USB traffic."
+        ))
+        probe_controls = QHBoxLayout()
+        probe_controls.addWidget(QLabel("Axis"))
+        self.usb_probe_axis_combo = QComboBox()
+        for axis in ("AP", "ML", "DV"):
+            self.usb_probe_axis_combo.addItem(axis, axis)
+        probe_controls.addWidget(self.usb_probe_axis_combo)
+        probe_controls.addWidget(QLabel("Step"))
+        self.usb_probe_step_combo = QComboBox()
+        for step_mm in (0.01, 0.02, 0.05):
+            self.usb_probe_step_combo.addItem(f"{step_mm:g} mm", step_mm)
+        probe_controls.addWidget(self.usb_probe_step_combo)
+        self.usb_probe_button = QPushButton("Run one out-and-back probe")
+        self.usb_probe_button.clicked.connect(self.start_usb_controller_probe)
+        probe_controls.addWidget(self.usb_probe_button)
+        probe_controls.addStretch(1)
+        usb_probe_layout.addLayout(probe_controls)
+        self.usb_probe_output = QPlainTextEdit()
+        self.usb_probe_output.setReadOnly(True)
+        self.usb_probe_output.setPlaceholderText(
+            "Probe log will appear here. Start USBPcap/Wireshark capture before running one probe."
+        )
+        self.usb_probe_output.setMinimumHeight(115)
+        usb_probe_layout.addWidget(self.usb_probe_output)
+        options_layout.addWidget(usb_probe_box)
+
     def open_options_dialog(self) -> None:
         self.options_dialog.show()
         self.options_dialog.raise_()
@@ -1300,6 +1336,101 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             self.stereodrive_scan_output.setPlainText(f"Scan failed: {exc}")
             self.set_status("StereoDrive control scan failed.")
+
+    @staticmethod
+    def _usb_probe_timestamp() -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+
+    def _append_usb_probe_log(self, message: str) -> None:
+        self.usb_probe_output.appendPlainText(message)
+
+    def _motion_is_active(self) -> bool:
+        return bool(
+            (self.drill_thread is not None and self.drill_thread.is_alive())
+            or (self.injection_thread is not None and self.injection_thread.is_alive())
+            or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
+            or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
+        )
+
+    def start_usb_controller_probe(self) -> None:
+        if self._motion_is_active():
+            QMessageBox.warning(
+                self,
+                "USB Controller Probe",
+                "Wait for the current drill, injection, benchmark, or probe operation to finish first.",
+            )
+            return
+        axis = str(self.usb_probe_axis_combo.currentData())
+        step_mm = float(self.usb_probe_step_combo.currentData())
+        response = QMessageBox.warning(
+            self,
+            "Run USB Controller Probe?",
+            f"Start the USBPcap/Wireshark capture first. This will nudge {axis} by {step_mm:g} mm, "
+            "verify the change from StereoDrive's Axis display, then nudge it back. "
+            "If the forward move cannot be verified, the app will stop and will not guess a reversal. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if response != QMessageBox.Yes:
+            return
+        self.usb_probe_button.setEnabled(False)
+        self.usb_probe_output.clear()
+        self.usb_probe_thread = threading.Thread(
+            target=self._run_usb_controller_probe,
+            args=(axis, step_mm),
+            daemon=True,
+        )
+        self.usb_probe_thread.start()
+
+    def _wait_for_probe_axis_value(
+        self,
+        axis: str,
+        expected: float,
+        tolerance_mm: float,
+        timeout_seconds: float = 8.0,
+    ) -> float:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            current = self.controller.get_current_axis(axis)
+            if abs(current - expected) <= tolerance_mm:
+                return current
+            time.sleep(0.05)
+        current = self.controller.get_current_axis(axis)
+        raise StereoDriveError(
+            f"{axis} did not reach {expected:.4f} mm within {timeout_seconds:g} seconds "
+            f"(last reading {current:.4f} mm)."
+        )
+
+    def _run_usb_controller_probe(self, axis: str, step_mm: float) -> None:
+        tolerance_mm = max(0.003, step_mm * 0.25)
+        try:
+            start = self.controller.get_current_axis(axis)
+            self.usb_probe_log_signal.emit(
+                f"{self._usb_probe_timestamp()} START axis={axis} step_mm={step_mm:g} start_axis_mm={start:.4f}"
+            )
+            self.controller.set_nudge_step(axis, step_mm)
+            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} FORWARD_NUDGE axis={axis}")
+            self.controller.nudge_axis(axis, True)
+            forward = self._wait_for_probe_axis_value(axis, start + step_mm, tolerance_mm)
+            self.usb_probe_log_signal.emit(
+                f"{self._usb_probe_timestamp()} FORWARD_CONFIRMED axis={axis} axis_mm={forward:.4f}"
+            )
+            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} REVERSE_NUDGE axis={axis}")
+            self.controller.nudge_axis(axis, False)
+            returned = self._wait_for_probe_axis_value(axis, start, tolerance_mm)
+            self.usb_probe_log_signal.emit(
+                f"{self._usb_probe_timestamp()} RETURN_CONFIRMED axis={axis} axis_mm={returned:.4f}"
+            )
+            self.usb_probe_finished_signal.emit("USB controller probe completed; position returned to its starting value.")
+        except Exception as exc:
+            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} ERROR {exc}")
+            self.usb_probe_finished_signal.emit(
+                "USB controller probe stopped. Check the Axis display before moving again; no unverified reversal was issued."
+            )
+
+    def _finish_usb_probe(self, status: str) -> None:
+        self.usb_probe_button.setEnabled(True)
+        self.set_status(status)
 
     def update_from_github(self) -> None:
         answer = QMessageBox.warning(
@@ -2019,7 +2150,7 @@ class CraniotomyWindow(QMainWindow):
 
     def wait_for_gui_position(self, ap: float, ml: float, dv: float, **kwargs) -> None:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
-        self.controller.wait_for_position(*axis_position, **kwargs)
+        self.controller.wait_for_axis_position(*axis_position, **kwargs)
 
     def set_local_bregma(self) -> None:
         try:

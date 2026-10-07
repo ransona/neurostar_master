@@ -1427,5 +1427,33 @@ class StereoDriveController:
             f"Timed out waiting for position [{ap:.2f}, {ml:.2f}, {dv:.2f}] in StereoDrive."
         )
 
+    def wait_for_axis_position(
+        self,
+        ap: float,
+        ml: float,
+        dv: float,
+        tolerance_mm: float = 0.02,
+        timeout_seconds: float = 60.0,
+        poll_seconds: float = 0.1,
+        stop_requested=None,
+    ) -> None:
+        """Wait until StereoDrive's mechanical Axis fields reach a target."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if stop_requested is not None and stop_requested():
+                raise StereoDriveError("Operation paused.")
+            self.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
+            current_ap, current_ml, current_dv = self.get_current_axis_position()
+            if (
+                abs(current_ap - ap) <= tolerance_mm
+                and abs(current_ml - ml) <= tolerance_mm
+                and abs(current_dv - dv) <= tolerance_mm
+            ):
+                return
+            time.sleep(poll_seconds)
+        raise StereoDriveError(
+            f"Timed out waiting for Axis position [{ap:.2f}, {ml:.2f}, {dv:.2f}] in StereoDrive."
+        )
+
     def stop(self) -> None:
         self._click(STOP_ID)
