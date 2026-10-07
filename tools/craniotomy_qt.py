@@ -209,6 +209,7 @@ class CraniotomyConfig:
 class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
     unfreeze_drawn = Signal(int)
+    location_double_clicked = Signal(float, float)
 
     def __init__(self, x_label: str, y_label: str, invert_y: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
@@ -223,6 +224,7 @@ class ProjectionWidget(QWidget):
         self.unfreeze_mode = False
         self._trajectory_screen_points: list[QPointF] = []
         self._inner_ring_screen_points: list[QPointF] = []
+        self._coordinate_bounds: tuple[float, float, float, float] | None = None
         self.overlay_image: QImage | None = None
         self.overlay_calibration: dict[str, object] | None = None
         self.coordinate_mode_bregma = False
@@ -295,6 +297,17 @@ class ProjectionWidget(QWidget):
             event.accept()
             return
         super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if self._coordinate_bounds is not None and event.button() == Qt.LeftButton:
+            min_x, max_x, min_y, max_y = self._coordinate_bounds
+            x = min_x + (event.position().x() - 24) / max(1.0, self.width() - 48) * (max_x - min_x)
+            normalized_y = (event.position().y() - 24) / max(1.0, self.height() - 48)
+            y = max_y - normalized_y * (max_y - min_y)
+            self.location_double_clicked.emit(float(x), float(y))
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _emit_nearest_trajectory_index(self, position, freeze: bool) -> None:
         if not self._trajectory_screen_points:
@@ -372,6 +385,7 @@ class ProjectionWidget(QWidget):
         max_x = cx + uniform_span / 2.0
         min_y = cy - uniform_span / 2.0
         max_y = cy + uniform_span / 2.0
+        self._coordinate_bounds = (min_x, max_x, min_y, max_y)
 
         def map_point(x: float, y: float) -> QPointF:
             px = draw_rect.left() + (x - min_x) / (max_x - min_x) * draw_rect.width()
@@ -987,14 +1001,15 @@ class CraniotomyWindow(QMainWindow):
         self.top_view = ProjectionWidget("ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
+        self.top_view.location_double_clicked.connect(self.move_to_map_location)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         map_layout = QVBoxLayout()
         map_layout.addWidget(self.top_view)
-        self.zoom_to_craniotomy_check = QCheckBox("Zoom to craniotomy")
-        self.zoom_to_craniotomy_check.setChecked(True)
-        self.zoom_to_craniotomy_check.toggled.connect(self.top_view.set_zoom_to_trajectory)
-        map_layout.addWidget(self.zoom_to_craniotomy_check)
+        self.zoom_mode_combo = QComboBox()
+        self.zoom_mode_combo.addItems(["Zoom to craniotomy", "Zoom to skull", "Zoom to mid-range"])
+        self.zoom_mode_combo.currentIndexChanged.connect(self.set_zoom_mode)
+        map_layout.addWidget(self.zoom_mode_combo)
         views_layout.addLayout(map_layout, 0, 0)
         default_overlay = "skull_bregma_lambda_reference"
         default_index = self.overlay_combo.findText(default_overlay)
@@ -3253,6 +3268,38 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
+
+    def set_zoom_mode(self, index: int) -> None:
+        self.top_view.set_zoom_to_trajectory(index != 1)
+        self.redraw_views()
+
+    def move_to_map_location(self, ml: float, ap: float) -> None:
+        answer = QMessageBox.question(
+            self, "Move to Map Location",
+            f"Move to AP {ap:.2f}, ML {ml:.2f}? The drill will first move 0.5 mm above the reference DV.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            axis_position = self.controller.get_current_axis_position()
+            if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+                target = self._bregma_to_axis((ap, ml, 0.0))
+                safe = self._bregma_to_axis((ap, ml, -0.5))
+            else:
+                target = (ap, ml, axis_position[2])
+                safe = (target[0], target[1], target[2] - 0.5)
+            self.controller.goto_axis_position(safe[0], safe[1], safe[2])
+            self.controller.goto_axis_position(target[0], target[1], target[2])
+            self.set_status(f"Moved to map location AP {ap:.2f}, ML {ml:.2f}.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Map Move", str(exc))
+
+    def current_ap_label_value(self) -> float:
+        return float(self.current_ap_label.text())
+
+    def current_ml_label_value(self) -> float:
+        return float(self.current_ml_label.text())
 
     def _flat_circle_trajectory(self, mid_ap: float, mid_ml: float, radius: float) -> list[tuple[float, float, float]]:
         point_count = self.trajectory_points.value()
