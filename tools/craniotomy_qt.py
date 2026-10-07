@@ -983,6 +983,10 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         views_layout.addWidget(self.top_view, 0, 0)
+        default_overlay = "skull_bregma_lambda_reference"
+        default_index = self.overlay_combo.findText(default_overlay)
+        if default_index >= 0:
+            self.overlay_combo.setCurrentIndex(default_index)
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(3)
         self.depth_legend = DepthLegendWidget()
