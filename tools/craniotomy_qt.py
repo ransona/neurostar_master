@@ -556,9 +556,15 @@ class ProjectionWidget(QWidget):
 
         if self.anchor_point is not None:
             pt = map_point(self.anchor_point[0], self.anchor_point[1])
-            painter.setPen(QPen(QColor("#2563eb"), 3))
+            anchor_color = QColor("#2563eb")
+            painter.setPen(QPen(anchor_color, 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(pt, 9, 9)
+            # A font-independent anchor icon: ring, shank, stock, and flukes.
+            painter.drawEllipse(pt + QPointF(0, -7), 2.5, 2.5)
+            painter.drawLine(pt + QPointF(0, -4), pt + QPointF(0, 9))
+            painter.drawLine(pt + QPointF(-8, 1), pt + QPointF(8, 1))
+            painter.drawLine(pt + QPointF(0, 9), pt + QPointF(-8, 4))
+            painter.drawLine(pt + QPointF(0, 9), pt + QPointF(8, 4))
             painter.setPen(QColor("#1d4ed8"))
             painter.drawText(pt + QPointF(11, -10), "Anchor")
 
