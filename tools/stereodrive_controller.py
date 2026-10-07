@@ -1353,18 +1353,35 @@ class StereoDriveController:
         time.sleep(0.2)
         self._verify_target_position(ap, ml, dv)
 
-    def set_axis_target_position(self, ap: float, ml: float, dv: float) -> None:
-        """Write a target directly to StereoDrive's Axis target fields."""
+    def _axis_position_matches(self, ap: float, ml: float, dv: float, tolerance_mm: float = 0.02) -> bool:
+        """Return whether the live Axis display has already reached a target."""
+        try:
+            current = self.get_current_axis_position()
+        except StereoDriveError:
+            return False
+        return all(abs(value - target) <= tolerance_mm for value, target in zip(current, (ap, ml, dv)))
+
+    def set_axis_target_position(self, ap: float, ml: float, dv: float) -> bool:
+        """Write Axis targets, returning True if StereoDrive already completed the move."""
         self._set_edit_control_text(AXIS_TARGET_AP_ID, f"{ap:.2f}")
         time.sleep(0.05)
         self._set_edit_control_text(AXIS_TARGET_ML_ID, f"{ml:.2f}")
         time.sleep(0.05)
         self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
         time.sleep(0.2)
-        actual = self._axis_target_position()
+        try:
+            actual = self._axis_target_position()
+        except StereoDriveError as exc:
+            # Some StereoDrive versions clear an Axis target box as soon as a
+            # direct entry has already been actioned.  The live Axis display
+            # is the authoritative completion signal in that case.
+            if "target field is blank" in str(exc) and self._axis_position_matches(ap, ml, dv):
+                return True
+            raise
         requested = (ap, ml, dv)
         if any(round(a, 2) != round(b, 2) for a, b in zip(actual, requested)):
             raise StereoDriveError(f"Failed to set Axis target fields to [{ap:.2f}, {ml:.2f}, {dv:.2f}].")
+        return False
 
     def _axis_target_position(self) -> tuple[float, float, float]:
         values: list[float] = []
@@ -1414,7 +1431,9 @@ class StereoDriveController:
         self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
 
     def goto_axis_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
-        self.set_axis_target_position(ap, ml, dv)
+        already_reached = self.set_axis_target_position(ap, ml, dv)
+        if already_reached:
+            return
         time.sleep(delay_seconds)
         self._click(GOTO_ID)
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
