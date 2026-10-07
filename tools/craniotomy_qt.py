@@ -2803,21 +2803,22 @@ class CraniotomyWindow(QMainWindow):
         delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
         cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
         layout.addWidget(buttons)
+        result = {"action": "cancel"}
+
+        def choose(action: str) -> None:
+            result["action"] = action
+            dialog.accept()
+
+        validate_button.clicked.connect(lambda: choose("validate"))
+        next_button.clicked.connect(lambda: choose("next"))
+        delete_button.clicked.connect(lambda: choose("delete"))
+        cancel_button.clicked.connect(dialog.reject)
         self.validation_modal_active = True
         try:
             dialog.exec()
         finally:
             self.validation_modal_active = False
-        clicked = buttons.clickedButton()
-        if clicked == validate_button:
-            return "validate", dialog
-        if clicked == next_button:
-            return "next", dialog
-        if clicked == delete_button:
-            return "delete", dialog
-        if clicked == cancel_button:
-            return "cancel", dialog
-        return "cancel", dialog
+        return str(result["action"]), dialog
 
     def _next_validation_index(self, index: int, validate_all_sites: bool) -> int | None:
         if validate_all_sites:
