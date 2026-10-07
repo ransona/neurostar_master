@@ -823,6 +823,8 @@ class CraniotomyWindow(QMainWindow):
         header_stop_btn.style().unpolish(header_stop_btn)
         header_stop_btn.style().polish(header_stop_btn)
         header_stop_btn.clicked.connect(self.stop_motion)
+        drill_toggle_btn = QPushButton("Drill On/Off")
+        drill_toggle_btn.clicked.connect(self.activate_stereodrive_drill)
         set_bregma_local_btn = QPushButton("Set Bregma")
         set_bregma_local_btn.clicked.connect(self.set_local_bregma)
         set_anchor_btn = QPushButton("Set Anchor")
@@ -860,6 +862,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(self.current_dv_label)
         position_layout.addWidget(self.move_speed_label)
         position_layout.addWidget(header_stop_btn)
+        position_layout.addWidget(drill_toggle_btn)
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_local_btn)
         header_layout.addWidget(set_anchor_btn)
@@ -2071,6 +2074,22 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Current location set to Bregma. AP/ML/DV verified at 0.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def activate_stereodrive_drill(self) -> None:
+        answer = QMessageBox.warning(
+            self,
+            "Activate Drill",
+            "Open StereoDrive's Drill panel and toggle the drill control?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            self.controller.activate_drill_toggle()
+            self.set_status("StereoDrive drill toggle clicked.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive Drill", str(exc))
 
     def goto_home(self) -> None:
         try:

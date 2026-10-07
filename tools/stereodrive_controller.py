@@ -47,6 +47,7 @@ GOTO_WORK_ID = 1541
 SHOW_INJECTOMATE_COMMAND_ID = 32815
 SHOW_REFERENCE_PANEL_COMMAND_ID = 32809
 ACTIVE_DRILL_ID = 1043
+DRILL_TOGGLE_ID = 1065
 REFERENCE_SELECTOR_ID = 1387
 STEP_AP_ID = 1132
 STEP_ML_ID = 1133
@@ -551,6 +552,19 @@ class StereoDriveController:
         hwnd = self._control_handle(control_id)
         user32.SendMessageW(hwnd, BM_CLICK, 0, 0)
         user32.SendMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
+
+    def activate_drill_toggle(self) -> None:
+        """Open the Drill panel and click its custom red drill toggle."""
+        self._click_tools_then_menu_position("Drill")
+        time.sleep(0.3)
+        control = next((item for item in self._child_controls() if item.control_id == DRILL_TOGGLE_ID), None)
+        if control is None:
+            raise StereoDriveError(f"Drill toggle control {DRILL_TOGGLE_ID} was not found after opening Drill.")
+        x = (control.left + control.right) // 2
+        y = (control.top + control.bottom) // 2
+        user32.SetCursorPos(x, y)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, None)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, None)
 
     def click_tools_button(self) -> None:
         self._click(TOOLS_BUTTON_ID)
