@@ -415,16 +415,21 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
+        overlay_visible = self.overlay_image is not None and self.coordinate_mode_bregma
+        overlay_hidden_for_axis = self.overlay_image is not None and not self.coordinate_mode_bregma
         if (
             not self.trajectory
             and not self.seed_points
             and not self.injection_site_points
             and self.anchor_point is None
             and self.current_point is None
-            and self.overlay_image is None
+            and not overlay_visible
         ):
             painter.setPen(QColor("#8b9a8d"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No trajectory yet")
+            message = "No trajectory yet"
+            if overlay_hidden_for_axis:
+                message += "\nSwitch to Bregma reference mode to display overlay."
+            painter.drawText(self.rect(), Qt.AlignCenter, message)
             return
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points] + [p[0] for p in self.injection_site_points]
@@ -436,7 +441,7 @@ class ProjectionWidget(QWidget):
             xs = [point[0] for point in self.view_focus_points]
             ys = [point[1] for point in self.view_focus_points]
         overlay_bounds = None
-        if self.overlay_image is not None and self.overlay_calibration:
+        if overlay_visible and self.overlay_calibration:
             bregma = self.overlay_calibration.get("bregma_pixel")
             lambda_pixel = self.overlay_calibration.get("lambda_pixel")
             distance_mm = float(self.overlay_calibration.get("bregma_to_lambda_mm", 3.9))
@@ -510,7 +515,7 @@ class ProjectionWidget(QWidget):
                 py = draw_rect.bottom() - normalized_y * draw_rect.height()
             return QPointF(px, py)
 
-        if self.overlay_image is not None and self.overlay_calibration:
+        if overlay_visible and self.overlay_calibration:
             calibration = self.overlay_calibration
             bregma = calibration.get("bregma_pixel")
             lambda_pixel = calibration.get("lambda_pixel")
@@ -594,6 +599,14 @@ class ProjectionWidget(QWidget):
             painter.setPen(marker_pen)
             painter.drawLine(pt + QPointF(-10, -10), pt + QPointF(10, 10))
             painter.drawLine(pt + QPointF(-10, 10), pt + QPointF(10, -10))
+
+        if overlay_hidden_for_axis:
+            painter.setPen(QColor("#6b7280"))
+            painter.drawText(
+                self.rect().adjusted(10, 8, -10, -8),
+                Qt.AlignHCenter | Qt.AlignTop,
+                "Switch to Bregma reference mode to display overlay.",
+            )
 
         if self.freeze_mode:
             painter.setPen(QColor("#b23a48"))
