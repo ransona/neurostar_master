@@ -890,13 +890,16 @@ class CraniotomyWindow(QMainWindow):
         self.craniotomy_save_btn.clicked.connect(self.save_craniotomy_config)
         self.craniotomy_load_btn = QPushButton("Load Craniotomy Config")
         self.craniotomy_load_btn.clicked.connect(self.load_craniotomy_config)
+        self.set_center_btn = QPushButton("Set Center")
+        self.set_center_btn.clicked.connect(self.set_craniotomy_center)
 
         setup_layout.addWidget(QLabel("Mid AP"), 0, 0)
         setup_layout.addWidget(self.mid_ap, 0, 1)
         setup_layout.addWidget(QLabel("Mid ML"), 0, 2)
         setup_layout.addWidget(self.mid_ml, 0, 3)
         setup_layout.addWidget(self.craniotomy_load_btn, 0, 4)
-        setup_layout.addWidget(self.craniotomy_save_btn, 0, 5)
+        setup_layout.addWidget(self.set_center_btn, 0, 5)
+        setup_layout.addWidget(self.craniotomy_save_btn, 0, 6)
 
         setup_layout.addWidget(QLabel("Diameter (mm)"), 1, 0)
         setup_layout.addWidget(self.diameter, 1, 1)
@@ -3206,6 +3209,18 @@ class CraniotomyWindow(QMainWindow):
             )
             if reply == QMessageBox.Yes:
                 self.move_to_current_seed()
+        except Exception as exc:
+            QMessageBox.critical(self, "Craniotomy", str(exc))
+
+    def set_craniotomy_center(self) -> None:
+        try:
+            axis_position = self.controller.get_current_axis_position()
+            position = axis_position
+            if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+                position = self._axis_to_bregma(axis_position)
+            self.mid_ap.setValue(position[0])
+            self.mid_ml.setValue(position[1])
+            self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
