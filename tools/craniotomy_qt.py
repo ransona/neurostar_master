@@ -799,6 +799,7 @@ class CraniotomyWindow(QMainWindow):
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
+        self._offer_project_session_restore()
         self.restore_saved_window_geometry()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
@@ -806,6 +807,9 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_live_position)
         self.refresh_timer.start(50)
+        self.project_session_timer = QTimer(self)
+        self.project_session_timer.timeout.connect(self._autosave_project_session)
+        self.project_session_timer.start(1000)
         self._start_warning_auto_confirm_watcher()
 
     def _start_warning_auto_confirm_watcher(self) -> None:
@@ -828,6 +832,7 @@ class CraniotomyWindow(QMainWindow):
             }
             self._save_last_used_configs()
             self._save_general_settings()
+            self._autosave_project_session()
         except Exception:
             pass
         self.warning_auto_confirm_stop.set()
@@ -956,6 +961,8 @@ class CraniotomyWindow(QMainWindow):
         header_stop_btn.clicked.connect(self.stop_motion)
         drill_toggle_btn = QPushButton("Drill On/Off")
         drill_toggle_btn.clicked.connect(self.activate_stereodrive_drill)
+        clear_project_btn = QPushButton("Clear Project")
+        clear_project_btn.clicked.connect(self.clear_project)
         set_bregma_local_btn = QPushButton("Set Bregma")
         set_bregma_local_btn.clicked.connect(self.set_local_bregma)
         set_anchor_btn = QPushButton("Set Anchor")
@@ -994,6 +1001,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(self.move_speed_label)
         position_layout.addWidget(header_stop_btn)
         position_layout.addWidget(drill_toggle_btn)
+        position_layout.addWidget(clear_project_btn)
         position_layout.addStretch(1)
         header_layout.addWidget(set_bregma_local_btn)
         header_layout.addWidget(set_anchor_btn)
@@ -1716,6 +1724,197 @@ class CraniotomyWindow(QMainWindow):
 
     def _general_settings_path(self) -> Path:
         return self._config_root_dir() / "settings.json"
+
+    def _project_session_path(self) -> Path:
+        return self._config_root_dir() / "project_session.json"
+
+    def _has_recoverable_project_state(self) -> bool:
+        return bool(self.seeds or self.trajectory or self.injection_sites or self.quick_locations)
+
+    def _project_session_dict(self) -> dict[str, object]:
+        return {
+            "format": "neurostar-project-session-v1",
+            "coordinate_mode": self.coordinate_mode,
+            "bregma_axis": self.bregma_axis,
+            "anchor_axis": self.anchor_axis,
+            "anchor_bregma": self.anchor_bregma,
+            "craniotomy_config": {
+                "diameter_mm": self._craniotomy_config().diameter_mm,
+                "seed_count": self._craniotomy_config().seed_count,
+                "trajectory_points": self._craniotomy_config().trajectory_points,
+                "cut_offset_dv_mm": self._craniotomy_config().cut_offset_dv_mm,
+                "max_depth_mm": self._craniotomy_config().max_depth_mm,
+                "depth_per_round_mm": self._craniotomy_config().depth_per_round_mm,
+                "skull_thickness_mm": self._craniotomy_config().skull_thickness_mm,
+                "round_time_seconds": self._craniotomy_config().round_time_seconds,
+                "drill_rate_mm_per_s": self._craniotomy_config().drill_rate_mm_per_s,
+                "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
+            },
+            "craniotomy_center": {"ap": self.mid_ap.value(), "ml": self.mid_ml.value()},
+            "seeds": [
+                {
+                    "index": seed.index, "angle_deg": seed.angle_deg, "ap": seed.ap, "ml": seed.ml,
+                    "dv": seed.dv, "sampled_ap": seed.sampled_ap, "sampled_ml": seed.sampled_ml,
+                }
+                for seed in self.seeds
+            ],
+            "trajectory": self.trajectory,
+            "drilled_depths": self.drilled_depths,
+            "frozen_points": self.frozen_points,
+            "current_seed_index": self.current_seed_index,
+            "current_target_depth_mm": self.current_target_depth_mm,
+            "injection_config": self._injection_config_dict(),
+            "injection_sites": [
+                {"ap": site.ap, "ml": site.ml, "dv": site.dv, "generated": site.generated}
+                for site in self.injection_sites
+            ],
+            "quick_locations": {
+                name: {"ap": location.ap, "ml": location.ml, "dv": location.dv}
+                for name, location in self.quick_locations.items()
+            },
+            "overlay_name": Path(str(self.overlay_combo.currentData())).name if self.overlay_combo.currentData() else None,
+            "top_zoom_index": self.zoom_mode_combo.currentIndex(),
+            "injection_zoom_index": self.injection_sites_zoom_combo.currentIndex(),
+            "active_tab": self.tabs.currentIndex(),
+        }
+
+    def _autosave_project_session(self) -> None:
+        path = self._project_session_path()
+        try:
+            if not self._has_recoverable_project_state():
+                if path.exists():
+                    path.unlink()
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = path.with_suffix(".tmp")
+            temporary_path.write_text(json.dumps(self._project_session_dict(), indent=2), encoding="utf-8")
+            temporary_path.replace(path)
+        except Exception:
+            # A session backup must never interrupt a live procedure or UI action.
+            pass
+
+    @staticmethod
+    def _session_axis(value: object) -> tuple[float, float, float] | None:
+        if not isinstance(value, list) or len(value) != 3:
+            return None
+        try:
+            return tuple(float(item) for item in value)
+        except (TypeError, ValueError):
+            return None
+
+    def _offer_project_session_restore(self) -> None:
+        path = self._project_session_path()
+        if not path.exists():
+            return
+        try:
+            payload = self._read_config_file(path)
+            if not isinstance(payload, dict) or not payload.get("format", "").startswith("neurostar-project-session-"):
+                raise ValueError("not a project session")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return
+        response = QMessageBox.question(
+            self,
+            "Restore Previous Project?",
+            "Restore the previous craniotomy/injection project session?\n\n"
+            "Active movements, drilling, and injections are never resumed automatically.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if response != QMessageBox.Yes:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        try:
+            self._restore_project_session(payload)
+            self.set_status("Restored the previous project session.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Restore Previous Project", f"Could not restore the saved project. {exc}")
+
+    def _restore_project_session(self, payload: dict[str, object]) -> None:
+        config = payload.get("craniotomy_config")
+        if isinstance(config, dict):
+            self._apply_craniotomy_config(
+                CraniotomyConfig(
+                    diameter_mm=float(config.get("diameter_mm", self.diameter.value())),
+                    seed_count=int(config.get("seed_count", self.seed_count.value())),
+                    trajectory_points=int(config.get("trajectory_points", self.trajectory_points.value())),
+                    cut_offset_dv_mm=float(config.get("cut_offset_dv_mm", self.cut_offset.value())),
+                    max_depth_mm=float(config.get("max_depth_mm", self.drill_depth.value())),
+                    depth_per_round_mm=float(config.get("depth_per_round_mm", self.depth_per_round.value())),
+                    skull_thickness_mm=float(config.get("skull_thickness_mm", self.skull_thickness_mm.value())),
+                    round_time_seconds=float(config.get("round_time_seconds", self.round_time_seconds.value())),
+                    drill_rate_mm_per_s=float(config.get("drill_rate_mm_per_s", self.drill_rate_mm_per_s.value())),
+                    auto_start_rounds=bool(config.get("auto_start_rounds", self.auto_start_rounds.isChecked())),
+                )
+            )
+        injection_config = payload.get("injection_config")
+        if isinstance(injection_config, dict):
+            self._apply_injection_config_dict(injection_config)
+        self.bregma_axis = self._session_axis(payload.get("bregma_axis"))
+        self.anchor_axis = self._session_axis(payload.get("anchor_axis"))
+        self.anchor_bregma = self._session_axis(payload.get("anchor_bregma"))
+        self.coordinate_mode = "bregma" if payload.get("coordinate_mode") == "bregma" and self.bregma_axis else "axis"
+        center = payload.get("craniotomy_center")
+        if isinstance(center, dict):
+            self.mid_ap.setValue(float(center.get("ap", self.mid_ap.value())))
+            self.mid_ml.setValue(float(center.get("ml", self.mid_ml.value())))
+        self.seeds = []
+        for raw_seed in payload.get("seeds", []):
+            if not isinstance(raw_seed, dict):
+                continue
+            self.seeds.append(SeedPoint(
+                index=int(raw_seed["index"]), angle_deg=float(raw_seed["angle_deg"]),
+                ap=float(raw_seed["ap"]), ml=float(raw_seed["ml"]),
+                dv=None if raw_seed.get("dv") is None else float(raw_seed["dv"]),
+                sampled_ap=None if raw_seed.get("sampled_ap") is None else float(raw_seed["sampled_ap"]),
+                sampled_ml=None if raw_seed.get("sampled_ml") is None else float(raw_seed["sampled_ml"]),
+            ))
+        self.trajectory = [tuple(float(value) for value in point) for point in payload.get("trajectory", []) if isinstance(point, list) and len(point) == 3]
+        self.drilled_depths = [float(value) for value in payload.get("drilled_depths", [])]
+        self.frozen_points = [bool(value) for value in payload.get("frozen_points", [])]
+        self.current_seed_index = payload.get("current_seed_index") if isinstance(payload.get("current_seed_index"), int) else None
+        if self.current_seed_index is not None and not 0 <= self.current_seed_index < len(self.seeds):
+            self.current_seed_index = None
+        self.current_target_depth_mm = float(payload.get("current_target_depth_mm", self._initial_target_depth()))
+        self.injection_sites = []
+        for raw_site in payload.get("injection_sites", []):
+            if isinstance(raw_site, dict):
+                self.injection_sites.append(InjectionSite(
+                    ap=float(raw_site["ap"]), ml=float(raw_site["ml"]),
+                    dv=None if raw_site.get("dv") is None else float(raw_site["dv"]),
+                    generated=bool(raw_site.get("generated", False)),
+                ))
+        self.quick_locations = {}
+        raw_locations = payload.get("quick_locations")
+        if isinstance(raw_locations, dict):
+            for name, raw_location in raw_locations.items():
+                if isinstance(name, str) and isinstance(raw_location, dict):
+                    self.quick_locations[name] = StoredLocation(
+                        ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
+                    )
+        overlay_name = payload.get("overlay_name")
+        if isinstance(overlay_name, str):
+            for index in range(self.overlay_combo.count()):
+                candidate = self.overlay_combo.itemData(index)
+                if candidate and Path(str(candidate)).name == overlay_name:
+                    self.overlay_combo.setCurrentIndex(index)
+                    break
+        self.current_seed_spin.blockSignals(True)
+        self.current_seed_spin.setRange(1, max(1, len(self.seeds)))
+        self.current_seed_spin.setValue((self.current_seed_index or 0) + 1)
+        self.current_seed_spin.blockSignals(False)
+        self.update_coordinate_mode_buttons()
+        self.top_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
+        self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
+        self.update_seed_selector_label()
+        self.update_current_target_depth_label()
+        self.refresh_injection_sites_list()
+        self.zoom_mode_combo.setCurrentIndex(max(0, min(2, int(payload.get("top_zoom_index", self.zoom_mode_combo.currentIndex())))))
+        self.injection_sites_zoom_combo.setCurrentIndex(max(0, min(2, int(payload.get("injection_zoom_index", self.injection_sites_zoom_combo.currentIndex())))))
+        self.tabs.setCurrentIndex(max(0, min(self.tabs.count() - 1, int(payload.get("active_tab", self.tabs.currentIndex())))))
+        self.redraw_views()
 
     def _save_general_settings(self) -> None:
         bindings = {}
@@ -4610,6 +4809,67 @@ class CraniotomyWindow(QMainWindow):
         self.update_current_target_depth_label()
         self.redraw_views()
         self.set_status("Cleared the current craniotomy.")
+
+    def clear_project(self) -> None:
+        """Discard all recoverable project state while keeping application preferences."""
+        if self._motion_is_active():
+            QMessageBox.warning(self, "Clear Project", "Stop and finish the current operation before clearing the project.")
+            return
+        response = QMessageBox.warning(
+            self,
+            "Clear Project?",
+            "This clears the current craniotomy, injection sites, Bregma/anchor calibration, and stored A/B/C locations. "
+            "Keyboard shortcuts and reusable injection/craniotomy settings are kept.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
+        self.seeds.clear()
+        self.trajectory.clear()
+        self.drilled_depths.clear()
+        self.frozen_points.clear()
+        self.current_seed_index = None
+        self.current_seed_spin.blockSignals(True)
+        self.current_seed_spin.setRange(1, 1)
+        self.current_seed_spin.setValue(1)
+        self.current_seed_spin.blockSignals(False)
+        self.drill_completed_points = 0
+        self.drill_round_started_at = None
+        self.drill_round_target_seconds = 0.0
+        self.active_surface_dv = None
+        self.active_depth_ratio = None
+        self.active_drill_depth_mm = None
+        self.current_target_depth_mm = self._initial_target_depth()
+        self.drilling_paused = False
+        self.drill_pause_requested.clear()
+        self.drill_stop_requested.clear()
+        self.start_round_btn.setText("Start Drilling")
+        self.injection_sites.clear()
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
+        self.bregma_axis = None
+        self.anchor_axis = None
+        self.anchor_bregma = None
+        self.coordinate_mode = "axis"
+        self.quick_locations.clear()
+        if self.freeze_draw_btn.isChecked():
+            self.freeze_draw_btn.setChecked(False)
+        if self.unfreeze_draw_btn.isChecked():
+            self.unfreeze_draw_btn.setChecked(False)
+        self.update_coordinate_mode_buttons()
+        self.top_view.set_coordinate_mode_bregma(False)
+        self.injection_sites_view.set_coordinate_mode_bregma(False)
+        self.update_seed_selector_label()
+        self.update_current_target_depth_label()
+        self.refresh_injection_sites_list()
+        self.redraw_views()
+        try:
+            self._project_session_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._save_general_settings()
+        self.set_status("Cleared the current project and its recovery session.")
 
     def compute_trajectory(self) -> None:
         captured = [seed for seed in self.seeds if seed.dv is not None]
