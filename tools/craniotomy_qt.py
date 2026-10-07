@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QKeySequenceEdit,
     QSizePolicy,
     QTabWidget,
     QVBoxLayout,
@@ -524,6 +525,21 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_index: int | None = None
         self.current_action = "No trajectory yet"
         self.move_speed_step_mm = DEFAULT_MOVE_SPEED_MM
+        self.movement_key_bindings = {
+            "ml_left": int(Qt.Key.Key_Left),
+            "ml_right": int(Qt.Key.Key_Right),
+            "ap_anterior": int(Qt.Key.Key_Up),
+            "ap_posterior": int(Qt.Key.Key_Down),
+            "dv_up": int(Qt.Key.Key_PageUp),
+            "dv_down": int(Qt.Key.Key_PageDown),
+        }
+        self.syringe_key_bindings = {
+            "volume_down": int(Qt.Key.Key_F1),
+            "volume_up": int(Qt.Key.Key_F2),
+            "syringe_up": int(Qt.Key.Key_F3),
+            "syringe_down": int(Qt.Key.Key_F4),
+            "stop_injection": int(Qt.Key.Key_Escape),
+        }
         self.drill_pause_requested = threading.Event()
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
@@ -565,6 +581,7 @@ class CraniotomyWindow(QMainWindow):
         self.block_prompt_signal.connect(self.show_block_prompt)
         self._build_ui()
         self._load_last_used_configs()
+        self._load_general_settings()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         QTimer.singleShot(250, self.update_syringe_position_from_scale)
@@ -588,6 +605,7 @@ class CraniotomyWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
             self._save_last_used_configs()
+            self._save_general_settings()
         except Exception:
             pass
         self.warning_auto_confirm_stop.set()
@@ -763,6 +781,63 @@ class CraniotomyWindow(QMainWindow):
         content = QVBoxLayout(craniotomy_tab)
         content.setSpacing(4)
         self.tabs.addTab(craniotomy_tab, "Craniotomy")
+
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        options_box = QGroupBox("Movement Keyboard Controls")
+        options_grid = QGridLayout(options_box)
+        options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 3)
+        self.movement_key_edits = {}
+        movement_options = (
+            ("ml_left", "ML left"),
+            ("ml_right", "ML right"),
+            ("ap_anterior", "AP anterior"),
+            ("ap_posterior", "AP posterior"),
+            ("dv_up", "DV up"),
+            ("dv_down", "DV down"),
+        )
+        for row, (name, label) in enumerate(movement_options, start=1):
+            edit = QKeySequenceEdit(QKeySequence(self.movement_key_bindings[name]))
+            edit.setMaximumSequenceLength(1)
+            edit.keySequenceChanged.connect(
+                lambda sequence, binding_name=name: self._movement_key_sequence_changed(binding_name, sequence)
+            )
+            self.movement_key_edits[name] = edit
+            options_grid.addWidget(QLabel(label), row, 0)
+            options_grid.addWidget(edit, row, 1)
+        options_grid.addWidget(QLabel("Syringe Controls"), 7, 0, 1, 2)
+        syringe_options = (
+            ("volume_down", "Decrease injection volume"),
+            ("volume_up", "Increase injection volume"),
+            ("syringe_up", "Syringe step up"),
+            ("syringe_down", "Syringe step down"),
+            ("stop_injection", "Stop injection"),
+        )
+        for row, (name, label) in enumerate(syringe_options, start=8):
+            edit = QKeySequenceEdit(QKeySequence(self.syringe_key_bindings[name]))
+            edit.setMaximumSequenceLength(1)
+            edit.keySequenceChanged.connect(
+                lambda sequence, binding_name=name: self._syringe_key_sequence_changed(binding_name, sequence)
+            )
+            self.movement_key_edits[name] = edit
+            options_grid.addWidget(QLabel(label), row, 0)
+            options_grid.addWidget(edit, row, 1)
+        reset_keys_btn = QPushButton("Reset movement keys")
+        reset_keys_btn.clicked.connect(self.reset_movement_key_bindings)
+        options_grid.addWidget(reset_keys_btn, 13, 0, 1, 2)
+        options_layout.addWidget(options_box)
+        options_layout.addStretch(1)
+        self.tabs.addTab(options_tab, "Options")
+
+    def _movement_key_sequence_changed(self, name: str, sequence: QKeySequence) -> None:
+        if sequence.isEmpty():
+            return
+        self.movement_key_bindings[name] = int(sequence[0].toCombined())
+
+    def _syringe_key_sequence_changed(self, name: str, sequence: QKeySequence) -> None:
+        if sequence.isEmpty():
+            return
+        self.syringe_key_bindings[name] = int(sequence[0].toCombined())
 
         setup_box = QGroupBox("Setup")
         setup_layout = QGridLayout(setup_box)
@@ -1142,6 +1217,64 @@ class CraniotomyWindow(QMainWindow):
     def _last_used_config_path(self, kind: str) -> Path:
         return self._config_dir(kind) / "last_used.json"
 
+    def _general_settings_path(self) -> Path:
+        return self._config_root_dir() / "settings.json"
+
+    def _save_general_settings(self) -> None:
+        bindings = {}
+        for name, edit in self.movement_key_edits.items():
+            sequence = edit.keySequence()
+            if not sequence.isEmpty():
+                bindings[name] = int(sequence[0].toCombined())
+        self._config_root_dir().mkdir(parents=True, exist_ok=True)
+        self._write_config_file(self._general_settings_path(), {
+            "movement_keys": {name: bindings[name] for name in self.movement_key_bindings if name in bindings},
+            "syringe_keys": {name: bindings[name] for name in self.syringe_key_bindings if name in bindings},
+        })
+
+    def _load_general_settings(self) -> None:
+        path = self._general_settings_path()
+        if not path.exists():
+            return
+        try:
+            payload = self._read_config_file(path)
+            bindings = payload.get("movement_keys", {})
+            for name, edit in self.movement_key_edits.items():
+                value = bindings.get(name)
+                if isinstance(value, int) and value:
+                    self.movement_key_bindings[name] = value
+                    edit.setKeySequence(QKeySequence(value))
+            syringe_bindings = payload.get("syringe_keys", {})
+            for name in self.syringe_key_bindings:
+                value = syringe_bindings.get(name)
+                if isinstance(value, int) and value:
+                    self.syringe_key_bindings[name] = value
+                    self.movement_key_edits[name].setKeySequence(QKeySequence(value))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            self.set_status(f"Could not read settings from {path}")
+
+    def reset_movement_key_bindings(self) -> None:
+        for name, key in {
+            "ml_left": Qt.Key.Key_Left,
+            "ml_right": Qt.Key.Key_Right,
+            "ap_anterior": Qt.Key.Key_Up,
+            "ap_posterior": Qt.Key.Key_Down,
+            "dv_up": Qt.Key.Key_PageUp,
+            "dv_down": Qt.Key.Key_PageDown,
+        }.items():
+            self.movement_key_bindings[name] = int(key)
+            self.movement_key_edits[name].setKeySequence(QKeySequence(key))
+        for name, key in {
+            "volume_down": Qt.Key.Key_F1,
+            "volume_up": Qt.Key.Key_F2,
+            "syringe_up": Qt.Key.Key_F3,
+            "syringe_down": Qt.Key.Key_F4,
+            "stop_injection": Qt.Key.Key_Escape,
+        }.items():
+            self.syringe_key_bindings[name] = int(key)
+            self.movement_key_edits[name].setKeySequence(QKeySequence(key))
+        self.set_status("Movement keys reset to defaults")
+
     def _craniotomy_config(self) -> CraniotomyConfig:
         return CraniotomyConfig(
             diameter_mm=float(self.diameter.value()),
@@ -1392,40 +1525,41 @@ class CraniotomyWindow(QMainWindow):
                 focus_widget.clearFocus()
             self.setFocus(Qt.OtherFocusReason)
             return True
-        if key == Qt.Key.Key_F1:
-            self.adjust_manual_injection_volume(-1)
-            return True
-        if key == Qt.Key.Key_F2:
-            self.adjust_manual_injection_volume(1)
-            return True
-        if key == Qt.Key.Key_F3:
-            self.manual_syringe_step(up=True)
-            return True
-        if key == Qt.Key.Key_F4:
-            self.manual_syringe_step(up=False)
-            return True
-        if key == Qt.Key.Key_Escape:
-            self.stop_injection()
-            return True
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
-        if key == Qt.Key.Key_Shift:
-            self.adjust_move_speed(1)
+        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["volume_down"]:
+            self.adjust_manual_injection_volume(-1)
             return True
-        if key == Qt.Key.Key_Control:
+        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["volume_up"]:
+            self.adjust_manual_injection_volume(1)
+            return True
+        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["syringe_up"]:
+            self.manual_syringe_step(up=True)
+            return True
+        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["syringe_down"]:
+            self.manual_syringe_step(up=False)
+            return True
+        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["stop_injection"]:
+            self.stop_injection()
+            return True
+        if key == Qt.Key.Key_Shift:
             self.adjust_move_speed(-1)
             return True
+        if key == Qt.Key.Key_Ccedilla:
+            self.adjust_move_speed(1)
+            return True
         key_map = {
-            Qt.Key.Key_Left: ("ML", False, "ML left"),
-            Qt.Key.Key_Right: ("ML", True, "ML right"),
-            Qt.Key.Key_Up: ("AP", True, "AP anterior"),
-            Qt.Key.Key_Down: ("AP", False, "AP posterior"),
-            Qt.Key.Key_PageUp: ("DV", False, "DV up"),
-            Qt.Key.Key_PageDown: ("DV", True, "DV down"),
+            self.movement_key_bindings["ml_left"]: ("ML", False, "ML left"),
+            self.movement_key_bindings["ml_right"]: ("ML", True, "ML right"),
+            self.movement_key_bindings["ap_anterior"]: ("AP", True, "AP anterior"),
+            self.movement_key_bindings["ap_posterior"]: ("AP", False, "AP posterior"),
+            self.movement_key_bindings["dv_up"]: ("DV", False, "DV up"),
+            self.movement_key_bindings["dv_down"]: ("DV", True, "DV down"),
         }
-        if key not in key_map:
+        combined_key = int(key) | int(event.modifiers())
+        if combined_key not in key_map:
             return super().eventFilter(watched, event)
-        axis, positive, label = key_map[key]
+        axis, positive, label = key_map[combined_key]
         self.keyboard_nudge(axis, positive, label)
         return True
 

@@ -109,6 +109,27 @@ You can store three extra locations:
 
 These are intended for frequently revisited points.
 
+## Keyboard Controls
+
+When focus is not in an editable text field, the following shortcuts nudge the
+current position:
+
+| Key | Action |
+|---|---|
+| Left / Right | ML left / right |
+| Up / Down | AP anterior / posterior |
+| Page Up / Page Down | DV up / down |
+| `Ç` | Increase movement step size |
+| `Shift` | Decrease movement step size |
+| `F1` / `F2` | Decrease / increase injection volume |
+| `F3` / `F4` | Syringe step up / down |
+| `Esc` | Stop injection |
+
+The movement and syringe shortcuts can be reassigned in the **Options** tab.
+Assignments are saved automatically in
+`Documents/Neurostar_Master/Configs/settings.json` and restored when the app
+restarts. Shortcuts are ignored while a text box or combo box is being edited.
+
 ## Setup Panel
 
 The **Setup** panel contains the craniotomy planning controls.
