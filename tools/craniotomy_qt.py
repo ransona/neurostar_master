@@ -568,6 +568,8 @@ class CraniotomyWindow(QMainWindow):
         self.current_action = "No trajectory yet"
         self.move_speed_step_mm = DEFAULT_MOVE_SPEED_MM
         self.movement_key_bindings = {
+            "speed_decrease": int(Qt.Key.Key_Shift),
+            "speed_increase": int(Qt.Key.Key_Ccedilla),
             "ml_left": int(Qt.Key.Key_Left),
             "ml_right": int(Qt.Key.Key_Right),
             "ap_anterior": int(Qt.Key.Key_Up),
@@ -1203,7 +1205,7 @@ class CraniotomyWindow(QMainWindow):
         options_grid = QGridLayout(options_box)
         options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 2)
         self.movement_key_edits = {}
-        key_options = (("ml_left", "ML left"), ("ml_right", "ML right"), ("ap_anterior", "AP anterior"), ("ap_posterior", "AP posterior"), ("dv_up", "DV up"), ("dv_down", "DV down"), ("volume_down", "Decrease injection volume"), ("volume_up", "Increase injection volume"), ("syringe_up", "Syringe step up"), ("syringe_down", "Syringe step down"), ("stop_injection", "Stop injection"))
+        key_options = (("speed_decrease", "Decrease movement step"), ("speed_increase", "Increase movement step"), ("ml_left", "ML left"), ("ml_right", "ML right"), ("ap_anterior", "AP anterior"), ("ap_posterior", "AP posterior"), ("dv_up", "DV up"), ("dv_down", "DV down"), ("volume_down", "Decrease injection volume"), ("volume_up", "Increase injection volume"), ("syringe_up", "Syringe step up"), ("syringe_down", "Syringe step down"), ("stop_injection", "Stop injection"))
         for row, (name, label) in enumerate(key_options, start=1):
             bindings = self.syringe_key_bindings if name in self.syringe_key_bindings else self.movement_key_bindings
             edit = QKeySequenceEdit(QKeySequence(bindings[name]))
@@ -1384,6 +1386,8 @@ class CraniotomyWindow(QMainWindow):
             return
     def reset_movement_key_bindings(self) -> None:
         for name, key in {
+            "speed_decrease": Qt.Key.Key_Shift,
+            "speed_increase": Qt.Key.Key_Ccedilla,
             "ml_left": Qt.Key.Key_Left,
             "ml_right": Qt.Key.Key_Right,
             "ap_anterior": Qt.Key.Key_Up,
@@ -1672,10 +1676,10 @@ class CraniotomyWindow(QMainWindow):
         if combined_key == self.syringe_key_bindings["stop_injection"]:
             self.stop_injection()
             return True
-        if key == Qt.Key.Key_Shift:
+        if combined_key == self.movement_key_bindings["speed_decrease"]:
             self.adjust_move_speed(-1)
             return True
-        if key == Qt.Key.Key_Ccedilla:
+        if combined_key == self.movement_key_bindings["speed_increase"]:
             self.adjust_move_speed(1)
             return True
         key_map = {
