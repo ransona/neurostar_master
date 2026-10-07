@@ -231,6 +231,13 @@ class ProjectionWidget(QWidget):
         self.overlay_calibration: dict[str, object] | None = None
         self.coordinate_mode_bregma = False
         self.zoom_level = 1.0
+        self.view_focus_points: list[tuple[float, float]] | None = None
+        self.navigation_enabled = False
+        self.navigation_zoom = 1.0
+        self.navigation_pan = QPointF(0.0, 0.0)
+        self._pan_anchor: QPointF | None = None
+        self._pan_start = QPointF(0.0, 0.0)
+        self._draw_rect: QRectF | None = None
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -245,6 +252,19 @@ class ProjectionWidget(QWidget):
 
     def set_zoom_level(self, level: float) -> None:
         self.zoom_level = max(0.0, min(1.0, level))
+        self.update()
+
+    def set_view_focus_points(self, points: list[tuple[float, float]] | None) -> None:
+        self.view_focus_points = points
+        self.update()
+
+    def set_navigation_enabled(self, enabled: bool) -> None:
+        self.navigation_enabled = enabled
+        self.setCursor(Qt.OpenHandCursor if enabled else Qt.ArrowCursor)
+
+    def reset_navigation(self) -> None:
+        self.navigation_zoom = 1.0
+        self.navigation_pan = QPointF(0.0, 0.0)
         self.update()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
@@ -289,9 +309,45 @@ class ProjectionWidget(QWidget):
             self._emit_nearest_trajectory_index(event.position(), freeze=False)
             event.accept()
             return
+        if self.navigation_enabled and event.button() == Qt.LeftButton:
+            self._pan_anchor = event.position()
+            self._pan_start = QPointF(self.navigation_pan)
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         super().mousePressEvent(event)
 
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._pan_anchor is not None and event.button() == Qt.LeftButton:
+            self._pan_anchor = None
+            self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if self.navigation_enabled and event.angleDelta().y():
+            steps = event.angleDelta().y() / 120.0
+            self.navigation_zoom = max(1.0, min(20.0, self.navigation_zoom * (1.25 ** steps)))
+            self.update()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._pan_anchor is not None and self._coordinate_bounds is not None and self._draw_rect is not None:
+            min_x, max_x, min_y, max_y = self._coordinate_bounds
+            dx = event.position().x() - self._pan_anchor.x()
+            dy = event.position().y() - self._pan_anchor.y()
+            span_x = max_x - min_x
+            span_y = max_y - min_y
+            self.navigation_pan = QPointF(
+                self._pan_start.x() - dx / max(1.0, self._draw_rect.width()) * span_x,
+                self._pan_start.y() + dy / max(1.0, self._draw_rect.height()) * span_y * (-1.0 if self.invert_y else 1.0),
+            )
+            self.update()
+            event.accept()
+            return
         if self.freeze_mode and event.buttons() & Qt.LeftButton:
             self._emit_nearest_trajectory_index(event.position(), freeze=True)
             event.accept()
@@ -345,6 +401,7 @@ class ProjectionWidget(QWidget):
             side,
             side,
         )
+        self._draw_rect = draw_rect
 
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
@@ -362,6 +419,9 @@ class ProjectionWidget(QWidget):
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points] + [p[0] for p in self.injection_site_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points] + [p[1] for p in self.injection_site_points]
+        if self.view_focus_points:
+            xs = [point[0] for point in self.view_focus_points]
+            ys = [point[1] for point in self.view_focus_points]
         overlay_bounds = None
         if self.overlay_image is not None and self.overlay_calibration:
             bregma = self.overlay_calibration.get("bregma_pixel")
@@ -405,9 +465,9 @@ class ProjectionWidget(QWidget):
 
         span_x = max_x - min_x
         span_y = max_y - min_y
-        uniform_span = max(span_x, span_y) * 1.3
-        cx = (min_x + max_x) / 2.0
-        cy = (min_y + max_y) / 2.0
+        uniform_span = max(span_x, span_y) * 1.3 / self.navigation_zoom
+        cx = (min_x + max_x) / 2.0 + self.navigation_pan.x()
+        cy = (min_y + max_y) / 2.0 + self.navigation_pan.y()
         min_x = cx - uniform_span / 2.0
         max_x = cx + uniform_span / 2.0
         min_y = cy - uniform_span / 2.0
@@ -1261,6 +1321,7 @@ class CraniotomyWindow(QMainWindow):
         map_layout = QVBoxLayout(map_box)
         self.injection_sites_view = ProjectionWidget("ML", "AP")
         self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
+        self.injection_sites_view.set_navigation_enabled(True)
         self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
         self.injection_sites_view.set_overlay_image(self.top_view.overlay_image, self.top_view.overlay_calibration)
         # This lives in the lower half of the Injection tab, so keep it usable
@@ -1274,7 +1335,7 @@ class CraniotomyWindow(QMainWindow):
         injection_map_controls.addWidget(self.show_craniotomy_on_injection_map)
         injection_map_controls.addStretch(1)
         self.injection_sites_zoom_combo = QComboBox()
-        self.injection_sites_zoom_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
+        self.injection_sites_zoom_combo.addItems(["Zoom To Craniotomy", "Zoom To Injection Map"])
         self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
         injection_map_controls.addWidget(self.injection_sites_zoom_combo)
         map_layout.addLayout(injection_map_controls)
@@ -3781,7 +3842,7 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def set_injection_sites_zoom_mode(self, index: int) -> None:
-        self.injection_sites_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
+        self.injection_sites_view.reset_navigation()
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
@@ -4571,13 +4632,18 @@ class CraniotomyWindow(QMainWindow):
             current_point=current_point,
         )
         show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
+        injection_site_points = [(site.ml, site.ap) for site in self.injection_sites]
+        focus_points = [(point[0], point[1]) for point in top_points]
+        if self.injection_sites_zoom_combo.currentIndex() == 1:
+            focus_points = injection_site_points
         self.injection_sites_view.set_data(
             top_points if show_craniotomy else [],
             [],
             frozen_points=self.frozen_points,
             current_point=current_point,
-            injection_sites=[(site.ml, site.ap) for site in self.injection_sites],
+            injection_sites=injection_site_points,
         )
+        self.injection_sites_view.set_view_focus_points(focus_points or None)
         self.update_seed_selector_label()
 
     def _format_duration(self, seconds: float) -> str:
