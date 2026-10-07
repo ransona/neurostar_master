@@ -3412,27 +3412,43 @@ class CraniotomyWindow(QMainWindow):
         message: str,
         delay_seconds: float = 0.75,
     ) -> bool:
-        """Move to Axis coordinates with live-position feedback and cancellable progress."""
+        return self._move_through_axis_positions_with_progress(
+            [target_axis], title=title, message=message, delay_seconds=delay_seconds,
+        )
+
+    def _move_through_axis_positions_with_progress(
+        self,
+        target_axes: list[tuple[float, float, float]],
+        *,
+        title: str,
+        message: str,
+        delay_seconds: float = 0.75,
+    ) -> bool:
+        """Move through one or more Axis targets with one cancellable progress dialog."""
+        if not target_axes:
+            return True
         cancelled = threading.Event()
         result: dict[str, object] = {}
 
         def move_worker() -> None:
             try:
-                if cancelled.is_set():
-                    return
-                self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
-                deadline = time.monotonic() + 60.0
-                while time.monotonic() < deadline:
+                for target_axis in target_axes:
                     if cancelled.is_set():
-                        raise StereoDriveError("Movement cancelled.")
-                    self.controller.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
-                    current_axis = self.controller.get_current_axis_position()
-                    self.validation_move_position_signal.emit(current_axis)
-                    if all(abs(current - target) <= 0.03 for current, target in zip(current_axis, target_axis)):
-                        result["completed"] = True
                         return
-                    time.sleep(0.05)
-                raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
+                    self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
+                    deadline = time.monotonic() + 60.0
+                    while time.monotonic() < deadline:
+                        if cancelled.is_set():
+                            raise StereoDriveError("Movement cancelled.")
+                        self.controller.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
+                        current_axis = self.controller.get_current_axis_position()
+                        self.validation_move_position_signal.emit(current_axis)
+                        if all(abs(current - target) <= 0.03 for current, target in zip(current_axis, target_axis)):
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
+                result["completed"] = True
             except Exception as exc:
                 result["error"] = exc
 
@@ -4704,16 +4720,10 @@ class CraniotomyWindow(QMainWindow):
                 target = (ap, ml, axis_position[2])
                 safe = (target[0], target[1], target[2] - 0.5)
                 safe_message = "Moving to the site 0.5 mm above the current DV position. Waiting for StereoDrive to report arrival…"
-            if not self._move_to_axis_position_with_progress(
-                safe,
+            if not self._move_through_axis_positions_with_progress(
+                [safe, target],
                 title="Moving to Map Location",
-                message=safe_message,
-            ):
-                return
-            if not self._move_to_axis_position_with_progress(
-                target,
-                title="Moving to Map Location",
-                message="Moving to the selected map location. Waiting for StereoDrive to report arrival…",
+                message=f"{safe_message}\n\nThen moving to the selected map location.",
             ):
                 return
             self.set_status(f"Moved to map location AP {ap:.2f}, ML {ml:.2f}.")

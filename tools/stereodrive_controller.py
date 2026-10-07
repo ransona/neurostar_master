@@ -1371,7 +1371,7 @@ class StereoDriveController:
         return self._axis_position_matches(ap, ml, dv)
 
     def set_axis_target_position(self, ap: float, ml: float, dv: float) -> bool:
-        """Write Axis targets, returning True if StereoDrive already completed the move."""
+        """Write Axis targets, returning True when StereoDrive has actioned direct entry."""
         self._set_edit_control_text(AXIS_TARGET_AP_ID, f"{ap:.2f}")
         time.sleep(0.05)
         self._set_edit_control_text(AXIS_TARGET_ML_ID, f"{ml:.2f}")
@@ -1381,10 +1381,11 @@ class StereoDriveController:
         try:
             actual = self._axis_target_position()
         except StereoDriveError as exc:
-            # Some StereoDrive versions clear an Axis target box as soon as a
-            # direct entry has already been actioned.  The live Axis display
-            # is the authoritative completion signal in that case.
-            if "target field is blank" in str(exc) and self._wait_for_axis_position_match(ap, ml, dv):
+            # Some StereoDrive versions clear an Axis target box as soon as
+            # direct entry has been actioned. The caller confirms arrival from
+            # the live Axis display, so a blank transient target is not an error.
+            if "target field is blank" in str(exc):
+                self._wait_for_axis_position_match(ap, ml, dv, timeout_seconds=0.25)
                 return True
             raise
         requested = (ap, ml, dv)
