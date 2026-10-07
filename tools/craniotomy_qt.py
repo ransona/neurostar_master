@@ -2594,9 +2594,6 @@ class CraniotomyWindow(QMainWindow):
             )
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
-            font = item.font()
-            font.setBold(False)
-            item.setFont(font)
             item.setSizeHint(QSize(0, 15))
             self.sequence_steps_list.addItem(item)
 
@@ -2874,9 +2871,6 @@ class CraniotomyWindow(QMainWindow):
             else:
                 item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f}, surface DV {site.dv:.2f}")
                 item.setForeground(QColor("#111827"))
-            font = item.font()
-            font.setBold(False)
-            item.setFont(font)
             self.injection_sites_list.addItem(item)
         if active_index is not None and 0 <= active_index < self.injection_sites_list.count():
             item = self.injection_sites_list.item(active_index)
@@ -3401,6 +3395,8 @@ class CraniotomyWindow(QMainWindow):
         for index in range(self.sequence_steps_list.count()):
             item = self.sequence_steps_list.item(index)
             font = item.font()
+            if font.pointSize() <= 0:
+                font.setPointSize(8)
             font.setBold(index == row)
             item.setFont(font)
         if 0 <= row < self.sequence_steps_list.count():
@@ -3416,6 +3412,8 @@ class CraniotomyWindow(QMainWindow):
         for index in range(self.injection_sites_list.count()):
             item = self.injection_sites_list.item(index)
             font = item.font()
+            if font.pointSize() <= 0:
+                font.setPointSize(9)
             font.setBold(index == row)
             item.setFont(font)
         if 0 <= row < self.injection_sites_list.count():
