@@ -4,10 +4,16 @@
   "pixel_height": 711,
   "color_space": "RGB",
   "calibration": {
-    "bregma_pixel": null,
-    "lambda_pixel": null,
+    "bregma_pixel": [
+      229,
+      405
+    ],
+    "lambda_pixel": [
+      228,
+      574
+    ],
     "bregma_to_lambda_mm": 3.9,
-    "status": "pending_click_calibration"
+    "status": "calibrated"
   },
   "notes": "Select Bregma and Lambda in the Options image-calibration workflow. Pixel coordinates use image origin at the top-left; X increases rightward and Y increases downward."
 }
