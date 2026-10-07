@@ -328,7 +328,7 @@ class ProjectionWidget(QWidget):
     def wheelEvent(self, event) -> None:  # noqa: N802
         if self.navigation_enabled and event.angleDelta().y():
             steps = event.angleDelta().y() / 120.0
-            self.navigation_zoom = max(0.1, min(20.0, self.navigation_zoom * (1.25 ** steps)))
+            self.navigation_zoom = max(1.0, min(20.0, self.navigation_zoom * (1.25 ** steps)))
             self.update()
             event.accept()
             return
@@ -2792,6 +2792,8 @@ class CraniotomyWindow(QMainWindow):
 
     def clear_injection_sites(self) -> None:
         self.injection_sites.clear()
+        if self.injection_sites_zoom_combo.currentIndex() == 1:
+            self.injection_sites_zoom_combo.setCurrentIndex(2)
         self.refresh_injection_sites_list()
 
     def start_injection_site_validation(self) -> None:
