@@ -1225,25 +1225,26 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.pause_injection_btn, 8, 1)
         single_layout.addWidget(self.stop_injection_btn, 8, 2, 1, 4)
 
-        layout.addStretch(1)
-        self._build_injection_sites_tab()
+        self._build_injection_sites_section(layout)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
         self.refresh_injection_sequence_summary()
 
-    def _build_injection_sites_tab(self) -> None:
-        """Build the site list beside a live copy of the craniotomy map."""
-        sites_tab = QWidget()
-        sites_outer_layout = QHBoxLayout(sites_tab)
-        sites_outer_layout.setContentsMargins(7, 6, 7, 7)
+    def _build_injection_sites_section(self, parent_layout: QVBoxLayout) -> None:
+        """Build the bottom half of Injection with map and site list side by side."""
+        sites_section = QWidget()
+        sites_outer_layout = QHBoxLayout(sites_section)
+        sites_outer_layout.setContentsMargins(0, 0, 0, 0)
         sites_outer_layout.setSpacing(8)
-        self.tabs.addTab(sites_tab, "Injection Sites")
+        parent_layout.addWidget(sites_section, 1)
 
         map_box = QGroupBox("Map")
         map_layout = QVBoxLayout(map_box)
         self.injection_sites_view = ProjectionWidget("ML", "AP")
         self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
-        self.injection_sites_view.setMinimumSize(380, 380)
+        # This lives in the lower half of the Injection tab, so keep it usable
+        # without forcing the tab taller than a normal application window.
+        self.injection_sites_view.setMinimumSize(260, 260)
         map_layout.addWidget(self.injection_sites_view, 1)
         self.injection_sites_zoom_combo = QComboBox()
         self.injection_sites_zoom_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
