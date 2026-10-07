@@ -725,6 +725,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites: list[InjectionSite] = []
         self.recent_injection_grid_configs: list[dict[str, object]] = []
         self.validation_modal_active = False
+        self.validation_move_active = False
+        self.validation_move_cancel_callback = None
         self.quick_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self.injection_pause_requested = threading.Event()
@@ -1982,6 +1984,10 @@ class CraniotomyWindow(QMainWindow):
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
         key = event.key()
+        if self.validation_move_active and key == Qt.Key.Key_Escape:
+            if self.validation_move_cancel_callback is not None:
+                self.validation_move_cancel_callback()
+            return True
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
             focus_widget = QApplication.focusWidget()
             if focus_widget is not None:
@@ -2777,11 +2783,81 @@ class CraniotomyWindow(QMainWindow):
                 return
             self._run_injection_site_validation(start_index, validate_all_sites=False)
 
-    def _move_to_injection_site_for_validation(self, site: InjectionSite) -> None:
-        """Approach a site at Bregma DV -0.5 mm before manual surface finding."""
+    def _move_to_injection_site_for_validation(self, site: InjectionSite) -> bool:
+        """Approach a site at Bregma DV -0.5 mm with a cancellable wait dialog."""
         target_axis = self._bregma_to_axis((site.ap, site.ml, -0.5))
-        self.controller.goto_axis_position(*target_axis)
-        self.controller.wait_for_axis_position(*target_axis, tolerance_mm=0.03, timeout_seconds=60.0)
+        cancelled = threading.Event()
+        result: dict[str, object] = {}
+
+        def move_worker() -> None:
+            try:
+                if cancelled.is_set():
+                    return
+                self.controller.goto_axis_position(*target_axis)
+                self.controller.wait_for_axis_position(
+                    *target_axis,
+                    tolerance_mm=0.03,
+                    timeout_seconds=60.0,
+                    stop_requested=cancelled.is_set,
+                )
+                result["completed"] = True
+            except Exception as exc:
+                result["error"] = exc
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Moving to Injection Site")
+        dialog.setModal(True)
+        dialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        layout = QVBoxLayout(dialog)
+        message = QLabel("Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…")
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        layout.addWidget(progress)
+        cancel_button = QPushButton("Cancel Movement (Esc)")
+        layout.addWidget(cancel_button)
+
+        def request_cancel() -> None:
+            if cancelled.is_set():
+                return
+            cancelled.set()
+            cancel_button.setEnabled(False)
+            message.setText("Stopping StereoDrive movement and waiting for confirmation…")
+            try:
+                self.controller.stop()
+            except Exception:
+                pass
+
+        cancel_button.clicked.connect(request_cancel)
+        worker = threading.Thread(target=move_worker, daemon=True)
+        timer = QTimer(dialog)
+
+        def check_worker() -> None:
+            if not worker.is_alive():
+                timer.stop()
+                dialog.accept()
+
+        timer.timeout.connect(check_worker)
+        self.validation_move_active = True
+        self.validation_move_cancel_callback = request_cancel
+        worker.start()
+        timer.start(50)
+        try:
+            dialog.exec()
+        finally:
+            timer.stop()
+            self.validation_move_active = False
+            self.validation_move_cancel_callback = None
+        if cancelled.is_set():
+            self.set_status("Movement to injection site cancelled.")
+            return False
+        error = result.get("error")
+        if isinstance(error, Exception):
+            raise error
+        if not result.get("completed"):
+            raise StereoDriveError("StereoDrive move ended without confirming arrival.")
+        return True
 
     def _validation_dialog(self, index: int, total: int, site: InjectionSite) -> tuple[str, QDialog]:
         dialog = QDialog(self)
@@ -2832,7 +2908,8 @@ class CraniotomyWindow(QMainWindow):
                 site = self.injection_sites[index]
                 self.refresh_injection_sites_list(active_index=index)
                 self.set_status(f"Moving to injection site {index + 1}/{len(self.injection_sites)} for validation.")
-                self._move_to_injection_site_for_validation(site)
+                if not self._move_to_injection_site_for_validation(site):
+                    break
                 action, _dialog = self._validation_dialog(index, len(self.injection_sites), site)
                 if action == "cancel":
                     self.set_status("Injection-site validation stopped.")
