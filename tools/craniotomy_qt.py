@@ -2130,10 +2130,13 @@ class CraniotomyWindow(QMainWindow):
                 site.ap += shift_mm
             elif axis == "ML":
                 site.ml += shift_mm
+            # A translated site no longer has a confirmed surface coordinate.
+            site.dv = None
+            site.generated = True
         self.refresh_injection_sites_list()
         self.set_status(
             f"Nudged all {len(self.injection_sites)} injection sites {label} by "
-            f"{self.move_speed_step_mm:g} mm."
+            f"{self.move_speed_step_mm:g} mm; all now require validation."
         )
 
     def update_manual_volume_label(self) -> None:
