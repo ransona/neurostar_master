@@ -223,11 +223,18 @@ class ProjectionWidget(QWidget):
         self._trajectory_screen_points: list[QPointF] = []
         self._inner_ring_screen_points: list[QPointF] = []
         self.overlay_image: QImage | None = None
+        self.overlay_calibration: dict[str, object] | None = None
+        self.coordinate_mode_bregma = False
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-    def set_overlay_image(self, image: QImage | None) -> None:
+    def set_overlay_image(self, image: QImage | None, calibration: dict[str, object] | None = None) -> None:
         self.overlay_image = image
+        self.overlay_calibration = calibration
+        self.update()
+
+    def set_coordinate_mode_bregma(self, enabled: bool) -> None:
+        self.coordinate_mode_bregma = enabled
         self.update()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
@@ -319,21 +326,6 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
-        if self.overlay_image is not None and not self.overlay_image.isNull():
-            painter.save()
-            painter.setOpacity(0.42)
-            scaled = self.overlay_image.scaled(
-                int(draw_rect.width()), int(draw_rect.height()),
-                Qt.KeepAspectRatio, Qt.SmoothTransformation,
-            )
-            overlay_rect = QRectF(
-                draw_rect.center().x() - scaled.width() / 2,
-                draw_rect.center().y() - scaled.height() / 2,
-                scaled.width(), scaled.height(),
-            )
-            painter.drawImage(overlay_rect, scaled)
-            painter.restore()
-
         if not self.trajectory and not self.seed_points:
             painter.setPen(QColor("#8b9a8d"))
             painter.drawText(self.rect(), Qt.AlignCenter, "No trajectory yet")
@@ -371,6 +363,26 @@ class ProjectionWidget(QWidget):
             else:
                 py = draw_rect.bottom() - normalized_y * draw_rect.height()
             return QPointF(px, py)
+
+        if self.overlay_image is not None and self.overlay_calibration:
+            calibration = self.overlay_calibration
+            bregma = calibration.get("bregma_pixel")
+            lambda_pixel = calibration.get("lambda_pixel")
+            distance_mm = float(calibration.get("bregma_to_lambda_mm", 3.9))
+            if isinstance(bregma, list) and isinstance(lambda_pixel, list) and len(bregma) == 2 and len(lambda_pixel) == 2:
+                pixel_distance = math.hypot(lambda_pixel[0] - bregma[0], lambda_pixel[1] - bregma[1])
+                if pixel_distance > 0 and distance_mm > 0:
+                    mm_per_pixel = distance_mm / pixel_distance
+                    left_mm = -bregma[0] * mm_per_pixel
+                    right_mm = (self.overlay_image.width() - bregma[0]) * mm_per_pixel
+                    top_mm = bregma[1] * mm_per_pixel
+                    bottom_mm = -(self.overlay_image.height() - bregma[1]) * mm_per_pixel
+                    overlay_top_left = map_point(left_mm, top_mm)
+                    overlay_bottom_right = map_point(right_mm, bottom_mm)
+                    painter.save()
+                    painter.setOpacity(0.42)
+                    painter.drawImage(QRectF(overlay_top_left, overlay_bottom_right), self.overlay_image)
+                    painter.restore()
 
         self._trajectory_screen_points = [map_point(point[0], point[1]) for point in self.trajectory]
         if self.trajectory:
@@ -410,7 +422,7 @@ class ProjectionWidget(QWidget):
 
         if self.current_point is not None:
             pt = map_point(self.current_point[0], self.current_point[1])
-            marker_pen = QPen(QColor("#1f2937"), 4)
+            marker_pen = QPen(QColor("#dc2626" if self.coordinate_mode_bregma else "#1f2937"), 4)
             painter.setPen(marker_pen)
             painter.drawLine(pt + QPointF(-10, -10), pt + QPointF(10, 10))
             painter.drawLine(pt + QPointF(-10, 10), pt + QPointF(10, -10))
@@ -1861,6 +1873,7 @@ class CraniotomyWindow(QMainWindow):
             return
         self.coordinate_mode = mode
         self.update_coordinate_mode_buttons()
+        self.top_view.set_coordinate_mode_bregma(mode == "bregma")
         self.refresh_live_position()
         self.set_status(f"Using {mode.title()} coordinates.")
 
@@ -3070,7 +3083,14 @@ class CraniotomyWindow(QMainWindow):
     def select_overlay(self) -> None:
         path = self.overlay_combo.currentData()
         image = QImage(path) if path else None
-        self.top_view.set_overlay_image(image)
+        calibration = None
+        if path:
+            metadata_path = Path(path).with_suffix(".json")
+            try:
+                calibration = json.loads(metadata_path.read_text(encoding="utf-8")).get("calibration", {})
+            except (OSError, ValueError, json.JSONDecodeError):
+                calibration = None
+        self.top_view.set_overlay_image(image, calibration)
         self.set_status("Overlay cleared." if not path else f"Overlay selected: {Path(path).name}")
 
     def generate_seeds(self) -> None:
