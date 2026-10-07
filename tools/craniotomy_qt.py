@@ -770,7 +770,6 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(self.move_speed_label)
         position_layout.addWidget(header_stop_btn)
         position_layout.addStretch(1)
-        header_layout.addWidget(set_bregma_btn)
         header_layout.addWidget(bregma_btn)
         header_layout.addWidget(home_btn)
         header_layout.addWidget(work_btn)
