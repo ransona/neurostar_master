@@ -1527,19 +1527,20 @@ class CraniotomyWindow(QMainWindow):
             return True
         if self._focus_is_editable():
             return super().eventFilter(watched, event)
-        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["volume_down"]:
+        combined_key = int(key) | event.modifiers().value
+        if combined_key == self.syringe_key_bindings["volume_down"]:
             self.adjust_manual_injection_volume(-1)
             return True
-        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["volume_up"]:
+        if combined_key == self.syringe_key_bindings["volume_up"]:
             self.adjust_manual_injection_volume(1)
             return True
-        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["syringe_up"]:
+        if combined_key == self.syringe_key_bindings["syringe_up"]:
             self.manual_syringe_step(up=True)
             return True
-        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["syringe_down"]:
+        if combined_key == self.syringe_key_bindings["syringe_down"]:
             self.manual_syringe_step(up=False)
             return True
-        if int(key) | int(event.modifiers()) == self.syringe_key_bindings["stop_injection"]:
+        if combined_key == self.syringe_key_bindings["stop_injection"]:
             self.stop_injection()
             return True
         if key == Qt.Key.Key_Shift:
@@ -1556,7 +1557,6 @@ class CraniotomyWindow(QMainWindow):
             self.movement_key_bindings["dv_up"]: ("DV", False, "DV up"),
             self.movement_key_bindings["dv_down"]: ("DV", True, "DV down"),
         }
-        combined_key = int(key) | int(event.modifiers())
         if combined_key not in key_map:
             return super().eventFilter(watched, event)
         axis, positive, label = key_map[combined_key]
