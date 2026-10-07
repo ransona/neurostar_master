@@ -674,6 +674,7 @@ class CraniotomyWindow(QMainWindow):
     block_prompt_signal = Signal()
     usb_probe_log_signal = Signal(str)
     usb_probe_finished_signal = Signal(str)
+    validation_move_position_signal = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -752,6 +753,7 @@ class CraniotomyWindow(QMainWindow):
         self.block_prompt_signal.connect(self.show_block_prompt)
         self.usb_probe_log_signal.connect(self._append_usb_probe_log)
         self.usb_probe_finished_signal.connect(self._finish_usb_probe)
+        self.validation_move_position_signal.connect(self._set_validation_move_position)
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
@@ -2794,13 +2796,18 @@ class CraniotomyWindow(QMainWindow):
                 if cancelled.is_set():
                     return
                 self.controller.goto_axis_position(*target_axis)
-                self.controller.wait_for_axis_position(
-                    *target_axis,
-                    tolerance_mm=0.03,
-                    timeout_seconds=60.0,
-                    stop_requested=cancelled.is_set,
-                )
-                result["completed"] = True
+                deadline = time.monotonic() + 60.0
+                while time.monotonic() < deadline:
+                    if cancelled.is_set():
+                        raise StereoDriveError("Movement cancelled.")
+                    self.controller.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
+                    current_axis = self.controller.get_current_axis_position()
+                    self.validation_move_position_signal.emit(current_axis)
+                    if all(abs(current - target) <= 0.03 for current, target in zip(current_axis, target_axis)):
+                        result["completed"] = True
+                        return
+                    time.sleep(0.05)
+                raise StereoDriveError("Timed out waiting for StereoDrive to reach the validation site.")
             except Exception as exc:
                 result["error"] = exc
 
@@ -3821,6 +3828,8 @@ class CraniotomyWindow(QMainWindow):
             return None
 
     def refresh_live_position(self) -> None:
+        if self.validation_move_active:
+            return
         try:
             axis_position = self.controller.get_current_axis_position()
             if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
@@ -3834,6 +3843,17 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
             self.set_status(str(exc))
+
+    def _set_validation_move_position(self, axis_position: object) -> None:
+        if not isinstance(axis_position, tuple) or len(axis_position) != 3:
+            return
+        ap, ml, dv = (float(axis_position[0]), float(axis_position[1]), float(axis_position[2]))
+        if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+            ap, ml, dv = self._axis_to_bregma((ap, ml, dv))
+        self.current_ap_label.setText(f"{ap:.2f}")
+        self.current_ml_label.setText(f"{ml:.2f}")
+        self.current_dv_label.setText(f"{dv:.2f}")
+        self.redraw_views(current_point=(ml, ap))
 
     def select_overlay(self) -> None:
         path = self.overlay_combo.currentData()
