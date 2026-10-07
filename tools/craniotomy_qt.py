@@ -226,6 +226,7 @@ class ProjectionWidget(QWidget):
         self.overlay_image: QImage | None = None
         self.overlay_calibration: dict[str, object] | None = None
         self.coordinate_mode_bregma = False
+        self.zoom_to_trajectory = True
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -236,6 +237,10 @@ class ProjectionWidget(QWidget):
 
     def set_coordinate_mode_bregma(self, enabled: bool) -> None:
         self.coordinate_mode_bregma = enabled
+        self.update()
+
+    def set_zoom_to_trajectory(self, enabled: bool) -> None:
+        self.zoom_to_trajectory = enabled
         self.update()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
@@ -334,7 +339,9 @@ class ProjectionWidget(QWidget):
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
-        if not xs and self.overlay_image is not None and self.overlay_calibration:
+        if (not self.zoom_to_trajectory or not xs) and self.overlay_image is not None and self.overlay_calibration:
+            xs = []
+            ys = []
             bregma = self.overlay_calibration.get("bregma_pixel")
             lambda_pixel = self.overlay_calibration.get("lambda_pixel")
             distance_mm = float(self.overlay_calibration.get("bregma_to_lambda_mm", 3.9))
@@ -982,7 +989,13 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
-        views_layout.addWidget(self.top_view, 0, 0)
+        map_layout = QVBoxLayout()
+        map_layout.addWidget(self.top_view)
+        self.zoom_to_craniotomy_check = QCheckBox("Zoom to craniotomy")
+        self.zoom_to_craniotomy_check.setChecked(True)
+        self.zoom_to_craniotomy_check.toggled.connect(self.top_view.set_zoom_to_trajectory)
+        map_layout.addWidget(self.zoom_to_craniotomy_check)
+        views_layout.addLayout(map_layout, 0, 0)
         default_overlay = "skull_bregma_lambda_reference"
         default_index = self.overlay_combo.findText(default_overlay)
         if default_index >= 0:
