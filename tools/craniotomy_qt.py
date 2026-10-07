@@ -1024,7 +1024,7 @@ class CraniotomyWindow(QMainWindow):
         map_layout = QVBoxLayout()
         map_layout.addWidget(self.top_view)
         self.zoom_mode_combo = QComboBox()
-        self.zoom_mode_combo.addItems(["Zoom to craniotomy", "Zoom to skull", "Zoom to mid-range"])
+        self.zoom_mode_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
         self.zoom_mode_combo.currentIndexChanged.connect(self.set_zoom_mode)
         map_layout.addWidget(self.zoom_mode_combo)
         views_layout.addLayout(map_layout, 0, 0)
