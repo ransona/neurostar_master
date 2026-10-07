@@ -3424,9 +3424,11 @@ class CraniotomyWindow(QMainWindow):
         title: str,
         message: str,
         delay_seconds: float = 0.75,
+        stage_messages: list[str] | None = None,
     ) -> bool:
         return self._move_through_axis_positions_with_progress(
             [target_axis], title=title, message=message, delay_seconds=delay_seconds,
+            stage_messages=stage_messages,
         )
 
     def _move_through_axis_positions_with_progress(
@@ -3436,18 +3438,22 @@ class CraniotomyWindow(QMainWindow):
         title: str,
         message: str,
         delay_seconds: float = 0.75,
+        stage_messages: list[str] | None = None,
     ) -> bool:
         """Move through one or more Axis targets with one cancellable progress dialog."""
         if not target_axes:
             return True
         cancelled = threading.Event()
         result: dict[str, object] = {}
+        progress_state = {"message": message}
 
         def move_worker() -> None:
             try:
-                for target_axis in target_axes:
+                for target_index, target_axis in enumerate(target_axes):
                     if cancelled.is_set():
                         return
+                    if stage_messages and target_index < len(stage_messages):
+                        progress_state["message"] = stage_messages[target_index]
                     self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
                     deadline = time.monotonic() + 60.0
                     while time.monotonic() < deadline:
@@ -3484,7 +3490,8 @@ class CraniotomyWindow(QMainWindow):
                 return
             cancelled.set()
             cancel_button.setEnabled(False)
-            message_label.setText("Stopping StereoDrive movement and waiting for confirmation…")
+            progress_state["message"] = "Stopping StereoDrive movement and waiting for confirmation…"
+            message_label.setText(progress_state["message"])
             try:
                 self.controller.stop()
             except Exception:
@@ -3495,6 +3502,8 @@ class CraniotomyWindow(QMainWindow):
         timer = QTimer(dialog)
 
         def check_worker() -> None:
+            if message_label.text() != progress_state["message"]:
+                message_label.setText(progress_state["message"])
             if not worker.is_alive():
                 timer.stop()
                 dialog.accept()
@@ -4733,10 +4742,20 @@ class CraniotomyWindow(QMainWindow):
                 target = (ap, ml, axis_position[2])
                 safe = (target[0], target[1], target[2] - 0.5)
                 safe_message = "Moving to the site 0.5 mm above the current DV position. Waiting for StereoDrive to report arrival…"
+            def stage_message(description: str, position: tuple[float, float, float]) -> str:
+                return (
+                    f"{description}\n\nWaiting for Axis AP {position[0]:.2f} mm, "
+                    f"ML {position[1]:.2f} mm, DV {position[2]:.2f} mm."
+                )
+
             if not self._move_through_axis_positions_with_progress(
                 [safe, target],
                 title="Moving to Map Location",
-                message=f"{safe_message}\n\nThen moving to the selected map location.",
+                message=stage_message(safe_message, safe),
+                stage_messages=[
+                    stage_message(safe_message, safe),
+                    stage_message("Moving to the selected map location.", target),
+                ],
             ):
                 return
             self.set_status(f"Moved to map location AP {ap:.2f}, ML {ml:.2f}.")
