@@ -725,6 +725,7 @@ class CraniotomyWindow(QMainWindow):
         self.anchor_bregma: tuple[float, float, float] | None = None
         self.injection_sites: list[InjectionSite] = []
         self.recent_injection_grid_configs: list[dict[str, object]] = []
+        self.nudge_all_sites_active = False
         self.validation_modal_active = False
         self.validation_move_active = False
         self.validation_move_cancel_callback = None
@@ -1372,6 +1373,17 @@ class CraniotomyWindow(QMainWindow):
         validate_sites_btn.clicked.connect(self.start_injection_site_validation)
         clear_sites_btn = QPushButton("Clear Sites")
         clear_sites_btn.clicked.connect(self.clear_injection_sites)
+        save_site_set_btn = QPushButton("Save Site Set")
+        save_site_set_btn.clicked.connect(self.save_injection_site_set)
+        load_site_set_btn = QPushButton("Load Site Set")
+        load_site_set_btn.clicked.connect(self.load_injection_site_set)
+        self.nudge_all_sites_btn = QPushButton("Nudge All Sites")
+        self.nudge_all_sites_btn.setCheckable(True)
+        self.nudge_all_sites_btn.setToolTip(
+            "When enabled, AP/ML arrow shortcuts shift every injection site by the current move speed. "
+            "The manipulator does not move."
+        )
+        self.nudge_all_sites_btn.toggled.connect(self.set_nudge_all_sites_active)
         resume_selected_btn = QPushButton("Start From Selected")
         resume_selected_btn.setProperty("variant", "quick-green")
         resume_selected_btn.style().unpolish(resume_selected_btn)
@@ -1383,11 +1395,14 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(add_grid_btn, 0, 1)
         sites_layout.addWidget(remove_site_btn, 0, 2)
-        sites_layout.addWidget(validate_sites_btn, 1, 0)
-        sites_layout.addWidget(clear_sites_btn, 1, 1)
-        sites_layout.addWidget(resume_selected_btn, 1, 2)
-        sites_layout.addWidget(self.block_check, 2, 0, 1, 3)
-        sites_layout.addWidget(self.injection_sites_list, 3, 0, 1, 3)
+        sites_layout.addWidget(save_site_set_btn, 1, 0)
+        sites_layout.addWidget(load_site_set_btn, 1, 1)
+        sites_layout.addWidget(self.nudge_all_sites_btn, 1, 2)
+        sites_layout.addWidget(validate_sites_btn, 2, 0)
+        sites_layout.addWidget(clear_sites_btn, 2, 1)
+        sites_layout.addWidget(resume_selected_btn, 2, 2)
+        sites_layout.addWidget(self.block_check, 3, 0, 1, 3)
+        sites_layout.addWidget(self.injection_sites_list, 4, 0, 1, 3)
 
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
@@ -1486,6 +1501,7 @@ class CraniotomyWindow(QMainWindow):
             or (self.injection_thread is not None and self.injection_thread.is_alive())
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
             or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
+            or self.validation_move_active
         )
 
     def start_usb_controller_probe(self) -> None:
@@ -1644,6 +1660,7 @@ class CraniotomyWindow(QMainWindow):
     def _config_dir(self, kind: str) -> Path:
         mapping = {
             "injection": self._config_root_dir() / "Injection",
+            "injection_sites": self._config_root_dir() / "Injection Sites",
             "craniotomy": self._config_root_dir() / "Craniotomy",
         }
         directory = mapping[kind]
@@ -2035,6 +2052,9 @@ class CraniotomyWindow(QMainWindow):
             (self.movement_key_bindings["dv_down"], "DV", True, "DV down"),
         ):
             if self._key_matches_binding(binding, key, combined_key):
+                if self.nudge_all_sites_active and axis in {"AP", "ML"}:
+                    self.nudge_all_injection_sites(axis, positive, label)
+                    return True
                 self.keyboard_nudge(axis, positive, label)
                 return True
         return super().eventFilter(watched, event)
@@ -2074,6 +2094,47 @@ class CraniotomyWindow(QMainWindow):
                 pass
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def set_nudge_all_sites_active(self, active: bool) -> None:
+        """Toggle AP/ML shortcuts between manipulator movement and site translation."""
+        if active and not self.injection_sites:
+            QMessageBox.information(self, "Nudge All Sites", "Add or load injection sites before enabling this mode.")
+            self.nudge_all_sites_btn.blockSignals(True)
+            self.nudge_all_sites_btn.setChecked(False)
+            self.nudge_all_sites_btn.blockSignals(False)
+            return
+        if active and self._motion_is_active():
+            QMessageBox.warning(self, "Nudge All Sites", "Wait for the current operation to finish first.")
+            self.nudge_all_sites_btn.blockSignals(True)
+            self.nudge_all_sites_btn.setChecked(False)
+            self.nudge_all_sites_btn.blockSignals(False)
+            return
+        self.nudge_all_sites_active = active
+        self.nudge_all_sites_btn.setProperty("variant", "quick-green" if active else None)
+        self.nudge_all_sites_btn.style().unpolish(self.nudge_all_sites_btn)
+        self.nudge_all_sites_btn.style().polish(self.nudge_all_sites_btn)
+        if active:
+            self.set_status(
+                "Nudge All Sites enabled: AP/ML arrows shift all sites; the manipulator will not move."
+            )
+        else:
+            self.set_status("Nudge All Sites disabled: AP/ML arrows move the manipulator.")
+
+    def nudge_all_injection_sites(self, axis: str, positive: bool, label: str) -> None:
+        if not self.injection_sites:
+            self.set_status("No injection sites to nudge.")
+            return
+        shift_mm = self.move_speed_step_mm if positive else -self.move_speed_step_mm
+        for site in self.injection_sites:
+            if axis == "AP":
+                site.ap += shift_mm
+            elif axis == "ML":
+                site.ml += shift_mm
+        self.refresh_injection_sites_list()
+        self.set_status(
+            f"Nudged all {len(self.injection_sites)} injection sites {label} by "
+            f"{self.move_speed_step_mm:g} mm."
+        )
 
     def update_manual_volume_label(self) -> None:
         try:
@@ -2784,6 +2845,98 @@ class CraniotomyWindow(QMainWindow):
             if hasattr(self, "injection_grid_recent_combo"):
                 del self.injection_grid_recent_combo
 
+    def _require_bregma_site_set_context(self, title: str) -> bool:
+        if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+            return True
+        QMessageBox.information(
+            self,
+            title,
+            "Set Bregma and select Bregma coordinates before saving or loading an injection site set.",
+        )
+        return False
+
+    def save_injection_site_set(self) -> None:
+        """Save Bregma AP/ML targets, deliberately excluding their surface validation."""
+        if not self._require_bregma_site_set_context("Save Injection Site Set"):
+            return
+        if not self.injection_sites:
+            QMessageBox.information(self, "Save Injection Site Set", "Add one or more injection sites first.")
+            return
+        directory = self._config_dir("injection_sites")
+        path_str, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Save Injection Site Set",
+            str(directory / "injection_site_set.json"),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        payload: dict[str, object] = {
+            "format": "neurostar-injection-site-set-v1",
+            "coordinate_system": "bregma",
+            "sites": [
+                {"ap": site.ap, "ml": site.ml}
+                for site in self.injection_sites
+            ],
+        }
+        self._write_config_file(path, payload)
+        self.set_status(f"Saved {len(self.injection_sites)} injection sites to {path}")
+
+    def load_injection_site_set(self) -> None:
+        """Load targets as unvalidated so their surfaces are always rechecked."""
+        if not self._require_bregma_site_set_context("Load Injection Site Set"):
+            return
+        directory = self._config_dir("injection_sites")
+        path_str, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Load Injection Site Set",
+            str(directory),
+            "JSON Files (*.json)",
+        )
+        if not path_str:
+            return
+        try:
+            payload = self._read_config_file(Path(path_str))
+            if not isinstance(payload, dict):
+                raise ValueError("The site-set file must contain a JSON object.")
+            if payload.get("coordinate_system") not in {None, "bregma"}:
+                raise ValueError("This site set is not stored in Bregma coordinates.")
+            raw_sites = payload.get("sites")
+            if not isinstance(raw_sites, list) or not raw_sites:
+                raise ValueError("The file does not contain any injection sites.")
+            sites: list[InjectionSite] = []
+            for raw_site in raw_sites:
+                if not isinstance(raw_site, dict):
+                    raise ValueError("Each injection site must contain AP and ML coordinates.")
+                ap = float(raw_site["ap"])
+                ml = float(raw_site["ml"])
+                if not math.isfinite(ap) or not math.isfinite(ml):
+                    raise ValueError("Injection-site coordinates must be finite numbers.")
+                sites.append(InjectionSite(ap=ap, ml=ml, dv=None, generated=True))
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Load Injection Site Set", f"Could not load site set. {exc}")
+            return
+        if self.injection_sites:
+            response = QMessageBox.question(
+                self,
+                "Replace Injection Sites?",
+                f"Loading will replace the current {len(self.injection_sites)} injection site(s). Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response != QMessageBox.Yes:
+                return
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
+        self.injection_sites = sites
+        self.refresh_injection_sites_list()
+        self.set_status(
+            f"Loaded {len(sites)} injection sites. All are unvalidated; run Validate Sites before injection."
+        )
+
     def remove_selected_injection_site(self) -> None:
         row = self.injection_sites_list.currentRow()
         if 0 <= row < len(self.injection_sites):
@@ -2792,6 +2945,8 @@ class CraniotomyWindow(QMainWindow):
 
     def clear_injection_sites(self) -> None:
         self.injection_sites.clear()
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
         if self.injection_sites_zoom_combo.currentIndex() == 1:
             self.injection_sites_zoom_combo.setCurrentIndex(2)
         self.refresh_injection_sites_list()
@@ -2810,6 +2965,8 @@ class CraniotomyWindow(QMainWindow):
                 "Set Bregma and select Bregma coordinates before validating sites.",
             )
             return
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
         choice = QMessageBox(self)
         choice.setWindowTitle("Validate Injection Sites")
         choice.setText("Choose which sites to step through.")
