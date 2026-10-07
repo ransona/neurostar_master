@@ -2406,9 +2406,23 @@ class CraniotomyWindow(QMainWindow):
             return self._axis_to_bregma(axis_position)
         return axis_position
 
-    def goto_gui_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
+    def goto_gui_position(
+        self,
+        ap: float,
+        ml: float,
+        dv: float,
+        delay_seconds: float = 0.75,
+        *,
+        title: str = "Moving",
+        message: str = "Moving to the requested position. Waiting for StereoDrive to report arrival…",
+        show_progress: bool = False,
+    ) -> None:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
-        self.controller.goto_axis_position(*axis_position, delay_seconds=delay_seconds)
+        if show_progress:
+            if not self._move_to_axis_position_with_progress(axis_position, title=title, message=message, delay_seconds=delay_seconds):
+                raise StereoDriveError("Movement cancelled.")
+        else:
+            self.controller.goto_axis_position(*axis_position, delay_seconds=delay_seconds)
 
     def wait_for_gui_position(self, ap: float, ml: float, dv: float, **kwargs) -> None:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
@@ -2502,21 +2516,34 @@ class CraniotomyWindow(QMainWindow):
 
     def goto_home(self) -> None:
         try:
-            self.controller.goto_home()
-            self.set_status("Sent GoTo 'Home' command.")
+            if self._run_named_motion_with_progress(
+                self.controller.goto_home,
+                title="Moving to Home",
+                message="Moving to StereoDrive Home. Waiting for StereoDrive to report arrival…",
+            ):
+                self.set_status("Moved to StereoDrive Home.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def goto_work(self) -> None:
         try:
-            self.controller.goto_work()
-            self.set_status("Sent GoTo 'Work' command.")
+            if self._run_named_motion_with_progress(
+                self.controller.goto_work,
+                title="Moving to Work",
+                message="Moving to StereoDrive Work. Waiting for StereoDrive to report arrival…",
+            ):
+                self.set_status("Moved to StereoDrive Work.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def goto_bregma(self) -> None:
         try:
-            self.goto_gui_position(0.0, 0.0, 0.0)
+            self.goto_gui_position(
+                0.0, 0.0, 0.0,
+                title="Moving to Bregma",
+                message="Moving to Bregma. Waiting for StereoDrive to report arrival…",
+                show_progress=True,
+            )
             self.set_status("Moving to Bregma: AP 0.00, ML 0.00, DV 0.00.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -2557,7 +2584,12 @@ class CraniotomyWindow(QMainWindow):
         ml = ml_box.value()
         dv = dv_box.value()
         try:
-            self.goto_gui_position(ap, ml, dv)
+            self.goto_gui_position(
+                ap, ml, dv,
+                title="Moving to Position",
+                message="Moving to the requested position. Waiting for StereoDrive to report arrival…",
+                show_progress=True,
+            )
             self.set_status(f"Moving to AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -2648,7 +2680,13 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(self, "Stored Location", f"Location {slot} has not been set.")
             return
         try:
-            self.goto_gui_position(location.ap, location.ml, location.dv, delay_seconds=0.5)
+            self.goto_gui_position(
+                location.ap, location.ml, location.dv,
+                delay_seconds=0.5,
+                title=f"Moving to Location {slot}",
+                message=f"Moving to stored location {slot}. Waiting for StereoDrive to report arrival…",
+                show_progress=True,
+            )
             self.set_status(
                 f"Moving to location {slot}: AP {location.ap:.2f}, ML {location.ml:.2f}, DV {location.dv:.2f}."
             )
@@ -3058,6 +3096,7 @@ class CraniotomyWindow(QMainWindow):
         *,
         title: str,
         message: str,
+        delay_seconds: float = 0.75,
     ) -> bool:
         """Move to Axis coordinates with live-position feedback and cancellable progress."""
         cancelled = threading.Event()
@@ -3067,7 +3106,7 @@ class CraniotomyWindow(QMainWindow):
             try:
                 if cancelled.is_set():
                     return
-                self.controller.goto_axis_position(*target_axis)
+                self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
                 deadline = time.monotonic() + 60.0
                 while time.monotonic() < deadline:
                     if cancelled.is_set():
@@ -3080,6 +3119,101 @@ class CraniotomyWindow(QMainWindow):
                         return
                     time.sleep(0.05)
                 raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
+            except Exception as exc:
+                result["error"] = exc
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setModal(True)
+        dialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        layout = QVBoxLayout(dialog)
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        progress = QProgressBar()
+        progress.setRange(0, 0)
+        layout.addWidget(progress)
+        cancel_button = QPushButton("Cancel Movement (Esc)")
+        layout.addWidget(cancel_button)
+
+        def request_cancel() -> None:
+            if cancelled.is_set():
+                return
+            cancelled.set()
+            cancel_button.setEnabled(False)
+            message_label.setText("Stopping StereoDrive movement and waiting for confirmation…")
+            try:
+                self.controller.stop()
+            except Exception:
+                pass
+
+        cancel_button.clicked.connect(request_cancel)
+        worker = threading.Thread(target=move_worker, daemon=True)
+        timer = QTimer(dialog)
+
+        def check_worker() -> None:
+            if not worker.is_alive():
+                timer.stop()
+                dialog.accept()
+
+        timer.timeout.connect(check_worker)
+        self.validation_move_active = True
+        self.validation_move_cancel_callback = request_cancel
+        worker.start()
+        timer.start(50)
+        try:
+            dialog.exec()
+        finally:
+            timer.stop()
+            self.validation_move_active = False
+            self.validation_move_cancel_callback = None
+        if cancelled.is_set():
+            self.set_status("Movement cancelled.")
+            return False
+        error = result.get("error")
+        if isinstance(error, Exception):
+            raise error
+        if not result.get("completed"):
+            raise StereoDriveError("StereoDrive move ended without confirming arrival.")
+        return True
+
+    def _run_named_motion_with_progress(self, command, *, title: str, message: str) -> bool:
+        """Run a Home/Work command when StereoDrive does not expose its target coordinates."""
+        initial_axis = self.controller.get_current_axis_position()
+        cancelled = threading.Event()
+        result: dict[str, object] = {}
+
+        def move_worker() -> None:
+            try:
+                command()
+                deadline = time.monotonic() + 60.0
+                previous_axis = initial_axis
+                movement_seen = False
+                stable_samples = 0
+                started_at = time.monotonic()
+                while time.monotonic() < deadline:
+                    if cancelled.is_set():
+                        raise StereoDriveError("Movement cancelled.")
+                    current_axis = self.controller.get_current_axis_position()
+                    self.validation_move_position_signal.emit(current_axis)
+                    if any(abs(current - initial) > 0.02 for current, initial in zip(current_axis, initial_axis)):
+                        movement_seen = True
+                    if movement_seen:
+                        if all(abs(current - previous) <= 0.005 for current, previous in zip(current_axis, previous_axis)):
+                            stable_samples += 1
+                        else:
+                            stable_samples = 0
+                        if stable_samples >= 8:
+                            result["completed"] = True
+                            return
+                    elif time.monotonic() - started_at >= 2.0:
+                        # Home/Work may already be selected; no movement is a
+                        # successful settled state once the command has had time to act.
+                        result["completed"] = True
+                        return
+                    previous_axis = current_axis
+                    time.sleep(0.05)
+                raise StereoDriveError("Timed out waiting for StereoDrive to finish moving.")
             except Exception as exc:
                 result["error"] = exc
 
@@ -4342,7 +4476,13 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             seed = self.seeds[self.current_seed_index]
-            self.goto_gui_position(seed.ap, seed.ml, -1.0, delay_seconds=1.0)
+            self.goto_gui_position(
+                seed.ap, seed.ml, -1.0,
+                delay_seconds=1.0,
+                title=f"Moving to Seed {seed.index + 1}",
+                message="Moving to the seed position. Waiting for StereoDrive to report arrival…",
+                show_progress=True,
+            )
             self.set_status(
                 f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'Set Surface'."
             )
