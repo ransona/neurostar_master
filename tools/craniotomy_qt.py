@@ -326,13 +326,23 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
-        if not self.trajectory and not self.seed_points:
+        if not self.trajectory and not self.seed_points and self.current_point is None and self.overlay_image is None:
             painter.setPen(QColor("#8b9a8d"))
             painter.drawText(self.rect(), Qt.AlignCenter, "No trajectory yet")
             return
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
+        if not xs and self.overlay_image is not None and self.overlay_calibration:
+            bregma = self.overlay_calibration.get("bregma_pixel")
+            lambda_pixel = self.overlay_calibration.get("lambda_pixel")
+            distance_mm = float(self.overlay_calibration.get("bregma_to_lambda_mm", 3.9))
+            if isinstance(bregma, list) and isinstance(lambda_pixel, list) and len(bregma) == 2 and len(lambda_pixel) == 2:
+                pixel_distance = math.hypot(lambda_pixel[0] - bregma[0], lambda_pixel[1] - bregma[1])
+                if pixel_distance > 0:
+                    mm_per_pixel = distance_mm / pixel_distance
+                    xs.extend((-bregma[0] * mm_per_pixel, (self.overlay_image.width() - bregma[0]) * mm_per_pixel))
+                    ys.extend((bregma[1] * mm_per_pixel, -(self.overlay_image.height() - bregma[1]) * mm_per_pixel))
         if self.current_point is not None:
             xs.append(self.current_point[0])
             ys.append(self.current_point[1])
@@ -3907,7 +3917,7 @@ class CraniotomyWindow(QMainWindow):
             top_points,
             top_seeds,
             frozen_points=self.frozen_points,
-            current_point=current_point if self.seeds else None,
+            current_point=current_point,
         )
         self.update_seed_selector_label()
 
