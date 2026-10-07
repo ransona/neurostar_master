@@ -328,7 +328,7 @@ class ProjectionWidget(QWidget):
     def wheelEvent(self, event) -> None:  # noqa: N802
         if self.navigation_enabled and event.angleDelta().y():
             steps = event.angleDelta().y() / 120.0
-            self.navigation_zoom = max(1.0, min(20.0, self.navigation_zoom * (1.25 ** steps)))
+            self.navigation_zoom = max(0.1, min(20.0, self.navigation_zoom * (1.25 ** steps)))
             self.update()
             event.accept()
             return
@@ -1340,7 +1340,11 @@ class CraniotomyWindow(QMainWindow):
         injection_map_controls.addWidget(self.show_craniotomy_on_injection_map)
         injection_map_controls.addStretch(1)
         self.injection_sites_zoom_combo = QComboBox()
-        self.injection_sites_zoom_combo.addItems(["Zoom To Craniotomy", "Zoom To Injection Map"])
+        self.injection_sites_zoom_combo.addItems([
+            "Zoom To Craniotomy",
+            "Zoom To Injection Map",
+            "Zoom To Skull",
+        ])
         self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
         injection_map_controls.addWidget(self.injection_sites_zoom_combo)
         map_layout.addLayout(injection_map_controls)
@@ -3949,6 +3953,7 @@ class CraniotomyWindow(QMainWindow):
 
     def set_injection_sites_zoom_mode(self, index: int) -> None:
         self.injection_sites_view.reset_navigation()
+        self.injection_sites_view.set_zoom_level(0.0 if index == 2 else 1.0)
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
@@ -4742,6 +4747,8 @@ class CraniotomyWindow(QMainWindow):
         focus_points = [(point[0], point[1]) for point in top_points]
         if self.injection_sites_zoom_combo.currentIndex() == 1:
             focus_points = injection_site_points
+        elif self.injection_sites_zoom_combo.currentIndex() == 2:
+            focus_points = []
         self.injection_sites_view.set_data(
             top_points if show_craniotomy else [],
             [],
