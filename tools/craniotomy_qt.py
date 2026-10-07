@@ -218,6 +218,7 @@ class ProjectionWidget(QWidget):
         self.invert_y = invert_y
         self.trajectory: list[tuple[float, float, float]] = []
         self.seed_points: list[tuple[float, float, bool]] = []
+        self.injection_site_points: list[tuple[float, float]] = []
         self.frozen_points: list[bool] = []
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
@@ -257,9 +258,11 @@ class ProjectionWidget(QWidget):
         seed_points: list[tuple[float, float, bool]],
         frozen_points: list[bool] | None = None,
         current_point: tuple[float, float] | None = None,
+        injection_sites: list[tuple[float, float]] | None = None,
     ) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
+        self.injection_site_points = injection_sites or []
         self.frozen_points = frozen_points or [False] * len(trajectory)
         self.current_point = current_point
         self.update()
@@ -345,13 +348,19 @@ class ProjectionWidget(QWidget):
         painter.setPen(QPen(QColor("#cad7cb"), 1))
         painter.setBrush(QColor("#ffffff"))
         painter.drawRoundedRect(draw_rect, 16, 16)
-        if not self.trajectory and not self.seed_points and self.current_point is None and self.overlay_image is None:
+        if (
+            not self.trajectory
+            and not self.seed_points
+            and not self.injection_site_points
+            and self.current_point is None
+            and self.overlay_image is None
+        ):
             painter.setPen(QColor("#8b9a8d"))
             painter.drawText(self.rect(), Qt.AlignCenter, "No trajectory yet")
             return
 
-        xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
-        ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
+        xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points] + [p[0] for p in self.injection_site_points]
+        ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points] + [p[1] for p in self.injection_site_points]
         overlay_bounds = None
         if self.overlay_image is not None and self.overlay_calibration:
             bregma = self.overlay_calibration.get("bregma_pixel")
@@ -468,6 +477,14 @@ class ProjectionWidget(QWidget):
             painter.drawEllipse(pt, 6, 6)
             painter.setPen(color)
             painter.drawText(pt + QPointF(8, -8), f"{idx} [{x:.2f}, {y:.2f}]")
+
+        for idx, (x, y) in enumerate(self.injection_site_points, start=1):
+            pt = map_point(x, y)
+            painter.setPen(QPen(QColor("#6b21a8"), 2))
+            painter.setBrush(QColor("#d8b4fe"))
+            painter.drawEllipse(pt, 8, 8)
+            painter.setPen(QColor("#3b0764"))
+            painter.drawText(QRectF(pt.x() - 6, pt.y() - 8, 12, 16), Qt.AlignCenter, str(idx))
 
         if self.current_point is not None:
             pt = map_point(self.current_point[0], self.current_point[1])
@@ -1036,10 +1053,6 @@ class CraniotomyWindow(QMainWindow):
         self.zoom_mode_combo.currentIndexChanged.connect(self.set_zoom_mode)
         map_layout.addWidget(self.zoom_mode_combo)
         views_layout.addLayout(map_layout, 0, 0)
-        default_overlay = "skull_bregma_lambda_reference"
-        default_index = self.overlay_combo.findText(default_overlay)
-        if default_index >= 0:
-            self.overlay_combo.setCurrentIndex(default_index)
         legend_layout = QVBoxLayout()
         legend_layout.setSpacing(3)
         self.depth_legend = DepthLegendWidget()
@@ -1065,6 +1078,10 @@ class CraniotomyWindow(QMainWindow):
         self.update_current_target_depth_label()
         self.update_move_speed_label()
         self._build_injection_tab()
+        default_overlay = "skull_bregma_lambda_reference"
+        default_index = self.overlay_combo.findText(default_overlay)
+        if default_index >= 0:
+            self.overlay_combo.setCurrentIndex(default_index)
 
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
@@ -1593,6 +1610,8 @@ class CraniotomyWindow(QMainWindow):
                     setattr(self, name, tuple(float(item) for item in value))
             self.window_geometry = payload.get("window_geometry")
             self.update_coordinate_mode_buttons()
+            self.top_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
+            self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             self.set_status(f"Could not read settings from {path}")
 
@@ -2531,6 +2550,8 @@ class CraniotomyWindow(QMainWindow):
             font.setBold(False)
             item.setFont(font)
             self.injection_sites_list.addItem(item)
+        if hasattr(self, "injection_sites_view"):
+            self.redraw_views()
 
     def _active_injection_sites(self) -> list[InjectionSite]:
         if self.injection_sites:
@@ -4279,6 +4300,7 @@ class CraniotomyWindow(QMainWindow):
             top_seeds,
             frozen_points=self.frozen_points,
             current_point=current_point,
+            injection_sites=[(site.ml, site.ap) for site in self.injection_sites],
         )
         self.update_seed_selector_label()
 
