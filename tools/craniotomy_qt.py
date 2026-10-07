@@ -3026,6 +3026,20 @@ class CraniotomyWindow(QMainWindow):
     def _move_to_injection_site_for_validation(self, site: InjectionSite) -> bool:
         """Approach a site at Bregma DV -0.5 mm with a cancellable wait dialog."""
         target_axis = self._bregma_to_axis((site.ap, site.ml, -0.5))
+        return self._move_to_axis_position_with_progress(
+            target_axis,
+            title="Moving to Injection Site",
+            message="Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…",
+        )
+
+    def _move_to_axis_position_with_progress(
+        self,
+        target_axis: tuple[float, float, float],
+        *,
+        title: str,
+        message: str,
+    ) -> bool:
+        """Move to Axis coordinates with live-position feedback and cancellable progress."""
         cancelled = threading.Event()
         result: dict[str, object] = {}
 
@@ -3045,18 +3059,18 @@ class CraniotomyWindow(QMainWindow):
                         result["completed"] = True
                         return
                     time.sleep(0.05)
-                raise StereoDriveError("Timed out waiting for StereoDrive to reach the validation site.")
+                raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
             except Exception as exc:
                 result["error"] = exc
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Moving to Injection Site")
+        dialog.setWindowTitle(title)
         dialog.setModal(True)
         dialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
         layout = QVBoxLayout(dialog)
-        message = QLabel("Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…")
-        message.setWordWrap(True)
-        layout.addWidget(message)
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
         progress = QProgressBar()
         progress.setRange(0, 0)
         layout.addWidget(progress)
@@ -3068,7 +3082,7 @@ class CraniotomyWindow(QMainWindow):
                 return
             cancelled.set()
             cancel_button.setEnabled(False)
-            message.setText("Stopping StereoDrive movement and waiting for confirmation…")
+            message_label.setText("Stopping StereoDrive movement and waiting for confirmation…")
             try:
                 self.controller.stop()
             except Exception:
@@ -3095,7 +3109,7 @@ class CraniotomyWindow(QMainWindow):
             self.validation_move_active = False
             self.validation_move_cancel_callback = None
         if cancelled.is_set():
-            self.set_status("Movement to injection site cancelled.")
+            self.set_status("Movement cancelled.")
             return False
         error = result.get("error")
         if isinstance(error, Exception):
@@ -4217,11 +4231,23 @@ class CraniotomyWindow(QMainWindow):
             if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
                 target = self._bregma_to_axis((ap, ml, 0.0))
                 safe = self._bregma_to_axis((ap, ml, -0.5))
+                safe_message = "Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…"
             else:
                 target = (ap, ml, axis_position[2])
                 safe = (target[0], target[1], target[2] - 0.5)
-            self.controller.goto_axis_position(safe[0], safe[1], safe[2])
-            self.controller.goto_axis_position(target[0], target[1], target[2])
+                safe_message = "Moving to the site 0.5 mm above the current DV position. Waiting for StereoDrive to report arrival…"
+            if not self._move_to_axis_position_with_progress(
+                safe,
+                title="Moving to Map Location",
+                message=safe_message,
+            ):
+                return
+            if not self._move_to_axis_position_with_progress(
+                target,
+                title="Moving to Map Location",
+                message="Moving to the selected map location. Waiting for StereoDrive to report arrival…",
+            ):
+                return
             self.set_status(f"Moved to map location AP {ap:.2f}, ML {ml:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "Map Move", str(exc))
