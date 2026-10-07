@@ -4027,7 +4027,9 @@ class CraniotomyWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Craniotomy Planner")
-    app.setFont(QFont("Segoe UI", 9))
+    application_font = QFont("Segoe UI")
+    application_font.setPointSize(9)
+    app.setFont(application_font)
     try:
         window = CraniotomyWindow()
     except StereoDriveError:
