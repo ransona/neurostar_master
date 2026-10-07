@@ -1356,16 +1356,36 @@ class StereoDriveController:
     def set_axis_target_position(self, ap: float, ml: float, dv: float) -> None:
         """Write a target directly to StereoDrive's Axis target fields."""
         self._set_edit_control_text(AXIS_TARGET_AP_ID, f"{ap:.2f}")
+        time.sleep(0.05)
         self._set_edit_control_text(AXIS_TARGET_ML_ID, f"{ml:.2f}")
+        time.sleep(0.05)
         self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
-        actual = (
-            float(self._get_text(self._control_handle(AXIS_TARGET_AP_ID))),
-            float(self._get_text(self._control_handle(AXIS_TARGET_ML_ID))),
-            float(self._get_text(self._control_handle(AXIS_TARGET_DV_ID))),
-        )
+        time.sleep(0.2)
+        actual = self._axis_target_position()
         requested = (ap, ml, dv)
         if any(round(a, 2) != round(b, 2) for a, b in zip(actual, requested)):
             raise StereoDriveError(f"Failed to set Axis target fields to [{ap:.2f}, {ml:.2f}, {dv:.2f}].")
+
+    def _axis_target_position(self) -> tuple[float, float, float]:
+        values: list[float] = []
+        for axis, control_id in (
+            ("AP", AXIS_TARGET_AP_ID),
+            ("ML", AXIS_TARGET_ML_ID),
+            ("DV", AXIS_TARGET_DV_ID),
+        ):
+            text = self._get_text(self._control_handle(control_id))
+            if not text:
+                raise StereoDriveError(
+                    f"StereoDrive Axis {axis} target field is blank after it was set. "
+                    "Keep the main StereoDrive window visible and retry."
+                )
+            try:
+                values.append(float(text.replace(",", ".")))
+            except ValueError as exc:
+                raise StereoDriveError(
+                    f"StereoDrive Axis {axis} target field is not numeric: '{text}'."
+                ) from exc
+        return values[0], values[1], values[2]
 
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
         actual_ap_text = self._get_text(self._control_handle(TARGET_AP_ID))
