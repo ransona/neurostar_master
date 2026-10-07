@@ -1415,6 +1415,18 @@ class StereoDriveController:
                 ) from exc
         return values[0], values[1], values[2]
 
+    def _rearm_cleared_axis_targets(self, ap: float, ml: float, dv: float) -> None:
+        """Restore target fields that StereoDrive clears before the GoTo click."""
+        for control_id, requested in (
+            (AXIS_TARGET_AP_ID, ap),
+            (AXIS_TARGET_ML_ID, ml),
+            (AXIS_TARGET_DV_ID, dv),
+        ):
+            expected = f"{requested:.2f}"
+            actual = self._get_text(self._control_handle(control_id))
+            if actual != expected:
+                self._set_edit_control_text(control_id, expected)
+
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
         actual_ap_text = self._get_text(self._control_handle(TARGET_AP_ID))
         actual_ml_text = self._get_text(self._control_handle(TARGET_ML_ID))
@@ -1446,6 +1458,9 @@ class StereoDriveController:
         if already_reached:
             return
         time.sleep(delay_seconds)
+        # DV is known to be transiently cleared by some StereoDrive builds.
+        # Re-arm the requested values immediately before issuing GoTo.
+        self._rearm_cleared_axis_targets(ap, ml, dv)
         self._click(GOTO_ID)
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
         self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
