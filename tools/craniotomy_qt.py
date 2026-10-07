@@ -228,7 +228,7 @@ class ProjectionWidget(QWidget):
         self.overlay_image: QImage | None = None
         self.overlay_calibration: dict[str, object] | None = None
         self.coordinate_mode_bregma = False
-        self.zoom_to_trajectory = True
+        self.zoom_level = 1.0
         self.setMinimumHeight(360)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -241,8 +241,8 @@ class ProjectionWidget(QWidget):
         self.coordinate_mode_bregma = enabled
         self.update()
 
-    def set_zoom_to_trajectory(self, enabled: bool) -> None:
-        self.zoom_to_trajectory = enabled
+    def set_zoom_level(self, level: float) -> None:
+        self.zoom_level = max(0.0, min(1.0, level))
         self.update()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
@@ -352,9 +352,8 @@ class ProjectionWidget(QWidget):
 
         xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
         ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
-        if (not self.zoom_to_trajectory or not xs) and self.overlay_image is not None and self.overlay_calibration:
-            xs = []
-            ys = []
+        overlay_bounds = None
+        if self.overlay_image is not None and self.overlay_calibration:
             bregma = self.overlay_calibration.get("bregma_pixel")
             lambda_pixel = self.overlay_calibration.get("lambda_pixel")
             distance_mm = float(self.overlay_calibration.get("bregma_to_lambda_mm", 3.9))
@@ -362,8 +361,26 @@ class ProjectionWidget(QWidget):
                 pixel_distance = math.hypot(lambda_pixel[0] - bregma[0], lambda_pixel[1] - bregma[1])
                 if pixel_distance > 0:
                     mm_per_pixel = distance_mm / pixel_distance
-                    xs.extend((-bregma[0] * mm_per_pixel, (self.overlay_image.width() - bregma[0]) * mm_per_pixel))
-                    ys.extend((bregma[1] * mm_per_pixel, -(self.overlay_image.height() - bregma[1]) * mm_per_pixel))
+                    overlay_bounds = (
+                        -bregma[0] * mm_per_pixel,
+                        (self.overlay_image.width() - bregma[0]) * mm_per_pixel,
+                        -(self.overlay_image.height() - bregma[1]) * mm_per_pixel,
+                        bregma[1] * mm_per_pixel,
+                    )
+        if overlay_bounds is not None and (not xs or self.zoom_level < 1.0):
+            if not xs:
+                xs = [overlay_bounds[0], overlay_bounds[1]]
+                ys = [overlay_bounds[2], overlay_bounds[3]]
+            elif self.zoom_level < 1.0:
+                trajectory_bounds = (min(xs), max(xs), min(ys), max(ys))
+                xs = [
+                    overlay_bounds[0] + self.zoom_level * (trajectory_bounds[0] - overlay_bounds[0]),
+                    overlay_bounds[1] + self.zoom_level * (trajectory_bounds[1] - overlay_bounds[1]),
+                ]
+                ys = [
+                    overlay_bounds[2] + self.zoom_level * (trajectory_bounds[2] - overlay_bounds[2]),
+                    overlay_bounds[3] + self.zoom_level * (trajectory_bounds[3] - overlay_bounds[3]),
+                ]
         if self.current_point is not None:
             xs.append(self.current_point[0])
             ys.append(self.current_point[1])
@@ -3270,7 +3287,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
     def set_zoom_mode(self, index: int) -> None:
-        self.top_view.set_zoom_to_trajectory(index != 1)
+        self.top_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
