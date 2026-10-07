@@ -235,6 +235,7 @@ class ProjectionWidget(QWidget):
         self.view_focus_points: list[tuple[float, float]] | None = None
         self.navigation_enabled = False
         self.navigation_zoom = 1.0
+        self._minimum_navigation_zoom = 1.0
         self.navigation_pan = QPointF(0.0, 0.0)
         self._pan_anchor: QPointF | None = None
         self._pan_start = QPointF(0.0, 0.0)
@@ -331,7 +332,12 @@ class ProjectionWidget(QWidget):
     def wheelEvent(self, event) -> None:  # noqa: N802
         if self.navigation_enabled and event.angleDelta().y():
             steps = event.angleDelta().y() / 120.0
-            self.navigation_zoom = max(1.0, min(20.0, self.navigation_zoom * (1.25 ** steps)))
+            minimum_zoom = self._minimum_navigation_zoom
+            self.navigation_zoom = max(minimum_zoom, min(20.0, self.navigation_zoom * (1.25 ** steps)))
+            # At the fully zoomed-out limit show the complete skull, rather
+            # than a panned crop of it.
+            if self.navigation_zoom <= minimum_zoom + 1e-6:
+                self.navigation_pan = QPointF(0.0, 0.0)
             self.update()
             event.accept()
             return
@@ -472,9 +478,23 @@ class ProjectionWidget(QWidget):
 
         span_x = max_x - min_x
         span_y = max_y - min_y
-        uniform_span = max(span_x, span_y) * 1.3 / self.navigation_zoom
-        cx = (min_x + max_x) / 2.0 + self.navigation_pan.x()
-        cy = (min_y + max_y) / 2.0 + self.navigation_pan.y()
+        base_uniform_span = max(span_x, span_y) * 1.3
+        base_cx = (min_x + max_x) / 2.0
+        base_cy = (min_y + max_y) / 2.0
+        self._minimum_navigation_zoom = 1.0
+        if overlay_bounds is not None:
+            overlay_min_x, overlay_max_x, overlay_min_y, overlay_max_y = overlay_bounds
+            full_skull_span = 2.0 * max(
+                abs(overlay_min_x - base_cx),
+                abs(overlay_max_x - base_cx),
+                abs(overlay_min_y - base_cy),
+                abs(overlay_max_y - base_cy),
+            )
+            if full_skull_span > 0:
+                self._minimum_navigation_zoom = min(1.0, base_uniform_span / full_skull_span)
+        uniform_span = base_uniform_span / self.navigation_zoom
+        cx = base_cx + self.navigation_pan.x()
+        cy = base_cy + self.navigation_pan.y()
         min_x = cx - uniform_span / 2.0
         max_x = cx + uniform_span / 2.0
         min_y = cy - uniform_span / 2.0
