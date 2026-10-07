@@ -1427,6 +1427,21 @@ class StereoDriveController:
             if actual != expected:
                 self._set_edit_control_text(control_id, expected)
 
+    def rearm_axis_dv_and_goto_if_needed(self, dv: float) -> bool:
+        """Re-enter a missing Axis DV target and reissue GoTo; return whether it was reissued."""
+        text = self._get_text(self._control_handle(AXIS_TARGET_DV_ID))
+        try:
+            target_is_present = abs(float(text.replace(",", ".")) - dv) <= 0.005
+        except ValueError:
+            target_is_present = False
+        if target_is_present:
+            return False
+        self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
+        self._click(GOTO_ID)
+        self.confirm_below_skull_warning(timeout_seconds=0.25, poll_seconds=0.02)
+        self.confirm_no_actual_movement_dialog(timeout_seconds=0.25, poll_seconds=0.02)
+        return True
+
     def _verify_target_position(self, ap: float, ml: float, dv: float) -> None:
         actual_ap_text = self._get_text(self._control_handle(TARGET_AP_ID))
         actual_ml_text = self._get_text(self._control_handle(TARGET_ML_ID))

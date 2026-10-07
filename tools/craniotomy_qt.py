@@ -3456,6 +3456,7 @@ class CraniotomyWindow(QMainWindow):
                         progress_state["message"] = stage_messages[target_index]
                     self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
                     deadline = time.monotonic() + 60.0
+                    last_dv_rearm_at = 0.0
                     while time.monotonic() < deadline:
                         if cancelled.is_set():
                             raise StereoDriveError("Movement cancelled.")
@@ -3464,6 +3465,12 @@ class CraniotomyWindow(QMainWindow):
                         self.validation_move_position_signal.emit(current_axis)
                         if all(abs(current - target) <= 0.03 for current, target in zip(current_axis, target_axis)):
                             break
+                        if (
+                            target_index == len(target_axes) - 1
+                            and time.monotonic() - last_dv_rearm_at >= 0.5
+                        ):
+                            self.controller.rearm_axis_dv_and_goto_if_needed(target_axis[2])
+                            last_dv_rearm_at = time.monotonic()
                         time.sleep(0.05)
                     else:
                         raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
