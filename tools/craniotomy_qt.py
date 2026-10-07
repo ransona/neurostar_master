@@ -1111,6 +1111,7 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.location_double_clicked.connect(self.move_to_map_location)
+        self.top_view.set_navigation_enabled(True)
         self.top_view.setMinimumSize(420, 420)
         self.top_view.setMaximumWidth(620)
         map_layout = QVBoxLayout()
@@ -3948,6 +3949,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
     def set_zoom_mode(self, index: int) -> None:
+        self.top_view.reset_navigation()
         self.top_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
         self.redraw_views()
 
