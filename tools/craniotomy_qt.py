@@ -1,6 +1,7 @@
 import math
 import ctypes
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -627,6 +628,7 @@ class CraniotomyWindow(QMainWindow):
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
+        self.restore_saved_window_geometry()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
         QTimer.singleShot(250, self.update_syringe_position_from_scale)
@@ -649,6 +651,10 @@ class CraniotomyWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
+            self.window_geometry = {
+                "x": self.x(), "y": self.y(),
+                "width": self.width(), "height": self.height(),
+            }
             self._save_last_used_configs()
             self._save_general_settings()
         except Exception:
@@ -1214,6 +1220,9 @@ class CraniotomyWindow(QMainWindow):
         benchmark_btn = QPushButton("Benchmark Axis Moves")
         benchmark_btn.clicked.connect(self.start_axis_benchmark)
         scan_layout.addWidget(benchmark_btn)
+        update_btn = QPushButton("Update from GitHub (discard local changes)")
+        update_btn.clicked.connect(self.update_from_github)
+        scan_layout.addWidget(update_btn)
         self.stereodrive_scan_output = QPlainTextEdit()
         self.stereodrive_scan_output.setPlaceholderText("Scan results will appear here for copying into chat.")
         scan_layout.addWidget(self.stereodrive_scan_output, 1)
@@ -1231,6 +1240,26 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             self.stereodrive_scan_output.setPlainText(f"Scan failed: {exc}")
             self.set_status("StereoDrive control scan failed.")
+
+    def update_from_github(self) -> None:
+        answer = QMessageBox.warning(
+            self,
+            "Discard Local Changes?",
+            "This will fetch origin/main and discard all local tracked and untracked changes. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        repo_dir = Path(__file__).resolve().parents[1]
+        try:
+            subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=True, capture_output=True, text=True)
+            QMessageBox.information(self, "Update Complete", "The repository was updated to origin/main. Restart the app to use the new version.")
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            QMessageBox.critical(self, "Update Failed", detail)
 
     def _movement_key_sequence_changed(self, name: str, sequence: QKeySequence) -> None:
         if not sequence.isEmpty():
@@ -1305,6 +1334,7 @@ class CraniotomyWindow(QMainWindow):
             "bregma_axis": self.bregma_axis,
             "anchor_axis": self.anchor_axis,
             "anchor_bregma": self.anchor_bregma,
+            "window_geometry": getattr(self, "window_geometry", None),
         }
         self._write_config_file(self._general_settings_path(), payload)
 
@@ -1333,10 +1363,19 @@ class CraniotomyWindow(QMainWindow):
                 value = payload.get(name)
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
+            self.window_geometry = payload.get("window_geometry")
             self.update_coordinate_mode_buttons()
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             self.set_status(f"Could not read settings from {path}")
 
+    def restore_saved_window_geometry(self) -> None:
+        geometry = getattr(self, "window_geometry", None)
+        if not isinstance(geometry, dict):
+            return
+        try:
+            self.setGeometry(int(geometry["x"]), int(geometry["y"]), int(geometry["width"]), int(geometry["height"]))
+        except (KeyError, TypeError, ValueError):
+            return
     def reset_movement_key_bindings(self) -> None:
         for name, key in {
             "ml_left": Qt.Key.Key_Left,
