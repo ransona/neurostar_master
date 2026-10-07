@@ -1663,6 +1663,8 @@ class CraniotomyWindow(QMainWindow):
             else:
                 self.syringe_position_nl = max(0.0, float(value_nl))
             position_nl = self.syringe_position_nl
+        if not hasattr(self, "syringe_position_label") or not hasattr(self, "plunger_gauge"):
+            return
         if position_nl is None:
             self.syringe_position_label.setText("Syringe position = -- nl")
             self.plunger_gauge.set_position(None)
