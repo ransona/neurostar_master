@@ -815,6 +815,7 @@ class CraniotomyWindow(QMainWindow):
         self.validation_clearance_mm = 0.5
         self.home_axis: tuple[float, float, float] | None = None
         self.work_axis: tuple[float, float, float] | None = None
+        self._cancelled_nudge_direction: tuple[str, bool] | None = None
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
         self.anchor_bregma: tuple[float, float, float] | None = None
@@ -1654,6 +1655,7 @@ class CraniotomyWindow(QMainWindow):
             or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
             or self.validation_move_active
             or self.validation_modal_active
+            or self.controller.has_active_motion()
         )
 
     def _require_idle(self, title: str = "Movement") -> bool:
@@ -2473,7 +2475,7 @@ class CraniotomyWindow(QMainWindow):
                 if self.nudge_all_sites_active and axis in {"AP", "ML"}:
                     self.nudge_all_injection_sites(axis, positive, label)
                     return True
-                self.keyboard_nudge(axis, positive, label)
+                self.keyboard_nudge(axis, positive, label, auto_repeat=event.isAutoRepeat())
                 return True
         return super().eventFilter(watched, event)
 
@@ -2496,12 +2498,25 @@ class CraniotomyWindow(QMainWindow):
         self.update_move_speed_label()
         self.set_status(f"Move speed set to {self.move_speed_step_mm:g} mm")
 
-    def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
-        if self._motion_is_active() and not self.validation_modal_active:
-            return
+    def keyboard_nudge(self, axis: str, positive: bool, label: str, *, auto_repeat: bool = False) -> None:
         if self._focus_is_editable():
             return
         try:
+            if auto_repeat and self._cancelled_nudge_direction == (axis, positive):
+                return
+            if not auto_repeat:
+                self._cancelled_nudge_direction = None
+            direction = self.controller.get_motion_direction(axis)
+            if direction is not None:
+                if direction != positive:
+                    self._cancelled_nudge_direction = (axis, positive)
+                    self.stop_motion()
+                    self.controller.wait_until_stopped()
+                    self.set_status("Opposite-direction request stopped movement. Release and press again to move.")
+                # Neither queue a repeated nudge nor execute the reversal.
+                return
+            if self._motion_is_active() and not self.validation_modal_active:
+                return
             self.controller.prepare_motion()
             self.update_move_speed_label()
             self.controller.set_nudge_step(axis, self.move_speed_step_mm)
@@ -3920,6 +3935,9 @@ class CraniotomyWindow(QMainWindow):
         result = {"action": "cancel"}
 
         def choose(action: str) -> None:
+            if action == "validate" and self.controller.has_active_motion():
+                self.set_status("Wait for the current nudge to finish, or cancel it, before validating the surface.")
+                return
             result["action"] = action
             dialog.accept()
 
@@ -3932,6 +3950,9 @@ class CraniotomyWindow(QMainWindow):
             dialog.exec()
         finally:
             self.validation_modal_active = False
+            if self.controller.has_active_motion():
+                self.stop_motion()
+                self.controller.wait_until_stopped()
         return str(result["action"]), dialog
 
     def _next_validation_index(self, index: int, validate_all_sites: bool) -> int | None:

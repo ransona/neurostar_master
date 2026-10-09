@@ -146,10 +146,22 @@ class StereoDriveError(RuntimeError):
     pass
 
 
+@dataclass
+class AxisMotion:
+    target: float
+    positive: bool
+    tolerance: float
+    last_position: float
+    unchanged_since: float
+    allow_settled: bool = False
+
+
 class StereoDriveController:
     def __init__(self) -> None:
         self._motion_cancelled = threading.Event()
         self._motion_lock = threading.RLock()
+        self._active_axis_motion: dict[str, AxisMotion] = {}
+        self._nudge_steps: dict[str, float] = {}
         self.main_hwnd = self._find_main_window()
         self._active_injectomate_trigger_control_id: int | None = None
 
@@ -1085,6 +1097,7 @@ class StereoDriveController:
         actual = self._combo_selected_text(step_id)
         if actual != label:
             raise StereoDriveError(f"Failed to set {axis.upper()} nudge step to {label}. Got '{actual}'.")
+        self._nudge_steps[axis.upper()] = step_mm
 
     def _format_step_label(self, step_mm: float) -> str:
         if step_mm >= 1.0 and float(step_mm).is_integer():
@@ -1101,9 +1114,68 @@ class StereoDriveController:
             return candidates[-1]
         return NUDGE_STEP_OPTIONS_MM[0]
 
-    def nudge_axis(self, axis: str, positive: bool) -> None:
+    def nudge_axis(self, axis: str, positive: bool, *, motion_target: float | None = None,
+                   motion_tolerance: float = 0.003) -> None:
+        self._check_motion_cancelled()
+        axis = axis.upper()
         negative_button_id, positive_button_id = self._axis_button_ids(axis)
-        self._motion_click(positive_button_id if positive else negative_button_id)
+        current = self.get_current_axis(axis)
+        step_mm = self._nudge_steps.get(axis)
+        if step_mm is None:
+            _current_id, step_id, _positive_id = self._axis_ids(axis)
+            step_mm = float(self._combo_selected_text(step_id).replace("mm", "").strip().replace(",", "."))
+        with self._motion_lock:
+            self._check_motion_cancelled()
+            target = current + (step_mm if positive else -step_mm) if motion_target is None else motion_target
+            tolerance = min(0.003, step_mm / 4.0) if motion_target is None else motion_tolerance
+            self._record_axis_motion(axis, target, current, tolerance,
+                                     allow_settled=motion_target is None and step_mm <= 0.005)
+            self._motion_click(positive_button_id if positive else negative_button_id)
+
+    def _record_axis_motion(self, axis: str, target: float, current: float,
+                            tolerance: float = 0.02, allow_settled: bool = False) -> None:
+        """Track the requested mechanical direction, including asynchronous nudges."""
+        with self._motion_lock:
+            self._check_motion_cancelled()
+            if abs(target - current) <= tolerance:
+                self._active_axis_motion.pop(axis, None)
+            else:
+                self._active_axis_motion[axis] = AxisMotion(
+                    target, target > current, tolerance, current, time.monotonic(), allow_settled)
+
+    def get_motion_direction(self, axis: str) -> bool | None:
+        """Return a pending Axis direction; None means no observed/requested move."""
+        axis = axis.upper()
+        with self._motion_lock:
+            state = self._active_axis_motion.get(axis)
+        if state is None:
+            return None
+        try:
+            current = self.get_current_axis(axis)
+        except Exception:
+            return state.positive
+        with self._motion_lock:
+            latest = self._active_axis_motion.get(axis)
+            if latest is not state:
+                return None if latest is None else latest.positive
+            if abs(current - state.target) <= state.tolerance:
+                self._active_axis_motion.pop(axis, None)
+                return None
+            if abs(current - state.last_position) > 0.0001:
+                state.last_position = current
+                state.unchanged_since = time.monotonic()
+            elif state.allow_settled and time.monotonic() - state.unchanged_since >= 1.0:
+                # Tiny nudges can be below the displayed readout resolution.
+                # Stable readings release manual-control ownership without
+                # claiming that the precise target was reached.
+                self._active_axis_motion.pop(axis, None)
+                return None
+            return state.positive
+
+    def has_active_motion(self) -> bool:
+        with self._motion_lock:
+            axes = list(self._active_axis_motion)
+        return any(self.get_motion_direction(axis) is not None for axis in axes)
 
     def prepare_motion(self) -> None:
         """Start a new GUI-owned operation after the previous worker has stopped."""
@@ -1163,7 +1235,7 @@ class StereoDriveController:
                 active_step = chosen_step
             positive = diff > 0
             self._check_motion_cancelled(stop_requested)
-            self.nudge_axis(axis, positive)
+            self.nudge_axis(axis, positive, motion_target=target, motion_tolerance=tolerance)
             if axis.upper() == "DV" and positive:
                 self.confirm_below_skull_warning(timeout_seconds=0.05, poll_seconds=0.01)
             if status_callback is not None:
@@ -1320,7 +1392,8 @@ class StereoDriveController:
             if previous_step is None or not abs(previous_step - chosen_step) < 1e-9:
                 self.set_nudge_step(axis, chosen_step)
                 active_steps[axis] = chosen_step
-            self.nudge_axis(axis, directions[axis])
+            self.nudge_axis(axis, directions[axis], motion_target=ap if axis == "AP" else ml,
+                            motion_tolerance=tolerance)
             moved_counts[axis] += 1
             if status_callback is not None:
                 status_callback(
@@ -1382,7 +1455,8 @@ class StereoDriveController:
                 active_steps[axis] = chosen_step
             if not moved_axes[axis]:
                 move_directions[axis] = diff > 0
-            self.nudge_axis(axis, move_directions[axis])
+            self.nudge_axis(axis, move_directions[axis], motion_target=ap if axis == "AP" else ml,
+                            motion_tolerance=tolerance)
             moved_axes[axis] = True
             if status_callback is not None:
                 status_callback(f"Nudging XY toward [{ap:.3f}, {ml:.3f}]")
@@ -1522,6 +1596,9 @@ class StereoDriveController:
         self._check_motion_cancelled(stop_requested)
         if self._axis_position_matches(ap, ml, dv):
             return
+        current = self.get_current_axis_position()
+        for axis, target, value in zip(("AP", "ML", "DV"), (ap, ml, dv), current):
+            self._record_axis_motion(axis, target, value)
         already_reached = self.set_axis_target_position(ap, ml, dv, stop_requested)
         if already_reached:
             return
@@ -1599,6 +1676,7 @@ class StereoDriveController:
         self._motion_cancelled.set()
         with self._motion_lock:
             self._click(STOP_ID)
+            self._active_axis_motion.clear()
 
     def wait_until_stopped(self, timeout_seconds: float = 5.0) -> None:
         """Confirm stable mechanical readings after a Stop command."""

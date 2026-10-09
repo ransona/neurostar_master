@@ -87,6 +87,7 @@ class SimController(controller.StereoDriveController):
         self.history = []
         self.overshoot_once = False
         self.stalled_dv_once = False
+        self.defer_motion = False
 
     def _control_handle(self, control_id, **kwargs):
         return control_id
@@ -106,19 +107,20 @@ class SimController(controller.StereoDriveController):
 
     def set_nudge_step(self, axis, step):
         self.steps[axis] = step
+        self._nudge_steps[axis] = step
 
     def _click(self, control_id):
         self.clicks.append(control_id)
         buttons = {1102: (0, 1), 1103: (0, -1), 1105: (1, 1),
                    1104: (1, -1), 1107: (2, 1), 1106: (2, -1)}
-        if control_id in buttons:
+        if control_id in buttons and not self.defer_motion:
             index, direction = buttons[control_id]
             distance = self.steps[("AP", "ML", "DV")[index]]
             if self.overshoot_once:
                 distance += 0.01
                 self.overshoot_once = False
             self.position[index] += direction * distance
-        elif control_id == controller.GOTO_ID:
+        elif control_id == controller.GOTO_ID and not self.defer_motion:
             for index, field in enumerate((1141, 1142, 1143)):
                 if self.stalled_dv_once and index == 2:
                     self.fields[field] = ""
@@ -149,6 +151,8 @@ def window():
     w.validation_move_cancel_callback = None
     w.nudge_all_sites_active = False
     w.move_speed_step_mm = 0.05
+    w._cancelled_nudge_direction = None
+    w._focus_is_editable = lambda: False
     w.quick_locations = {}
     w.injection_stop_requested = threading.Event()
     w.injection_pause_requested = threading.Event()
@@ -159,6 +163,8 @@ def window():
                  "active_injection_site_signal", "status_signal", "injection_progress_signal"):
         setattr(w, name, Mock())
     w.set_status = Mock()
+    w.update_move_speed_label = Mock()
+    w.refresh_live_position = Mock()
     return w
 
 
@@ -174,6 +180,30 @@ class MechanicalMovementTests(unittest.TestCase):
         self.assertEqual(self.c.get_current_axis_position(), (30., 31., 19.))
         self.assertEqual(self.c.get_current_axis("DV"), 19.)
         self.assertEqual(self.c.get_current_position(), (1., 1., 1.))
+
+    def test_pending_nudge_direction_tracks_mechanical_axis(self):
+        self.c.defer_motion = True
+        self.c.set_nudge_step("ML", .5)
+        self.c.nudge_axis("ML", True)
+        self.assertIs(self.c.get_motion_direction("ML"), True)
+        self.assertTrue(self.c.has_active_motion())
+        self.c.position[1] = 31.5
+        self.assertIsNone(self.c.get_motion_direction("ML"))
+        self.assertFalse(self.c.has_active_motion())
+
+    def test_fine_move_tracks_full_goal_between_nudge_steps(self):
+        directions = []
+        self.c.move_axis_to_target("DV", 21., step_mm=1.,
+            status_callback=lambda message: directions.append(self.c.get_motion_direction("DV")))
+        self.assertEqual(directions, [True, None])
+        self.assertFalse(self.c.has_active_motion())
+
+    def test_goto_directions_include_pending_target_entry(self):
+        self.c.defer_motion = True
+        self.c.goto_axis_position(32., 29., 18.)
+        self.assertIs(self.c.get_motion_direction("AP"), True)
+        self.assertIs(self.c.get_motion_direction("ML"), False)
+        self.assertIs(self.c.get_motion_direction("DV"), False)
 
     def test_fine_dv_targets_mechanical_axis(self):
         self.c.move_axis_to_target("DV", 19.5)
@@ -481,6 +511,47 @@ class GuiCoordinateTests(unittest.TestCase):
         self.w.refresh_live_position = Mock()
         self.w.keyboard_nudge("DV", True, "Down")
         self.assertAlmostEqual(self.w.controller.position[2], 19.05)
+
+    def test_opposite_direction_cancels_pending_nudge_without_reversing(self):
+        self.w.controller.defer_motion = True
+        self.w.controller.set_nudge_step("ML", .5)
+        self.w.controller.nudge_axis("ML", True)
+        self.w.controller.wait_until_stopped = Mock()
+        self.w.keyboard_nudge("ML", False, "ML left")
+        self.assertEqual(self.w.controller.clicks, [1105, controller.STOP_ID])
+        self.assertTrue(self.w.controller._motion_cancelled.is_set())
+        self.assertTrue(self.w.controller.wait_until_stopped.called)
+
+    def test_reverse_key_repeat_cannot_restart_cancelled_move(self):
+        self.w.controller.defer_motion = True
+        self.w.controller.set_nudge_step("DV", .5)
+        self.w.controller.nudge_axis("DV", True)
+        self.w.controller.wait_until_stopped = Mock()
+        self.w.keyboard_nudge("DV", False, "DV up")
+        before = list(self.w.controller.clicks)
+        self.w.keyboard_nudge("DV", False, "DV up", auto_repeat=True)
+        self.assertEqual(self.w.controller.clicks, before)
+        self.w.keyboard_nudge("DV", False, "DV up", auto_repeat=False)
+        self.assertEqual(self.w.controller.clicks[-1], 1106)
+
+    def test_same_direction_does_not_queue_another_pending_nudge(self):
+        self.w.controller.defer_motion = True
+        self.w.controller.set_nudge_step("AP", .5)
+        self.w.controller.nudge_axis("AP", True)
+        self.w.keyboard_nudge("AP", True, "AP anterior")
+        self.assertEqual(self.w.controller.clicks, [1102])
+
+    def test_opposite_request_cancels_automated_goto_and_injection(self):
+        self.w.controller.defer_motion = True
+        self.w.injection_thread = Mock(is_alive=lambda: True)
+        self.w.controller.stop_injectomate_motion = Mock()
+        self.w.controller.wait_until_stopped = Mock()
+        with patch.object(controller, "time", Clock()):
+            self.w.controller.goto_axis_position(32., 31., 19.)
+        self.w.keyboard_nudge("AP", False, "AP posterior")
+        self.assertTrue(self.w.injection_stop_requested.is_set())
+        self.assertTrue(self.w.controller.stop_injectomate_motion.called)
+        self.assertEqual(self.w.controller.clicks, [controller.GOTO_ID, controller.STOP_ID])
 
     def test_global_stop_cancels_both_workers_and_hardware(self):
         self.w.injection_thread = Mock(is_alive=lambda: True)

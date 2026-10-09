@@ -125,7 +125,9 @@ Every user-initiated navigation action shows a cancellable moving dialog with li
 
 The top **Stop** cancels both drilling and injection workers and stops the manipulator and any running injection. Injection **Stop** also stops manipulator travel. Cancellation remains latched through target entry, GoTo delays, and retries, so a cancelled worker cannot issue a later GoTo. Moving dialogs confirm stable Axis readouts after stopping. Closing during an operation requests Stop and waits for its worker to finish; if it cannot confirm stopping, the window stays open.
 
-One motor operation runs at a time. Navigation, benchmarks, probes, keyboard motor nudges, and reference changes are blocked during an active procedure. During the stationary site-validation dialog, normal movement and movement-step shortcuts remain available. Editable text/shortcut fields do not trigger motor shortcuts.
+One motor operation runs at a time. New navigation, benchmarks, probes, and reference changes are blocked during an active procedure. During the stationary site-validation dialog, normal movement and movement-step shortcuts remain available. Editable text/shortcut fields do not trigger motor shortcuts.
+
+An opposite-direction movement key on an actively moving axis cancels that movement (and its running procedure), without executing the requested reversal. For example, press Left while ML is moving right, or Page Up while DV is moving down. Release and press again after stopping to move in the new direction; held-key repeats cannot restart the cancelled move. Requests in the same direction are not queued while the nudge is still in progress. Other new motor nudges remain blocked during a procedure.
 
 ### Saved Go to positions
 
@@ -290,6 +292,8 @@ For a round:
 3. At each point it moves to surface + current round depth.
 4. Frozen points are skipped.
 5. At the end of the round it returns above the center.
+
+Frozen perimeter segments are shown in blue with a line three times thicker than the normal perimeter line.
 
 After a round:
 
