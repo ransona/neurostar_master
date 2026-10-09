@@ -28,14 +28,23 @@ with patch.object(ctypes, "WinDLL", return_value=Mock(), create=True), \
     spec.loader.exec_module(controller)
 
 
+def point(x=0.0, y=None):
+    if y is None and hasattr(x, "x"):
+        x, y = x.x(), x.y()
+    y = 0.0 if y is None else y
+    return SimpleNamespace(x=lambda: x, y=lambda: y)
+
+
 def load_gui():
     path = ROOT / "tools/craniotomy_qt.py"
     tree = ast.parse(path.read_text())
-    classes = {"CraniotomyWindow", "SeedPoint", "StoredLocation", "InjectionSite", "InjectionProtocolSettings", "CraniotomyConfig"}
+    classes = {"ProjectionWidget", "CraniotomyWindow", "SeedPoint", "StoredLocation", "InjectionSite", "InjectionProtocolSettings", "CraniotomyConfig"}
     nodes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in classes]
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)] + nodes,
                         type_ignores=[])
-    namespace = dict(dataclass=dataclass, QMainWindow=object, Signal=lambda *args: Mock(),
+    widget = type("Widget", (), {name: lambda *args: None for name in
+                  ("mousePressEvent", "mouseReleaseEvent", "mouseMoveEvent", "mouseDoubleClickEvent")})
+    namespace = dict(dataclass=dataclass, QMainWindow=object, QWidget=widget, QPointF=point, Signal=lambda *args: Mock(),
                      StereoDriveError=controller.StereoDriveError, math=math, threading=threading,
                      time=time, Path=Path, QMessageBox=Mock(Yes=1, No=0, Cancel=2),
                      QApplication=Mock(), Qt=Mock(), DEFAULT_INJECTION_VOLUME_NL=100,
@@ -266,6 +275,39 @@ class GuiCoordinateTests(unittest.TestCase):
         self.assertEqual((site.ap, site.ml), (1., 2.))
         self.assertAlmostEqual(site.dv, .2)
 
+    def test_map_click_adds_unvalidated_bregma_site_without_moving(self):
+        self.w.add_sites_on_map_checkbox = Mock(isChecked=lambda: True)
+        self.w.refresh_injection_sites_list = Mock()
+        self.w.injection_sites_list = Mock()
+        self.w._autosave_project_session = Mock()
+        self.w.add_injection_site_from_map(2., 1.)
+        self.assertEqual(self.w.injection_sites, [Site(1., 2., None, True)])
+        self.assertEqual(self.w.controller.clicks, [])
+        self.assertTrue(self.w._autosave_project_session.called)
+
+    def test_axis_map_click_is_stored_relative_to_gui_bregma(self):
+        self.w.coordinate_mode = "axis"
+        self.w.add_sites_on_map_checkbox = Mock(isChecked=lambda: True)
+        self.w.refresh_injection_sites_list = Mock()
+        self.w.injection_sites_list = Mock()
+        self.w._autosave_project_session = Mock()
+        self.w.add_injection_site_from_map(33., 31.)
+        self.assertEqual(self.w.injection_sites, [Site(1., 2., None, True)])
+
+    def test_busy_operation_blocks_map_site_placement(self):
+        self.w.add_sites_on_map_checkbox = Mock(isChecked=lambda: True)
+        self.w.injection_thread = Mock(is_alive=lambda: True)
+        self.w.add_injection_site_from_map(2., 1.)
+        self.assertEqual(self.w.injection_sites, [])
+
+    def test_map_placement_requires_gui_bregma(self):
+        self.w.bregma_axis = None
+        self.w.add_sites_on_map_checkbox = Mock()
+        self.w.injection_sites_view = Mock()
+        self.w.set_add_sites_on_map(True)
+        self.w.add_sites_on_map_checkbox.setChecked.assert_called_once_with(False)
+        self.w.injection_sites_view.set_add_site_mode.assert_called_once_with(False)
+
     def test_quick_positions_are_mode_independent(self):
         self.w.coordinate_mode = "axis"
         self.w.controller.position = [31., 33., 19.2]
@@ -471,6 +513,70 @@ class GuiCoordinateTests(unittest.TestCase):
 
     def test_invalid_restored_origin_is_rejected(self):
         self.assertIsNone(self.w._session_axis([30., 31., float("nan")]))
+
+
+class MapInteractionTests(unittest.TestCase):
+    def setUp(self):
+        self.view = GUI["ProjectionWidget"].__new__(GUI["ProjectionWidget"])
+        self.view._coordinate_bounds = (-2., 2., -4., 4.)
+        self.view._draw_rect = SimpleNamespace(left=lambda: 50., top=lambda: 24., width=lambda: 200.,
+            height=lambda: 200., contains=lambda p: 50. <= p.x() <= 250. and 24. <= p.y() <= 224.)
+        self.view.invert_y = False
+        self.view.add_site_mode = True
+        self.view.navigation_enabled = True
+        self.view.freeze_mode = self.view.unfreeze_mode = False
+        self.view.navigation_pan = point(0., 0.)
+        self.view._pan_anchor = None
+        self.view._pan_dragged = False
+        self.view.location_clicked = Mock()
+        self.view.location_double_clicked = Mock()
+        self.view.setCursor = Mock()
+        self.view.update = Mock()
+
+    def event(self, x=200., y=74.):
+        return Mock(button=lambda: GUI["Qt"].LeftButton, position=lambda: point(x, y))
+
+    def test_single_click_uses_actual_map_rectangle(self):
+        event = self.event()
+        self.view.mousePressEvent(event)
+        self.view.mouseReleaseEvent(event)
+        self.view.location_clicked.emit.assert_called_once_with(1., 2.)
+        self.assertFalse(self.view.location_double_clicked.emit.called)
+
+    def test_drag_pans_without_adding(self):
+        self.view.mousePressEvent(self.event(100., 100.))
+        with patch.object(GUI["QApplication"], "startDragDistance", return_value=10):
+            self.view.mouseMoveEvent(self.event(120., 110.))
+        self.view.mouseReleaseEvent(self.event(120., 110.))
+        self.assertFalse(self.view.location_clicked.emit.called)
+        self.assertAlmostEqual(self.view.navigation_pan.x(), -.4)
+        self.assertAlmostEqual(self.view.navigation_pan.y(), .4)
+
+    def test_double_click_in_placement_mode_adds_once_and_never_moves(self):
+        event = self.event()
+        self.view.mousePressEvent(event)
+        self.view.mouseReleaseEvent(event)
+        self.view.mouseDoubleClickEvent(event)
+        self.view.mouseReleaseEvent(event)
+        self.view.location_clicked.emit.assert_called_once_with(1., 2.)
+        self.assertFalse(self.view.location_double_clicked.emit.called)
+
+    def test_normal_double_click_uses_same_map_transform(self):
+        self.view.add_site_mode = False
+        self.view.mouseDoubleClickEvent(self.event())
+        self.view.location_double_clicked.emit.assert_called_once_with(1., 2.)
+        self.assertFalse(self.view.location_clicked.emit.called)
+
+    def test_outside_map_is_not_a_site(self):
+        event = self.event(20., 74.)
+        self.view.mousePressEvent(event)
+        self.view.mouseReleaseEvent(event)
+        self.assertFalse(self.view.location_clicked.emit.called)
+
+    def test_inverse_transform_respects_panned_bounds_and_y_direction(self):
+        self.view._coordinate_bounds = (8., 12., 6., 14.)
+        self.view.invert_y = True
+        self.assertEqual(self.view._position_to_coordinates(point(200., 74.)), (11., 8.))
 
 
 if __name__ == "__main__":

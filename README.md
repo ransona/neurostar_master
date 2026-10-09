@@ -447,6 +447,10 @@ Site capture always converts mechanical Axis readings to GUI Bregma coordinates.
 
 ### Grid sites and validation
 
+To place individual sites visually, enable **Add sites on map** below the Injection map, then single-click the desired locations. Each click adds a gray, unvalidated site with AP/ML in GUI Bregma coordinates and no surface DV. GUI Bregma must be set first; clicks in Axis display mode are converted back to GUI Bregma coordinates. Sites appear immediately on the map/list and are autosaved. Use **Validate Sites** to fine-tune them and capture their surfaces before injection.
+
+In this mode, clicks add sites without moving the tool, dragging still pans, and the mouse wheel still zooms. Double-clicks do not request movement or add a second site. Turn **Add sites on map** off to restore double-click-to-move behavior. Placement mode starts off when the app opens and is cleared by **Clear Project**.
+
 `Add Grid` creates a Bregma-centred AP/ML grid. The dialog accepts AP-site count, ML-site count, AP spacing, ML spacing, and recently used configurations. Grid sites intentionally have no surface DV and appear light gray until validated.
 
 `Save Site Set` saves Bregma AP/ML site targets. `Load Site Set` replaces the current list with the saved targets, deliberately marking all of them unvalidated so surface location can be rechecked for the current preparation.

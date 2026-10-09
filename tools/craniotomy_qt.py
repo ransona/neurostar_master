@@ -212,6 +212,7 @@ class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
     unfreeze_drawn = Signal(int)
     location_double_clicked = Signal(float, float)
+    location_clicked = Signal(float, float)
 
     def __init__(self, x_label: str, y_label: str, invert_y: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
@@ -235,10 +236,12 @@ class ProjectionWidget(QWidget):
         self.zoom_level = 1.0
         self.view_focus_points: list[tuple[float, float]] | None = None
         self.navigation_enabled = False
+        self.add_site_mode = False
         self.navigation_zoom = 1.0
         self._minimum_navigation_zoom = 1.0
         self.navigation_pan = QPointF(0.0, 0.0)
         self._pan_anchor: QPointF | None = None
+        self._pan_dragged = False
         self._pan_start = QPointF(0.0, 0.0)
         self._draw_rect: QRectF | None = None
         self.setMinimumHeight(360)
@@ -263,7 +266,25 @@ class ProjectionWidget(QWidget):
 
     def set_navigation_enabled(self, enabled: bool) -> None:
         self.navigation_enabled = enabled
-        self.setCursor(Qt.OpenHandCursor if enabled else Qt.ArrowCursor)
+        self._update_navigation_cursor()
+
+    def set_add_site_mode(self, enabled: bool) -> None:
+        self.add_site_mode = enabled
+        self._pan_anchor = None
+        self._update_navigation_cursor()
+
+    def _update_navigation_cursor(self) -> None:
+        self.setCursor(Qt.CrossCursor if self.add_site_mode else Qt.OpenHandCursor if self.navigation_enabled else Qt.ArrowCursor)
+
+    def _position_to_coordinates(self, position) -> tuple[float, float] | None:
+        if self._coordinate_bounds is None or self._draw_rect is None or not self._draw_rect.contains(position):
+            return None
+        min_x, max_x, min_y, max_y = self._coordinate_bounds
+        x_fraction = (position.x() - self._draw_rect.left()) / max(1.0, self._draw_rect.width())
+        y_fraction = (position.y() - self._draw_rect.top()) / max(1.0, self._draw_rect.height())
+        x = min_x + x_fraction * (max_x - min_x)
+        y = min_y + y_fraction * (max_y - min_y) if self.invert_y else max_y - y_fraction * (max_y - min_y)
+        return float(x), float(y)
 
     def reset_navigation(self) -> None:
         self.navigation_zoom = 1.0
@@ -316,16 +337,20 @@ class ProjectionWidget(QWidget):
             return
         if self.navigation_enabled and event.button() == Qt.LeftButton:
             self._pan_anchor = event.position()
+            self._pan_dragged = False
             self._pan_start = QPointF(self.navigation_pan)
-            self.setCursor(Qt.ClosedHandCursor)
+            self.setCursor(Qt.CrossCursor if self.add_site_mode else Qt.ClosedHandCursor)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._pan_anchor is not None and event.button() == Qt.LeftButton:
+            coordinates = self._position_to_coordinates(event.position()) if self.add_site_mode and not self._pan_dragged else None
             self._pan_anchor = None
-            self.setCursor(Qt.OpenHandCursor)
+            self._update_navigation_cursor()
+            if coordinates is not None:
+                self.location_clicked.emit(*coordinates)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -349,6 +374,11 @@ class ProjectionWidget(QWidget):
             min_x, max_x, min_y, max_y = self._coordinate_bounds
             dx = event.position().x() - self._pan_anchor.x()
             dy = event.position().y() - self._pan_anchor.y()
+            if not self._pan_dragged and abs(dx) + abs(dy) < QApplication.startDragDistance():
+                event.accept()
+                return
+            self._pan_dragged = True
+            self.setCursor(Qt.ClosedHandCursor)
             span_x = max_x - min_x
             span_y = max_y - min_y
             self.navigation_pan = QPointF(
@@ -369,12 +399,15 @@ class ProjectionWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        if self._coordinate_bounds is not None and event.button() == Qt.LeftButton:
-            min_x, max_x, min_y, max_y = self._coordinate_bounds
-            x = min_x + (event.position().x() - 24) / max(1.0, self.width() - 48) * (max_x - min_x)
-            normalized_y = (event.position().y() - 24) / max(1.0, self.height() - 48)
-            y = max_y - normalized_y * (max_y - min_y)
-            self.location_double_clicked.emit(float(x), float(y))
+        if event.button() == Qt.LeftButton:
+            # The first release already added the site. Consume the double
+            # click and following release without adding again or moving.
+            self._pan_anchor = None
+            self._update_navigation_cursor()
+            if not self.add_site_mode:
+                coordinates = self._position_to_coordinates(event.position())
+                if coordinates is not None:
+                    self.location_double_clicked.emit(*coordinates)
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -426,6 +459,7 @@ class ProjectionWidget(QWidget):
             and self.current_point is None
             and not overlay_visible
         ):
+            self._coordinate_bounds = None
             painter.setPen(QColor("#8b9a8d"))
             message = "No trajectory yet"
             if overlay_hidden_for_axis:
@@ -1414,6 +1448,7 @@ class CraniotomyWindow(QMainWindow):
         map_layout = QVBoxLayout(map_box)
         self.injection_sites_view = ProjectionWidget("ML", "AP")
         self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
+        self.injection_sites_view.location_clicked.connect(self.add_injection_site_from_map)
         self.injection_sites_view.set_navigation_enabled(True)
         self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
         self.injection_sites_view.set_overlay_image(self.top_view.overlay_image, self.top_view.overlay_calibration)
@@ -1436,6 +1471,13 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
         injection_map_controls.addWidget(self.injection_sites_zoom_combo)
         map_layout.addLayout(injection_map_controls)
+        self.add_sites_on_map_checkbox = QCheckBox("Add sites on map")
+        self.add_sites_on_map_checkbox.setToolTip(
+            "Click to add unvalidated injection sites without moving the tool. "
+            "Drag to pan and use the mouse wheel to zoom. Turn this off to double-click for movement."
+        )
+        self.add_sites_on_map_checkbox.toggled.connect(self.set_add_sites_on_map)
+        map_layout.addWidget(self.add_sites_on_map_checkbox)
         sites_outer_layout.addWidget(map_box, 1)
 
         sites_box = QGroupBox("Injection Sites")
@@ -3262,6 +3304,40 @@ class CraniotomyWindow(QMainWindow):
             self.refresh_injection_sites_list()
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+
+    def set_add_sites_on_map(self, enabled: bool) -> None:
+        if enabled:
+            try:
+                if not self._require_idle("Add Sites on Map"):
+                    raise StereoDriveError("Finish the current operation before adding sites on the map.")
+                self._require_project_coordinates("injection_sites")
+            except Exception as exc:
+                self.add_sites_on_map_checkbox.blockSignals(True)
+                self.add_sites_on_map_checkbox.setChecked(False)
+                self.add_sites_on_map_checkbox.blockSignals(False)
+                self.injection_sites_view.set_add_site_mode(False)
+                self.set_status(str(exc))
+                return
+        self.injection_sites_view.set_add_site_mode(enabled)
+        self.set_status("Click the injection map to add sites, then Validate Sites to set their surfaces."
+                        if enabled else "Map site adding disabled; double-click requests movement.")
+
+    def add_injection_site_from_map(self, ml: float, ap: float) -> None:
+        if not self.add_sites_on_map_checkbox.isChecked() or not self._require_idle("Add Injection Site"):
+            return
+        try:
+            self._require_project_coordinates("injection_sites")
+            if not math.isfinite(ap) or not math.isfinite(ml):
+                raise StereoDriveError("Injection-site coordinates must be finite numbers.")
+            if self.coordinate_mode == "axis":
+                ap, ml, _ = self._axis_to_bregma((ap, ml, self.bregma_axis[2]))
+            self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=None, generated=True))
+            self.refresh_injection_sites_list()
+            self.injection_sites_list.setCurrentRow(len(self.injection_sites) - 1)
+            self._autosave_project_session()
+            self.set_status(f"Added unvalidated site {len(self.injection_sites)}: Bregma AP {ap:.2f}, ML {ml:.2f}. Run Validate Sites.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Add Injection Site", str(exc))
 
     @staticmethod
     def _grid_config_label(config: dict[str, object]) -> str:
@@ -5188,6 +5264,7 @@ class CraniotomyWindow(QMainWindow):
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
         self.bregma_axis = None
+        self.add_sites_on_map_checkbox.setChecked(False)
         self.anchor_axis = None
         self.anchor_bregma = None
         self.coordinate_mode = "axis"
