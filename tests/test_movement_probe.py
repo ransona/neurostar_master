@@ -18,6 +18,14 @@ probe = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = probe
 spec.loader.exec_module(probe)
 
+# GUI formatting tests need no Tk installation/display.
+import ast
+gui_tree = ast.parse((Path(__file__).resolve().parents[1] / "tools/movement_probe/gui.py").read_text())
+gui_helpers = {"json": json}
+exec(compile(ast.Module(body=[node for node in gui_tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name in ("event_visible", "format_event")], type_ignores=[]),
+             "gui_helpers", "exec"), gui_helpers)
+
 
 class ProbeTests(unittest.TestCase):
     def setUp(self):
@@ -156,6 +164,37 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(call("/events"))
         call("/stop", {})
         self.assertFalse(call("/status")["armed"])
+        events = self.service.events
+        incoming = [row for row in events if row["event"] == "INCOMING_MOVE"]
+        self.assertEqual(incoming[0]["command"]["command_id"], "http")
+        self.assertIn("peer", incoming[0])
+        self.assertTrue(any(row["event"] == "HTTP_RESULT" and row["status"] == 401 for row in events))
+        self.assertNotIn("test-token", json.dumps(events))
+
+    def test_rejected_movement_is_visible_in_audit(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service, "secret"))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        payload = dict(command_id="bad", kind="relative", coordinates={"DV": .01}, password="do-not-log")
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/move",
+                                     data=json.dumps(payload).encode(), headers={"Authorization": "Bearer secret"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(req, timeout=2)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertTrue(any(row["event"] == "INCOMING_MOVE" for row in self.service.events))
+        self.assertTrue(any(row["event"] == "HTTP_RESULT" and row["status"] == 400 for row in self.service.events))
+        self.assertNotIn("do-not-log", json.dumps(self.service.events))
+
+    def test_gui_event_filter_keeps_commands_and_failures(self):
+        visible = gui_helpers["event_visible"]
+        self.assertFalse(visible(dict(event="HTTP_RESULT", endpoint="/heartbeat", status=200)))
+        self.assertTrue(visible(dict(event="HTTP_RESULT", endpoint="/heartbeat", status=400)))
+        self.assertTrue(visible(dict(event="HTTP_REQUEST", endpoint="/move")))
+        self.assertTrue(visible(dict(event="HTTP_REQUEST", endpoint="/status"), True))
+        row = dict(sequence=1, utc="2026-10-09T10:00:00+00:00", event="INCOMING_MOVE", command={"kind":"nudge"})
+        self.assertIn('"kind": "nudge"', gui_helpers["format_event"](row))
 
     def test_real_adapter_does_not_accept_skull_warning(self):
         class FakeNative:

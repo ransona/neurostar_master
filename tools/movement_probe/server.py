@@ -146,7 +146,7 @@ class ProbeService:
     def heartbeat(self):
         with self.lock:
             if not self.armed:
-                raise Rejected("Disarmed; a local operator must type ARM in the server console.")
+                raise Rejected("Disarmed; a local operator must use Arm in the server GUI (or console ARM).")
             if time.monotonic() - self.last_heartbeat > self.lease_seconds:
                 self.stop("Heartbeat expired")
                 raise Rejected("Heartbeat expired; local rearming required.")
@@ -358,6 +358,9 @@ def handler(service, token):
             pass  # Never print authentication headers.
 
         def reply(self, code, value):
+            service.log("HTTP_RESULT", peer=self.client_address[0],
+                        endpoint=self.path if self.path in ("/status", "/events", "/heartbeat", "/move", "/stop") else "<unknown>",
+                        status=code, error=value.get("error") if isinstance(value, dict) else None)
             data = json.dumps(value).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
@@ -375,6 +378,8 @@ def handler(service, token):
             if self.headers.get("Origin") is not None:
                 self.reply(403, {"error": "Browser requests prohibited"})
                 return
+            endpoint = self.path if self.path in ("/status", "/events", "/heartbeat", "/move", "/stop") else "<unknown>"
+            service.log("HTTP_REQUEST", peer=self.client_address[0], method=self.command, endpoint=endpoint)
             try:
                 if self.command == "GET" and self.path == "/status":
                     result = service.status()
@@ -388,6 +393,13 @@ def handler(service, token):
                     payload = json.loads(self.rfile.read(size))
                     if not isinstance(payload, dict):
                         raise Rejected("Expected JSON object.")
+                    if self.path == "/move":
+                        # Show only the movement schema, never arbitrary extra
+                        # headers/fields that could contain credentials.
+                        service.log("INCOMING_MOVE", peer=self.client_address[0],
+                                    command={key: payload[key] for key in
+                                             ("command_id", "kind", "method", "axis", "direction", "step_mm", "target_mm", "coordinates")
+                                             if key in payload})
                     if self.path == "/heartbeat":
                         service.heartbeat()
                         result = {"ok": True}
@@ -419,6 +431,7 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1", help="Use this computer's private LAN IP for remote agents; no public exposure.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--console", action="store_true", help="Legacy terminal UI instead of the default small GUI")
     parser.add_argument("--allow-dv", action="store_true", help="Local operator allows DV experiments in an empty/retracted workspace.")
     parser.add_argument("--radius-mm", type=float, default=0.1)
     parser.add_argument("--max-move-mm", type=float, default=0.05)
@@ -444,6 +457,10 @@ def main():
         server = ThreadingHTTPServer((args.bind, args.port), handler(service, token))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        if not args.console:
+            from gui import run_gui
+            run_gui(service, token, f"http://{args.bind}:{server.server_port}", log_path)
+            return
         print(f"URL: http://{args.bind}:{args.port}\nToken (keep private): {token}\nLog: {log_path}")
         print(json.dumps(service.status(), indent=2))
         print("DISARMED. Close the main controller GUI. No specimen; tool safely retracted; drill off.")

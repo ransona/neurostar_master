@@ -1,12 +1,14 @@
 # Supervised network movement probe
 
-A small, separate console application for an agent to request controlled
+A small, separate GUI application for an agent to request controlled
 StereoDrive movements while the operator records USB traffic. It reuses our
 Windows GUI-control adapter; it **does not capture USB, replace the USB driver,
 or replay/inject packets**. No PySide6 or third-party Python packages are needed.
 Use Python 3.10 or newer. Real operation requires Windows, StereoDrive running
 in the same interactive desktop session, and matching privilege levels (if
 StereoDrive is elevated, the server must be too).
+The GUI uses Tkinter, included in the standard Windows Python installer; ensure
+the installer component **tcl/tk and IDLE** is selected. No pip package is needed.
 
 Read [AGENTS.md](AGENTS.md) before allowing an agent to run experiments.
 This is a supervised bench diagnostic, **not an autonomous surgical controller**.
@@ -59,8 +61,15 @@ py -3 -B tools\movement_probe\server.py --simulate
 ```
 
 This uses fake positions and issues no hardware commands. Check this workflow
-before real experiments. The console prints a fresh token and starts DISARMED.
-In a second terminal, set the token locally (do not paste it into shared logs):
+before real experiments. The server opens a small window and starts DISARMED.
+It shows the server address, a masked private token with **Copy token**, the
+event log path, live Axis readings/bounds, heartbeat age, operation/target and
+errors. Its scrolling log shows incoming movement JSON, sender IP, accepted or
+rejected HTTP results, and measured arrivals. Status polling/successful heartbeat
+messages are hidden by default; tick **Show status polling / heartbeats** to
+display them too. All requests/results remain in the JSONL log.
+
+In a second terminal, set the copied token locally (do not paste it into shared logs):
 
 ```powershell
 $env:STEREODRIVE_PROBE_TOKEN = 'TOKEN_FROM_SERVER_CONSOLE'
@@ -68,8 +77,8 @@ py -3 -B tools\movement_probe\client.py status
 py -3 -B tools\movement_probe\client.py heartbeat --seconds 60
 ```
 
-While that heartbeat is running, the **human operator** types `ARM` in the
-server console. Initial heartbeat replies while disarmed are expected. Once
+While that heartbeat is running, the **human operator** clicks **Arm…** in the
+server window and confirms the safety checklist. Initial heartbeat replies while disarmed are expected. Once
 armed, use another terminal with the same token environment:
 
 ```powershell
@@ -84,7 +93,16 @@ operation is `completed` or `stopped`; accepting the HTTP request does not mean
 arrival. The heartbeat command expires after 60 seconds by default and requests
 Stop on exit. Explicit `/stop`, heartbeat loss (>3 seconds), motion timeout
 (15 seconds), safety/readout failure, or leaving the envelope disarms the app.
-There is no remote arm endpoint. Rearming requires the local console.
+There is no remote arm endpoint. Rearming requires the local operator window.
+**STOP / Disarm** or **Esc** requests Stop. Closing the window also stops and
+disarms the server. Do not hide/minimize the window during active experiments.
+If a read/Stop error appears, use the physical Stop if necessary.
+
+For terminal-only operation, add `--console`; the legacy `ARM`, `STOP`, `STATUS`
+and `QUIT` console commands remain available. To launch on Windows without an
+extra terminal window, use `pyw -3 tools\movement_probe\server.py` (or
+`pythonw.exe`) once the normal simulated launch has been verified. Use `py`,
+not `pyw`, for `--console` or startup troubleshooting.
 
 Only run one experiment and one heartbeat client at a time. A heartbeat is
 not permission to leave the apparatus unattended. Stop that process immediately
@@ -104,7 +122,7 @@ if agent supervision is lost; do not leave an orphan heartbeat process running.
    ```
 
 4. Check the startup Axis readings against StereoDrive and approve the bounds.
-   Start heartbeat; human types `ARM`. Begin with AP 0.01 mm out-and-back only.
+   Start heartbeat; human clicks **Arm…** and confirms. Begin with AP 0.01 mm out-and-back only.
 5. Check measured return in `/status` and visually. Stop, save the USB capture,
    and preserve the matching `.jsonl` log before testing another variable.
 6. DV experiments need a separate locally approved launch with `--allow-dv`.
