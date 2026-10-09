@@ -4,15 +4,15 @@ This repository contains a Windows Qt application for driving **StereoDrive** an
 
 The main GUI is:
 
-- [tools/craniotomy_qt.py](C:/code/repos/neurostar_master/tools/craniotomy_qt.py)
+- [tools/craniotomy_qt.py](tools/craniotomy_qt.py)
 
 The main Win32 automation/controller layer is:
 
-- [tools/stereodrive_controller.py](C:/code/repos/neurostar_master/tools/stereodrive_controller.py)
+- [tools/stereodrive_controller.py](tools/stereodrive_controller.py)
 
 PowerShell diagnostics and direct control tests live in:
 
-- [tools/control_stereodrive.ps1](C:/code/repos/neurostar_master/tools/control_stereodrive.ps1)
+- [tools/control_stereodrive.ps1](tools/control_stereodrive.ps1)
 
 ## What The Software Does
 
@@ -28,6 +28,10 @@ The application sits on top of the native StereoDrive application and automates:
 - Injectomate syringe stepping and plunger-position tracking
 - Injectomate calibrate-popup reading for real syringe position
 - Benchmarking of axis movement speed
+- Bregma-relative planning with an optional physical anchor reference
+- Calibrated skull-overlay maps for craniotomy and injection planning
+- Injection-grid generation and per-site validation
+- Recoverable project-session autosave
 
 It does **not** replace StereoDrive. StereoDrive must already be running.
 
@@ -61,6 +65,7 @@ Main areas:
 - **Manual Control** panel for syringe manual actions and syringe-position display
 - **Injection** panel for automated injection protocol settings and sequence progress
 - **Injection Sites** panel for storing and resuming site lists
+- **Options** dialog for keyboard bindings, StereoDrive control scans, USB probing, and update tools
 
 ## Startup Behavior
 
@@ -72,32 +77,51 @@ On startup the app:
   - below-skull warning: clicks **Yes**
   - "no actual movement to execute": clicks **OK**
 - Schedules an early syringe-position update from the Injectomate calibrate popup
+- Prompts to restore a recoverable project session when one exists. Active movement, drilling, and injection are **not** resumed automatically.
 
 ## Coordinate Controls
 
 Top-row actions include:
 
-- `Set Bregma`
+- coordinate-mode buttons: `Axis` and `Bregma`
+- `Set Bregma`, `Set Anchor`, and `At Anchor`
 - `Bregma`
 - `Home`
 - `Work`
 - `Go to`
 - `Stop`
+- `Drill On/Off` and `Clear Project`
 - quick stored locations `A`, `B`, `C` and corresponding `Set A`, `Set B`, `Set C`
-- `Benchmark`
 
 ### Set Bregma
 
-`Set Bregma` is intended to zero the current position to Bregma through the StereoDrive synchronize/reference workflow.
+`Set Bregma` records the current **mechanical Axis** position as this GUI's local Bregma origin. It does **not** reset or modify StereoDrive's native Bregma reference. It clears any existing GUI anchor and selects Bregma mode.
 
-Internally it uses the direct StereoDrive command that opens the **Synchronize Drill and Syringe...** panel instead of navigating the Tools menu manually.
+In Bregma mode, entered/planned AP/ML/DV values are converted to Axis targets before being sent to StereoDrive. In Axis mode, values are sent directly as Axis coordinates.
+
+### Anchor workflow
+
+Use an anchor when Bregma is no longer physically accessible:
+
+1. Set GUI Bregma at the reference point.
+2. Move to a reproducible alternative point and press `Set Anchor`.
+3. After a tool change, return to that physical anchor and press `At Anchor`.
+4. Confirm the warning to recalibrate the GUI Bregma origin from the anchor offset.
+
+`At Anchor` changes only the GUI's Bregma transform. It does not change the stored craniotomy or injection-site coordinates. The maps show the anchor with a blue anchor symbol; resetting GUI Bregma clears it.
 
 ### Bregma / Home / Work / Go to
 
 - `Bregma` moves to the Bregma location
 - `Home` moves to StereoDrive home
 - `Work` moves to StereoDrive work
-- `Go to` opens a coordinate dialog populated with current AP / ML / DV and allows entry of a new destination
+- `Go to` opens a coordinate dialog populated from the live position. If Bregma has been set, saved locations and manual entries in this dialog use Bregma coordinates even if the main display is currently in Axis mode.
+
+Every user-initiated navigation action shows a cancellable moving dialog with live map-cross updates. `Esc` or **Cancel Movement** requests a stop.
+
+### Saved Go to positions
+
+The `Go to` dialog can save a named Bregma AP/ML/DV position, list previously saved positions, load one into the entry fields, or delete it. Saved locations are part of the recoverable project session.
 
 ### Quick Stored Locations
 
@@ -107,7 +131,11 @@ You can store three extra locations:
 - `Set B` / `B`
 - `Set C` / `C`
 
-These are intended for frequently revisited points.
+These are intended for frequently revisited points and are stored in the current project session.
+
+### Clear Project
+
+`Clear Project` removes the active craniotomy, injection sites, GUI Bregma/anchor calibration, and stored locations after confirmation. It preserves keyboard preferences and reusable craniotomy/injection settings.
 
 ## Keyboard Controls
 
@@ -129,6 +157,29 @@ The movement and syringe shortcuts can be reassigned in the **Options** tab.
 Assignments are saved automatically in
 `Documents/Neurostar_Master/Configs/settings.json` and restored when the app
 restarts. Shortcuts are ignored while a text box or combo box is being edited.
+
+## Maps, Overlay, And Map Moves
+
+Both the Craniotomy and Injection tabs provide interactive maps. Select a calibrated skull image from the top-bar **Overlay** menu. The overlay, red current-position cross, and blue anchor symbol use Bregma coordinates and are therefore shown only in **Bregma** mode. Axis mode deliberately hides the overlay and displays a reminder to switch to Bregma mode.
+
+Use the mouse wheel to zoom and left-button drag to pan. Scrolling out always reaches the full skull without going farther out. The craniotomy map provides **Zoom to craniotomy**, **Zoom to mid-range**, and **Zoom to skull**; the injection map provides craniotomy, injection-map, and skull focus modes.
+
+Double-clicking a map point requests a two-leg move: first to a safe height, then to the selected target. A single cancellable progress dialog remains visible through both legs, updates the red cross from the live Axis fields, and displays the current Axis AP/ML/DV target. Arrival is confirmed from live Axis coordinates; if the final DV target disappears, the app re-enters it and reissues GoTo while waiting.
+
+## Project Recovery
+
+Active projects are autosaved about once per second to `Documents/Neurostar_Master/Configs/project_session.json`. Recovery includes the GUI Bregma/anchor transform, craniotomy setup and captured surfaces, trajectory/drilling state, injection settings/sites, stored locations, selected overlay, map zoom choices, and active tab. The startup prompt can restore this project, but never resumes physical movement, drilling, or injection automatically.
+
+## Options And Updates
+
+Open **Options** from the top-right button to:
+
+- reassign or reset movement and syringe keyboard shortcuts;
+- scan StereoDrive controls and copy the resulting control-ID report for diagnosis;
+- run the USB Controller Probe described below; and
+- run benchmark/diagnostic utilities.
+
+The top-bar **Update** button pulls the latest GitHub version while discarding local repository changes. When the update succeeds, it offers to restart the application. Do not use it to preserve uncommitted source-code edits.
 
 ## USB Controller Probe
 
@@ -183,6 +234,7 @@ Important fields and actions include:
 - `Set Surface`
 - `Stop Motion`
 - `Clear Surface Measurements`
+- `Clear Craniotomy`
 - `Start Drilling`
 - freeze/unfreeze controls
 
@@ -206,6 +258,10 @@ Special shortcut:
 - `Ctrl + click Set Surface` sets all surface values to `0`
 
 This is mainly for fast debugging.
+
+### Clear Craniotomy
+
+`Clear Craniotomy` removes the active seed plan, captured surfaces, trajectory, drilling progress, and frozen points. It leaves injection sites, Bregma/anchor calibration, and reusable setup values unchanged.
 
 ### Seed Navigation
 
@@ -316,7 +372,7 @@ Current settings:
 
 Below that:
 
-- program-sequence list
+- program-sequence list, including total syringe volume required and expected timed duration
 - overall sequence progress
 - current injection / movement progress
 - `Go`
@@ -346,6 +402,7 @@ For each site, the current protocol is:
 - the post-injection pause is shown in the feedback/status area
 - the active sequence step is bolded in the program-sequence list during execution
 - the active injection site is bolded in the injection-site list during execution
+- total syringe planning includes main injection volume, insertion volume, and two test volumes per site when blockage checks are enabled
 
 ## Injection Sites Panel
 
@@ -354,9 +411,13 @@ This panel manages stored injection sites.
 Controls:
 
 - `Add Injection Site`
+- `Add Grid`
+- `Save Site Set` / `Load Site Set`
+- `Nudge All Sites`
 - `Remove Selected Site`
+- `Validate Sites`
 - `Clear Sites`
-- `Resume From Selected`
+- `Start From Selected`
 - `Check blockage after each site`
 
 ### Injection Site Storage
@@ -368,6 +429,23 @@ Each stored site contains:
 - surface DV
 
 If no sites are stored, the current location is treated as the active site and its current DV is treated as the surface.
+
+### Grid sites and validation
+
+`Add Grid` creates a Bregma-centred AP/ML grid. The dialog accepts AP-site count, ML-site count, AP spacing, ML spacing, and recently used configurations. Grid sites intentionally have no surface DV and appear light gray until validated.
+
+`Save Site Set` saves Bregma AP/ML site targets. `Load Site Set` replaces the current list with the saved targets, deliberately marking all of them unvalidated so surface location can be rechecked for the current preparation.
+
+Choose `Validate Sites` then either **Validate all** or **Validate unvalidated**. For each site the app moves to AP/ML at Bregma DV `-0.5 mm`, opens a modal validation dialog, and keeps the normal movement/speed keyboard shortcuts active. Adjust AP/ML/DV to the desired surface location, then choose:
+
+- **Validate and Next**: stores the refined AP/ML/surface DV and proceeds;
+- **Next Without Validating**: keeps the site unchanged/unvalidated;
+- **Delete Point**: removes it; or
+- **Cancel**: stops the validation pass.
+
+Injection cannot start while any stored site is unvalidated.
+
+When `Nudge All Sites` is enabled, the AP/ML keyboard movement shortcuts translate every listed site by the current movement-step size without moving the manipulator. This marks all sites unvalidated, requiring a new validation pass.
 
 ## Starting An Injection Sequence
 
@@ -410,6 +488,7 @@ This is not a low-level resume inside a partially executed site. It resumes at t
 If `Check blockage after each site` is enabled:
 
 - after returning to `1 mm` above the stored surface, the app performs a test injection
+- the blockage prompt uses a gentle repeating alert sound to draw attention
 - once the test injection completes, it asks:
   - `Is the test injection confirmed not blocked?`
 
@@ -487,11 +566,13 @@ The most reliable precise syringe-position read path is currently the **Injectom
 - Confirm StereoDrive is connected to the hardware
 - Confirm the selected nudge sizes are valid in StereoDrive
 - Watch for any external modal dialogs not covered by the auto-confirm watcher
+- For a map move, read the Axis AP/ML/DV target shown in the moving dialog. The app verifies arrival from StereoDrive's live Axis values rather than relying solely on the target text boxes.
 
 ### Set Bregma does not work
 
-- The app expects to be able to open the synchronize/reference panel through StereoDrive
-- If StereoDrive is in an unusual UI state, reopen the main StereoDrive window and try again
+- `Set Bregma` requires readable live Axis values from StereoDrive.
+- It does not modify StereoDrive's native Bregma reference.
+- If the live Axis fields cannot be read, bring the main StereoDrive window to the foreground and retry.
 
 ### Injectomate position looks wrong
 
@@ -505,9 +586,9 @@ The most reliable precise syringe-position read path is currently the **Injectom
 
 ## Main Files
 
-- GUI: [tools/craniotomy_qt.py](C:/code/repos/neurostar_master/tools/craniotomy_qt.py)
-- Controller: [tools/stereodrive_controller.py](C:/code/repos/neurostar_master/tools/stereodrive_controller.py)
-- PowerShell diagnostics: [tools/control_stereodrive.ps1](C:/code/repos/neurostar_master/tools/control_stereodrive.ps1)
+- GUI: [tools/craniotomy_qt.py](tools/craniotomy_qt.py)
+- Controller: [tools/stereodrive_controller.py](tools/stereodrive_controller.py)
+- PowerShell diagnostics: [tools/control_stereodrive.ps1](tools/control_stereodrive.ps1)
 
 ## Typical Usage
 
@@ -515,12 +596,12 @@ A common session looks like this:
 
 1. Start StereoDrive
 2. Run `python .\tools\craniotomy_qt.py`
-3. Press `Set Bregma` if needed
+3. Press `Set Bregma` at the intended local reference point
 4. Set craniotomy diameter and seed count
 5. Press `Generate Seeds`
 6. Move around the perimeter and capture surface values with `Set Surface`
 7. Start drilling rounds with `Start Drilling`
-8. Store injection sites with `Add Injection Site`
+8. Add/load injection sites, then validate each site before injection
 9. Configure the injection protocol
 10. Press `Go`
 11. Confirm blockage-test outcomes between sites if enabled
