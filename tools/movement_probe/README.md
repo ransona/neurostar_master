@@ -12,6 +12,37 @@ must share an interactive desktop session and privilege level. Read AGENTS.md.
 Supervised bench use only: no specimen, tool safely clear, drill off, physical
 Stop accessible. Close the main craniotomy GUI and other automation first.
 
+## Two-paragraph agent handoff
+
+The movement probe now runs as a small GUI and accepts commands immediately
+while running: no token, Arm step, or heartbeat. It only accepts connections
+from the same Windows computer at `http://127.0.0.1:8765`, not from the LAN.
+From the repository root, first run `py -3 tools\movement_probe\server.py --simulate`;
+for approved real experiments, close the main controller GUI, leave StereoDrive
+visible, and run without `--simulate`. Use `client.py status`,
+`client.py move --json-file PATH`, `client.py events`, and `client.py stop`
+with the full prefix `py -3 tools\movement_probe\`. HTTP equivalents are
+GET /status, GET /events, POST /move, and POST /stop; POST bodies require JSON
+and Content-Type application/json. Each movement needs a unique command_id;
+poll that operation until completed/stopped. Retry an uncertain response only
+with the identical ID/body within the same server session. The window shows
+incoming commands, positions, results and errors; all coordinates are mechanical
+Axis mm, never native or main-GUI Bregma.
+
+Operate only within the human-approved, supervised bench setup: no specimen,
+tool clear, drill off and physical Stop accessible. Begin with the supplied
+AP 0.01 mm out-and-back example; default limits are ±0.1 mm from startup and
+0.05 mm per movement, with DV disabled unless the operator approves --allow-dv.
+One command at a time; do not bypass limits, dismiss skull warnings or replay
+USB packets. Stop via client.py stop, POST /stop, the GUI Stop button or Esc;
+another explicit command is allowed after cancellation finishes, while closing
+the server disables all requests. There is no heartbeat-based disconnect Stop:
+an accepted movement may continue until arrival or its 15-second timeout.
+Hardware faults require investigation and a local restart. Capture USB separately
+with Wireshark/USBPcap and read agreed saved captures using TShark -r; correlate
+them with UTC JSONL logs in %USERPROFILE%\StereoDriveProbeLogs. Preserve evidence
+and ask the operator before recovering from an unexpected result.
+
 ## Run it
 
 From PowerShell in the repo root, test without hardware:

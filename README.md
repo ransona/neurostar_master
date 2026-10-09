@@ -203,6 +203,10 @@ It supports bounded Axis nudges, relative/absolute GoTo, fine/planar movement,
 and verified out-and-back experiments with a loopback-only HTTP API, no tokens,
 arming or heartbeats, a local Stop button and UTC logs. Agent safety instructions are in
 [its AGENTS.md](tools/movement_probe/AGENTS.md). It does not capture or replay USB.
+The probe README also includes a
+[two-paragraph agent handoff](tools/movement_probe/README.md#two-paragraph-agent-handoff)
+with the current launch commands, token-free local API, Stop behaviour and
+USB capture-analysis workflow.
 
 The **Options → USB Controller Probe** is a manual correlation tool for
 investigating the USB traffic produced by one StereoDrive axis nudge. It does
