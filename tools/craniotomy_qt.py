@@ -4011,10 +4011,10 @@ class CraniotomyWindow(QMainWindow):
                 delivered += step_nl
                 event_index += 1
             if movement_targets and elapsed - last_move_at >= 0.05:
-                target_dv = self._interpolated_movement_dv(movement_targets, elapsed)
+                target_bregma_dv = self._interpolated_movement_dv(movement_targets, elapsed)
                 self.controller.move_axis_to_target(
                     "DV",
-                    target_dv,
+                    self._bregma_dv_to_axis(target_bregma_dv),
                     step_mm=5.0,
                     stop_requested=self.injection_stop_requested.is_set,
                     status_callback=None,
@@ -4077,7 +4077,7 @@ class CraniotomyWindow(QMainWindow):
         retract_step_mm, retract_dwell_s = self._slow_axis_step_and_dwell(settings)
         self.controller.move_axis_to_target(
             "DV",
-            site.dv,
+            self._bregma_dv_to_axis(site.dv),
             step_mm=retract_step_mm,
             tolerance=0.003,
             stop_requested=self.injection_stop_requested.is_set,
@@ -4126,6 +4126,16 @@ class CraniotomyWindow(QMainWindow):
 
     def _above_surface_dv(self, site: InjectionSite) -> float:
         return site.dv - 1.0
+
+    def _bregma_dv_to_axis(self, bregma_dv: float) -> float:
+        """Translate a GUI-Bregma DV value for direct Axis motor control.
+
+        Injection sites are defined relative to this application's Bregma
+        origin.  The protocol's fine insertion/retraction loop drives the
+        Axis DV motor directly, so it must not pass those relative values
+        through unchanged after an anchor-based tool recalibration.
+        """
+        return self._bregma_to_axis((0.0, 0.0, bregma_dv))[2]
 
     def _main_injection_duration_s(self, settings: InjectionProtocolSettings) -> float:
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
