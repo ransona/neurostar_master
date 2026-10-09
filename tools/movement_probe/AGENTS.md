@@ -30,7 +30,18 @@ Do not treat an intermediate target reading as permission to reverse early.
 For uncertain HTTP responses, inspect status and retry only identical ID/body
 within the same session, never new IDs. After restart, ask the operator instead
 of replaying. Changing --allow-dv/limits needs human approval and clear workspace.
-Do not probe syringe motion/drill power, use parallel controllers or flood API.
+Do not probe drill power, use parallel controllers or flood API.
+
+Injector probes now support injector_step (up/down), injector_inject, and
+injector_out_and_back via POST /move with volume_nl and unique command_id.
+Default cap: 100 nL/action/each leg; start at 10 nL only with human approval of
+the injector setup. Verify syringe calibration/type/rate, plunger travel room,
+pipette out of tissue and safe fluid collection. Do not assume up means dispense.
+Native completion does not prove delivered volume; reversing the plunger does
+not undo an injection and may aspirate air/contaminants. Do not request fill,
+empty, calibration or syringe-type changes. Larger volume cap requires locally
+approved --max-injector-volume-nl (hard maximum 1000 nL). Injector/axis commands
+are serialized and Stop stops either; don't reverse after an uncertain result.
 
 Use USB capture only within separately authorized device/interface scope.
 Do not change/install controller drivers or unplug devices speculatively.

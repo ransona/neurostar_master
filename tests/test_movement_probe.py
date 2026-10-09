@@ -7,7 +7,7 @@ import threading
 import time
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 import urllib.error
 import urllib.request
@@ -165,6 +165,107 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(self.submit(kind="relative", coordinates={"DV": -1})["state"], "completed")
         self.assertAlmostEqual(self.controller.position[2], -1)
 
+    def test_injector_actions_do_not_move_axes(self):
+        for direction in ("up", "down"):
+            self.assertEqual(self.submit(kind="injector_step", direction=direction, volume_nl=10)["state"], "completed")
+        self.assertEqual(self.submit(kind="injector_inject", volume_nl=20)["state"], "completed")
+        self.assertEqual(self.controller.injector_actions, [("up",10),("down",10),("inject",20)])
+        self.assertEqual(self.controller.position, [0,0,0])
+
+    def test_injector_out_and_back(self):
+        original = self.controller.injector_position
+        self.submit(kind="injector_out_and_back", direction="down", volume_nl=50)
+        self.assertEqual(self.controller.injector_position, original)
+        self.assertEqual(self.controller.injector_actions, [("down",50),("up",50)])
+
+    def test_injector_limits_and_directions(self):
+        for payload in [dict(kind="injector_inject",volume_nl=200),
+                        dict(kind="injector_step",direction="up",volume_nl=15),
+                        dict(kind="injector_step",direction=1,volume_nl=10),
+                        dict(kind="injector_step",direction="inject",volume_nl=10),
+                        dict(kind="injector_inject",volume_nl=float("nan"))]:
+            with self.subTest(payload=payload), self.assertRaises(probe.Rejected):
+                self.submit(**payload)
+        self.assertEqual(self.controller.injector_actions, [])
+        self.service.max_injector_volume = 500
+        self.submit(kind="injector_inject",volume_nl=500)
+
+    def test_injector_duplicate_does_not_repeat_dose(self):
+        payload = dict(command_id="dose",kind="injector_inject",volume_nl=100)
+        self.service.submit(payload)
+        self.service.worker.join(timeout=2)
+        self.service.submit(payload)
+        self.assertEqual(self.controller.injector_actions, [("inject",100)])
+
+    def test_injector_failed_forward_does_not_reverse(self):
+        self.controller.probe_injector_action = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injector failed"))
+        self.controller.probe_stop_injector = Mock()
+        result = self.submit(kind="injector_out_and_back", direction="up", volume_nl=10)
+        self.assertEqual(result["state"], "stopped")
+        self.controller.probe_stop_injector.assert_called_once()
+        self.assertNotIn("INJECTOR_REVERSE_REQUEST", [e["event"] for e in self.service.events])
+
+    def test_stop_and_timeout_cancel_injector(self):
+        entered = threading.Event()
+        def blocked(action, volume_nl, stop_requested, timeout_seconds):
+            entered.set()
+            while not stop_requested():
+                self.clock.sleep(.02)
+            raise RuntimeError("cancelled")
+        self.controller.probe_injector_action = blocked
+        self.controller.probe_stop_injector = Mock()
+        self.service.submit(dict(command_id="busy-injector",kind="injector_step",direction="up",volume_nl=10))
+        self.assertTrue(entered.wait(timeout=1))
+        with self.assertRaises(probe.Rejected):
+            self.service.submit(dict(command_id="axis-while-injecting",kind="relative",coordinates={"AP":.01}))
+        self.service.stop()
+        self.service.worker.join(timeout=2)
+        self.assertFalse(self.service.worker.is_alive())
+        self.assertTrue(self.controller.probe_stop_injector.called)
+        self.assertTrue(self.service.status()["ready"])
+        self.service.timeout = .05
+        result = self.submit(kind="injector_inject", volume_nl=10)
+        self.assertEqual(result["state"], "stopped")
+        self.assertFalse(self.service.status()["ready"])
+
+    def test_native_injector_clicks_once_and_waits_for_idle(self):
+        from test_movement import SimController, controller as native_module
+        class NativeFake(SimController):
+            def _find_below_skull_warning_dialog(self):
+                return None
+            def set_injection_volume(self, label):
+                self.volume_label = label
+            def _is_control_enabled(self, control_id):
+                return True
+            def _injectomate_motion_status_text(self):
+                return "busy" if self.clicks and self.clock.now < .1 else ""
+            def stop_injectomate_motion(self, trigger):
+                self.stop_triggers.append(trigger)
+        module = SimpleNamespace(StereoDriveController=NativeFake, INJECT_BUTTON_ID=10008,
+                                 SYRINGE_STEP_UP_ID=10000, SYRINGE_STEP_DOWN_ID=10002)
+        with patch.object(probe.sys, "platform", "win32"), patch.dict(sys.modules, {"stereodrive_controller": module}):
+            native = probe.real_controller()
+            native.clock = self.clock
+            native.stop_triggers = []
+            native.probe_injector_action("up", 10, lambda: False, 1)
+            self.assertEqual(native.volume_label, "10 nl")
+            self.assertEqual(native.clicks, [10000])
+            self.assertGreaterEqual(self.clock.now, .3)
+            self.assertIsNone(native._active_injectomate_trigger_control_id)
+            native._injectomate_motion_status_text = lambda: ""
+            with self.assertRaisesRegex(RuntimeError, "Timed out"):
+                native.probe_injector_action("down", 10, lambda: False, .05)
+            self.assertEqual(native._active_injectomate_trigger_control_id, 10002)
+            native.probe_stop_injector()
+            native.probe_stop_injector()
+            self.assertEqual(native.stop_triggers, [10002])
+            native._motion_click = Mock(side_effect=RuntimeError("cancelled before click"))
+            with self.assertRaisesRegex(RuntimeError, "cancelled before click"):
+                native.probe_injector_action("up",10,lambda:False,1)
+            self.assertIsNone(native._active_injectomate_trigger_control_id)
+            native.probe_stop_injector()
+            self.assertEqual(native.stop_triggers, [10002])
+
     def test_three_axis_fine_move_can_exceed_100_increments(self):
         self.service.allow_dv = True
         result = self.submit(kind="relative", coordinates={"AP": .57, "ML": .57, "DV": .57}, method="nudged")
@@ -261,12 +362,17 @@ class ProbeTests(unittest.TestCase):
         call("/move", dict(command_id="http", kind="nudge", axis="AP", direction=1, step_mm=.01))
         self.service.worker.join(timeout=2)
         self.assertEqual(call("/status")["operation"]["state"], "completed")
+        call("/move", dict(command_id="http-injector", kind="injector_inject", volume_nl=10))
+        self.service.worker.join(timeout=2)
+        self.assertEqual(call("/status")["operation"]["state"], "completed")
+        self.assertEqual(self.controller.injector_actions, [("inject", 10)])
         self.assertTrue(call("/events"))
         call("/stop", {})
         self.assertTrue(call("/status")["ready"])
         events = self.service.events
         incoming = [row for row in events if row["event"] == "INCOMING_MOVE"]
         self.assertEqual(incoming[0]["command"]["command_id"], "http")
+        self.assertEqual(incoming[1]["command"]["volume_nl"], 10)
         self.assertIn("peer", incoming[0])
         self.assertTrue(any(row["event"] == "HTTP_RESULT" and row["status"] == 403 for row in events))
 

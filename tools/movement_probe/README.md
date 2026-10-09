@@ -28,11 +28,15 @@ poll that operation until completed/stopped. Retry an uncertain response only
 with the identical ID/body within the same server session. The window shows
 incoming commands, positions, results and errors; all coordinates are mechanical
 Axis mm, never native or main-GUI Bregma.
+Injector actions also use POST /move: injector_step (direction up/down),
+injector_inject, and injector_out_and_back, each with volume_nl and command_id.
 
 Operate only within the human-approved, supervised bench setup: no specimen,
 tool clear, drill off and physical Stop accessible. Begin with the supplied
 AP 0.01 mm out-and-back example; default limits are ±1 mm per axis from startup
 and 1 mm total distance per movement, with DV disabled unless the operator approves --allow-dv.
+Injector probes default to 100 nL maximum per action/leg; start at 10 nL only
+after verifying plunger room, syringe calibration/type/rate and safe fluid collection.
 One command at a time; do not bypass limits, dismiss skull warnings or replay
 USB packets. Stop via client.py stop, POST /stop, the GUI Stop button or Esc;
 another explicit command is allowed after cancellation finishes, while closing
@@ -124,11 +128,60 @@ command/each probe leg: 1 mm. These are also the hard maximums; use
 radius). For multi-axis requests the 1 mm limit is total distance, not 1 mm on
 every axis simultaneously. Restarting establishes a new startup position.
 DV requires `--allow-dv`
-at locally approved startup. No drill, syringe, native Home/Work, Bregma reset
+at locally approved startup. No drill, native Home/Work, Bregma reset
 or calibration API. No automatic skull-clearance/recovery moves. Bounds cannot
 prove collision safety. Direct-entry builds may move before GoTo; targets are
 bounded either way. Skull warnings are never accepted; no ambiguous-arrival
 retry. GUI Stop is best-effort, not a hardware emergency stop.
+
+## Injector / syringe movement probes
+
+The same POST /move endpoint now also supports Injectomate actions. These are
+available when the server runs; no token, arm or heartbeat. Axis and injector
+commands share the single worker: neither can start while the other is moving.
+They do not change AP/ML/DV coordinates. DV enablement is unrelated to syringe
+movement. Default cap is **100 nL per action/each out-and-back leg**. Supported
+volumes are 10, 20, 50, 100, 200, 500 and 1000 nL within the cap. A human-approved
+launch may use `--max-injector-volume-nl 500` (hard maximum 1000 nL).
+
+| kind | fields | native control |
+| --- | --- | --- |
+| injector_step | direction up/down, volume_nl | Syringe step arrow |
+| injector_inject | volume_nl | Inject button |
+| injector_out_and_back | direction up/down, volume_nl | Step, verified native completion, opposite step |
+
+Example, after simulation and human approval of a clear injector bench setup:
+
+```powershell
+py -3 tools\movement_probe\client.py move --json-file tools\movement_probe\example_injector_step.json
+```
+
+```json
+{"command_id":"inject-10nl-01","kind":"injector_inject","volume_nl":10}
+```
+
+```json
+{"command_id":"syringe-return-01","kind":"injector_out_and_back","direction":"up","volume_nl":10}
+```
+
+Use fresh IDs for new experiments and poll status. GUI shows the volume cap and
+injector action/volume in its operation target; logs include INJECTOR_REQUEST,
+INJECTOR_COMPLETED and INJECTOR_REVERSE_REQUEST for USB correlation. Native
+Injectomate status must be idle and the trigger control enabled for 200 ms.
+This verifies software completion, **not actual delivered volume or independent
+plunger position**. There is no automatic fluid-volume/physical return proof.
+Stop/Esc/close/API Stop cancels the active injector as well as axis motion;
+timeouts/faults retain the native trigger long enough to issue Stop. A failed
+forward step never triggers an automatic reverse. Overall timeout is 60 seconds.
+
+The action sets StereoDrive's volume combo; its existing syringe type/rate are
+used and the selected volume remains afterward. Human must verify that syringe
+type/calibration/rate are correct, plunger has room in either direction, and
+pipette is out of tissue and pointed at a suitable collection area. Up/down are
+native arrow labels, not a promise of aspiration/dispensing direction. Returning
+the plunger does not undo delivered fluid; reversal may aspirate fluid/air.
+No fill/empty, absolute plunger GoTo, syringe-type changes or calibration API.
+Never use unbounded reservoir actions as a shortcut for these probes.
 
 ## HTTP API
 

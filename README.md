@@ -200,7 +200,8 @@ The top-bar **Update** button pulls the latest GitHub version while discarding l
 For an agent-controlled, supervised bench workflow on the same Windows
 computer, use the separate [Local Movement Probe](tools/movement_probe/README.md).
 It supports bounded Axis nudges, relative/absolute GoTo, fine/planar movement,
-and verified out-and-back experiments with a loopback-only HTTP API, no tokens,
+verified out-and-back experiments, and bounded injector injection/step/return
+probes with a loopback-only HTTP API, no tokens,
 arming or heartbeats, a local Stop button and UTC logs. Agent safety instructions are in
 [its AGENTS.md](tools/movement_probe/AGENTS.md). It does not capture or replay USB.
 The probe README also includes a

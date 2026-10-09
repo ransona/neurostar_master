@@ -15,6 +15,7 @@ import uuid
 
 AXES = ("AP", "ML", "DV")
 STEPS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
+INJECTOR_VOLUMES_NL = (10, 20, 50, 100, 200, 500, 1000)
 
 
 class Rejected(ValueError):
@@ -33,6 +34,8 @@ class SimulatedController:
         self.position = [0.0, 0.0, 0.0]
         self.steps = {}
         self.cancelled = False
+        self.injector_position = 2500.0
+        self.injector_actions = []
 
     def get_current_axis_position(self):
         return tuple(self.position)
@@ -62,6 +65,15 @@ class SimulatedController:
     def motion_controls_ready(self, axes=AXES):
         return True
 
+    def probe_injector_action(self, action, volume_nl, stop_requested, timeout_seconds):
+        if self.cancelled or stop_requested():
+            raise RuntimeError("Injector cancelled.")
+        self.injector_actions.append((action, volume_nl))
+        self.injector_position += volume_nl if action == "up" else -volume_nl
+
+    def probe_stop_injector(self):
+        self.cancelled = True
+
 
 def real_controller():
     if sys.platform != "win32":
@@ -83,16 +95,63 @@ def real_controller():
         def confirm_no_actual_movement_dialog(self, **kwargs):
             return False
 
+        def probe_injector_action(self, action, volume_nl, stop_requested, timeout_seconds):
+            from stereodrive_controller import INJECT_BUTTON_ID, SYRINGE_STEP_UP_ID, SYRINGE_STEP_DOWN_ID
+            self._check_motion_cancelled(stop_requested)
+            self.set_injection_volume(f"{volume_nl:g} nl")
+            trigger = {"inject": INJECT_BUTTON_ID, "up": SYRINGE_STEP_UP_ID, "down": SYRINGE_STEP_DOWN_ID}[action]
+            with self._motion_lock:
+                self._check_motion_cancelled(stop_requested)
+                if not self._is_control_enabled(trigger) or self._injectomate_motion_status_text():
+                    raise RuntimeError("Injectomate is busy; no command issued.")
+                self._active_injectomate_trigger_control_id = trigger
+                try:
+                    self._motion_click(trigger, stop_requested)
+                except Exception:
+                    # No click was issued if the cancellation check rejected it;
+                    # don't turn that unused trigger into a new "Stop" click.
+                    self._active_injectomate_trigger_control_id = None
+                    raise
+            deadline = time.monotonic() + timeout_seconds
+            stable_since = None
+            # Keep the trigger until verified idle or explicit Stop. Do not use
+            # the shared wait's auto-Stop: posting Stop twice can toggle motion
+            # back on after the first Stop has already restored the button.
+            while time.monotonic() < deadline:
+                self._check_motion_cancelled(stop_requested)
+                self.safety_check()
+                busy = bool(self._injectomate_motion_status_text()) or not self._is_control_enabled(trigger)
+                if busy:
+                    stable_since = None
+                elif stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= .2:
+                    with self._motion_lock:
+                        self._check_motion_cancelled(stop_requested)
+                        self._active_injectomate_trigger_control_id = None
+                    return
+                time.sleep(.02)
+            raise RuntimeError("Timed out waiting for Injectomate completion.")
+
+        def probe_stop_injector(self):
+            with self._motion_lock:
+                trigger = self._active_injectomate_trigger_control_id
+                if trigger is not None:
+                    self.stop_injectomate_motion(trigger)
+                    self._active_injectomate_trigger_control_id = None
+
     return ProbeController()
 
 
 class ProbeService:
     def __init__(self, controller, radius=1.0, max_move=1.0, allow_dv=False,
-                 timeout=60.0, log_path=None):
+                 timeout=60.0, log_path=None, max_injector_volume=100.0):
         self.controller = controller
         self.origin = self.read_position()
         self.radius, self.max_move = radius, max_move
         self.allow_dv = allow_dv
+        self.max_injector_volume = max_injector_volume
+        self.injector_active = False
         self.timeout = timeout
         self.log_path = log_path
         self.lock = threading.RLock()
@@ -134,11 +193,19 @@ class ProbeService:
             if fault:
                 self.fault = reason
             self.stop_event.set()
+            errors = []
+            if self.injector_active:
+                try:
+                    self.controller.probe_stop_injector()
+                except Exception as exc:
+                    errors.append("Injector Stop: " + str(exc))
             try:
                 self.controller.stop()
             except Exception as exc:
-                self.stop_error = str(exc)
-                self.fault = "Native Stop failed: " + str(exc)
+                errors.append("Axis Stop: " + str(exc))
+            if errors:
+                self.stop_error = "; ".join(errors)
+                self.fault = "Native Stop failed: " + self.stop_error
             self.log("STOP", reason=reason, stop_error=self.stop_error)
 
     def status(self):
@@ -149,6 +216,7 @@ class ProbeService:
                         position=self.read_position(), origin=self.origin,
                         bounds={a: [o - self.radius, o + self.radius] for a, o in zip(AXES, self.origin)},
                         max_move_mm=self.max_move, allow_dv=self.allow_dv,
+                        max_injector_volume_nl=self.max_injector_volume,
                         stop_error=self.stop_error,
                         operation=dict(self.operation) if self.operation else None)
 
@@ -214,10 +282,20 @@ class ProbeService:
             if not self.in_envelope(start):
                 self.stop("Position outside envelope", fault=True)
                 raise Rejected("Position outside envelope.")
-            method, target, reverse = self.plan(payload, start)
+            injector = payload.get("kind") in ("injector_step", "injector_inject", "injector_out_and_back")
+            if injector:
+                volume = number(payload.get("volume_nl"))
+                if volume not in INJECTOR_VOLUMES_NL or volume > self.max_injector_volume:
+                    raise Rejected("Injector volume must be a supported 10/20/50/100/200/500/1000 nL step within the configured limit.")
+                action = "inject" if payload["kind"] == "injector_inject" else payload.get("direction")
+                if action not in ("inject", "up", "down") or (payload["kind"] != "injector_inject" and action == "inject"):
+                    raise Rejected("Injector step direction must be up or down.")
+                method, target, reverse = "injector", dict(action=action, volume_nl=volume), payload["kind"] == "injector_out_and_back"
+            else:
+                method, target, reverse = self.plan(payload, start)
             self.operation = dict(id=command_id, state="running", start=start, target=target,
                                   method=method, error=None,
-                                  axes=[axis for axis, a, b in zip(AXES, start, target) if abs(a - b) > 1e-9])
+                                  axes=[] if injector else [axis for axis, a, b in zip(AXES, start, target) if abs(a - b) > 1e-9])
             self.operations[command_id] = (dict(payload), self.operation)
             self.stop_event.clear()
             self.controller.prepare_motion()
@@ -305,12 +383,22 @@ class ProbeService:
     def _run(self, method, start, target, reverse):
         deadline = time.monotonic() + self.timeout
         try:
-            delta = tuple(b - a for a, b in zip(start, target))
-            self._move(method, target, deadline, delta)
-            if reverse:
-                self._check(deadline)
-                self.log("REVERSE_REQUEST", target=start)
-                self._move(method, start, deadline, tuple(-v for v in delta))
+            if method == "injector":
+                with self.lock:
+                    self.injector_active = True
+                self._injector_move(target["action"], target["volume_nl"], deadline)
+                if reverse:
+                    self._check(deadline)
+                    action = "down" if target["action"] == "up" else "up"
+                    self.log("INJECTOR_REVERSE_REQUEST", action=action, volume_nl=target["volume_nl"])
+                    self._injector_move(action, target["volume_nl"], deadline)
+            else:
+                delta = tuple(b - a for a, b in zip(start, target))
+                self._move(method, target, deadline, delta)
+                if reverse:
+                    self._check(deadline)
+                    self.log("REVERSE_REQUEST", target=start)
+                    self._move(method, start, deadline, tuple(-v for v in delta))
             self._check(deadline)
             with self.lock:
                 self.operation["state"] = "completed"
@@ -320,6 +408,19 @@ class ProbeService:
             self.stop(str(exc), fault=not self.stop_event.is_set())
             with self.lock:
                 self.operation.update(state="stopped", error=str(exc))
+        finally:
+            with self.lock:
+                self.injector_active = False
+
+    def _injector_move(self, action, volume, deadline):
+        self._check(deadline)
+        self.log("INJECTOR_REQUEST", action=action, volume_nl=volume)
+        self.controller.probe_injector_action(action, volume,
+            stop_requested=lambda: self.stop_event.is_set() or time.monotonic() >= deadline,
+            timeout_seconds=max(.01, deadline - time.monotonic()))
+        self._check(deadline)
+        self.log("INJECTOR_COMPLETED", action=action, volume_nl=volume,
+                 verification="native status/control completion, not independently measured delivered volume")
 
     def _monitor(self):
         while not self.closed.wait(0.1):
@@ -400,7 +501,7 @@ def handler(service):
                         # headers/fields that could contain credentials.
                         service.log("INCOMING_MOVE", peer=self.client_address[0],
                                     command={key: payload[key] for key in
-                                             ("command_id", "kind", "method", "axis", "direction", "step_mm", "target_mm", "coordinates")
+                                             ("command_id", "kind", "method", "axis", "direction", "step_mm", "target_mm", "coordinates", "volume_nl")
                                              if key in payload})
                     if self.path == "/stop":
                         service.stop()
@@ -434,6 +535,8 @@ def main():
     parser.add_argument("--allow-dv", action="store_true", help="Local operator allows DV experiments in an empty/retracted workspace.")
     parser.add_argument("--radius-mm", type=float, default=1.0)
     parser.add_argument("--max-move-mm", type=float, default=1.0)
+    parser.add_argument("--max-injector-volume-nl", type=float, default=100.0,
+                        help="Per injector action/leg cap; default 100 nL, hard maximum 1000 nL")
     parser.add_argument("--log-dir", type=Path, default=Path.home() / "StereoDriveProbeLogs")
     args = parser.parse_args()
     try:
@@ -445,11 +548,13 @@ def main():
     if not (math.isfinite(args.radius_mm) and 0 < args.radius_mm <= 1
             and math.isfinite(args.max_move_mm) and 0 < args.max_move_mm <= min(args.radius_mm, 1.0)):
         parser.error("radius must be >0 and <=1 mm; max move >0 and <=1 mm and <=radius.")
+    if not math.isfinite(args.max_injector_volume_nl) or not 10 <= args.max_injector_volume_nl <= 1000:
+        parser.error("Injector volume limit must be 10–1000 nL.")
     args.log_dir.mkdir(parents=True, exist_ok=True)
     log_path = args.log_dir / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8] + ".jsonl")
     service = ProbeService(SimulatedController() if args.simulate else real_controller(),
                            radius=args.radius_mm, max_move=args.max_move_mm,
-                           allow_dv=args.allow_dv, log_path=log_path)
+                           allow_dv=args.allow_dv, log_path=log_path, max_injector_volume=args.max_injector_volume_nl)
     server = None
     try:
         server = ThreadingHTTPServer((args.bind, args.port), handler(service))

@@ -1,0 +1,6 @@
+{
+  "command_id": "injector-up-10nl-first-experiment",
+  "kind": "injector_step",
+  "direction": "up",
+  "volume_nl": 10
+}

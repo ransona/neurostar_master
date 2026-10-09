@@ -110,6 +110,7 @@ def run_gui(service, url, log_path):
                 operation = value["operation"] or {}
                 line = f"Axis AP {p[0]:.3f}  ML {p[1]:.3f}  DV {p[2]:.3f} mm | "
                 line += f"Limit {value['max_move_mm']:.3f} mm/move | DV {'enabled' if value['allow_dv'] else 'disabled'}"
+                line += f" | Injector ≤{value['max_injector_volume_nl']:g} nL/action"
                 line += "\nBounds: " + "  ".join(
                     f"{axis} [{bounds[0]:.3f}, {bounds[1]:.3f}]" for axis, bounds in value["bounds"].items())
                 if value.get("fault"):
