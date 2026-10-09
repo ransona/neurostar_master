@@ -9,6 +9,7 @@ import ast
 import ctypes
 import importlib.util
 import math
+import json
 import sys
 import threading
 import time
@@ -46,7 +47,7 @@ def load_gui():
                   ("mousePressEvent", "mouseReleaseEvent", "mouseMoveEvent", "mouseDoubleClickEvent")})
     namespace = dict(dataclass=dataclass, QMainWindow=object, QWidget=widget, QPointF=point, Signal=lambda *args: Mock(),
                      StereoDriveError=controller.StereoDriveError, math=math, threading=threading,
-                     time=time, Path=Path, QMessageBox=Mock(Yes=1, No=0, Cancel=2),
+                     time=time, json=json, Path=Path, QMessageBox=Mock(Yes=1, No=0, Cancel=2),
                      QApplication=Mock(), Qt=Mock(), DEFAULT_INJECTION_VOLUME_NL=100,
                      MOVE_SPEED_OPTIONS_MM=controller.NUDGE_STEP_OPTIONS_MM)
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
@@ -141,6 +142,7 @@ def window():
     w.craniotomy_coordinate_system = "bregma"
     w.injection_sites_coordinate_system = "bregma"
     w.validation_clearance_mm = 0.5
+    w.home_axis = w.work_axis = None
     w.injection_sites = []
     w.drill_thread = w.injection_thread = w.benchmark_thread = w.usb_probe_thread = None
     w.validation_move_active = w.validation_modal_active = False
@@ -261,6 +263,51 @@ class GuiCoordinateTests(unittest.TestCase):
         self.w._move_to_axis_position_with_progress = Mock(return_value=True)
         self.w.goto_bregma()
         self.assertEqual(self.w._move_to_axis_position_with_progress.call_args.args[0], (30., 31., 19.))
+
+    def test_home_and_work_use_fixed_axis_targets_after_anchor_change(self):
+        self.w.home_axis = (10., 11., 12.)
+        self.w.work_axis = (20., 21., 22.)
+        self.w.bregma_axis = (34., 35., 23.)
+        self.w._move_to_axis_position_with_progress = Mock(return_value=True)
+        self.w.goto_home()
+        self.assertEqual(self.w._move_to_axis_position_with_progress.call_args.args[0], (10., 11., 12.))
+        self.w.goto_work()
+        self.assertEqual(self.w._move_to_axis_position_with_progress.call_args.args[0], (20., 21., 22.))
+        self.assertEqual(self.w.controller.clicks, [])
+
+    def test_setting_home_captures_axis_even_in_bregma_mode(self):
+        self.w._save_general_settings = Mock()
+        self.w.set_persistent_axis_location("home")
+        self.assertEqual(self.w.home_axis, (30., 31., 19.))
+        self.assertTrue(self.w._save_general_settings.called)
+
+    def test_unset_home_does_not_use_native_home(self):
+        self.w.controller.goto_home = Mock()
+        self.w.goto_home()
+        self.assertFalse(self.w.controller.goto_home.called)
+        self.assertEqual(self.w.controller.clicks, [])
+
+    def test_permanent_positions_and_validation_height_settings_roundtrip(self):
+        self.w.home_axis, self.w.work_axis = (10., 11., 12.), (20., 21., 22.)
+        self.w.validation_clearance_mm = 1.25
+        self.w.movement_key_edits = self.w.movement_key_bindings = self.w.syringe_key_bindings = {}
+        self.w.anchor_axis = self.w.anchor_bregma = None
+        self.w.recent_injection_grid_configs = []
+        self.w._config_root_dir = lambda: Mock()
+        self.w._general_settings_path = lambda: Mock(exists=lambda: True)
+        self.w._write_config_file = Mock()
+        self.w._save_general_settings()
+        saved = json.loads(json.dumps(self.w._write_config_file.call_args.args[1]))
+        self.w.home_axis = self.w.work_axis = None
+        self.w.validation_clearance_mm = .5
+        self.w._read_config_file = lambda path: saved
+        self.w.validation_clearance_edit = Mock()
+        self.w.update_coordinate_mode_buttons = Mock()
+        self.w.top_view = self.w.injection_sites_view = Mock()
+        self.w._load_general_settings()
+        self.assertEqual(self.w.home_axis, (10., 11., 12.))
+        self.assertEqual(self.w.work_axis, (20., 21., 22.))
+        self.assertEqual(self.w.validation_clearance_mm, 1.25)
 
     def test_cancelled_navigation_does_not_report_arrival(self):
         self.w._move_to_axis_position_with_progress = Mock(return_value=False)

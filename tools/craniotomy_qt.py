@@ -813,6 +813,8 @@ class CraniotomyWindow(QMainWindow):
         self.craniotomy_coordinate_system = "bregma"
         self.injection_sites_coordinate_system = "bregma"
         self.validation_clearance_mm = 0.5
+        self.home_axis: tuple[float, float, float] | None = None
+        self.work_axis: tuple[float, float, float] | None = None
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
         self.anchor_bregma: tuple[float, float, float] | None = None
@@ -1546,6 +1548,18 @@ class CraniotomyWindow(QMainWindow):
         self.options_dialog.setWindowTitle("Options")
         self.options_dialog.resize(760, 860)
         options_layout = QVBoxLayout(self.options_dialog)
+        positions_box = QGroupBox("Home / Work — mechanical Axis coordinates")
+        positions_layout = QGridLayout(positions_box)
+        self.home_axis_label = QLabel()
+        self.work_axis_label = QLabel()
+        for row, (name, label) in enumerate((("home", self.home_axis_label), ("work", self.work_axis_label))):
+            button = QPushButton(f"Set {name.title()}")
+            button.setToolTip(f"Save the current mechanical Axis position as {name.title()} permanently.")
+            button.clicked.connect(lambda _checked=False, kind=name: self.set_persistent_axis_location(kind))
+            positions_layout.addWidget(button, row, 0)
+            positions_layout.addWidget(label, row, 1)
+        self._update_persistent_axis_location_labels()
+        options_layout.addWidget(positions_box)
         options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
         options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 2)
@@ -2080,6 +2094,8 @@ class CraniotomyWindow(QMainWindow):
             "anchor_bregma": self.anchor_bregma,
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "validation_clearance_mm": self.validation_clearance_mm,
+            "home_axis": self.home_axis,
+            "work_axis": self.work_axis,
             "window_geometry": getattr(self, "window_geometry", None),
         }
         self._write_config_file(self._general_settings_path(), payload)
@@ -2110,6 +2126,9 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
             self.window_geometry = payload.get("window_geometry")
+            self.home_axis = self._session_axis(payload.get("home_axis"))
+            self.work_axis = self._session_axis(payload.get("work_axis"))
+            self._update_persistent_axis_location_labels()
             clearance = float(payload.get("validation_clearance_mm", 0.5))
             self.validation_clearance_mm = max(0.0, min(20.0, clearance)) if math.isfinite(clearance) else 0.5
             self.validation_clearance_edit.blockSignals(True)
@@ -2887,26 +2906,47 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive Drill", str(exc))
 
     def goto_home(self) -> None:
+        self._goto_persistent_axis_location("home")
+
+    def goto_work(self) -> None:
+        self._goto_persistent_axis_location("work")
+
+    def _goto_persistent_axis_location(self, name: str) -> None:
+        target = getattr(self, f"{name}_axis")
+        if target is None:
+            QMessageBox.information(self, f"{name.title()} Position", f"Use Set {name.title()} in Options to save this position first.")
+            return
         try:
-            if self._run_named_motion_with_progress(
-                self.controller.goto_home,
-                title="Moving to Home",
-                message="Moving to StereoDrive Home. Waiting for StereoDrive to report arrival…",
+            if self._move_to_axis_position_with_progress(
+                target,
+                title=f"Moving to {name.title()}",
+                message=f"Moving to saved {name.title()} Axis position. Waiting for confirmed arrival…",
             ):
-                self.set_status("Home command movement has settled. Verify the native Home position in StereoDrive.")
+                self.set_status(f"Reached {name.title()}: Axis AP {target[0]:.2f}, ML {target[1]:.2f}, DV {target[2]:.2f} mm.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
-    def goto_work(self) -> None:
+    def set_persistent_axis_location(self, name: str) -> None:
+        if not self._require_idle(f"Set {name.title()}"):
+            return
+        previous = getattr(self, f"{name}_axis")
         try:
-            if self._run_named_motion_with_progress(
-                self.controller.goto_work,
-                title="Moving to Work",
-                message="Moving to StereoDrive Work. Waiting for StereoDrive to report arrival…",
-            ):
-                self.set_status("Work command movement has settled. Verify the native Work position in StereoDrive.")
+            position = self.controller.get_current_axis_position()
+            setattr(self, f"{name}_axis", position)
+            self._save_general_settings()
+            self._update_persistent_axis_location_labels()
+            self.set_status(f"Saved {name.title()} permanently: Axis AP {position[0]:.2f}, ML {position[1]:.2f}, DV {position[2]:.2f} mm.")
         except Exception as exc:
-            QMessageBox.critical(self, "StereoDrive", str(exc))
+            setattr(self, f"{name}_axis", previous)
+            QMessageBox.warning(self, f"Set {name.title()}", str(exc))
+
+    def _update_persistent_axis_location_labels(self) -> None:
+        for name in ("home", "work"):
+            if not hasattr(self, f"{name}_axis_label"):
+                continue
+            position = getattr(self, f"{name}_axis")
+            text = "Not set" if position is None else f"Axis AP {position[0]:.3f}, ML {position[1]:.3f}, DV {position[2]:.3f} mm"
+            getattr(self, f"{name}_axis_label").setText(text)
 
     def goto_bregma(self) -> None:
         try:

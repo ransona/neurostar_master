@@ -115,11 +115,13 @@ Use an anchor when Bregma is no longer physically accessible:
 ### Bregma / Home / Work / Go to
 
 - `Bregma` moves to the Bregma location
-- `Home` moves to StereoDrive home
-- `Work` moves to StereoDrive work
+- `Home` moves to this GUI's saved mechanical Axis Home position
+- `Work` moves to this GUI's saved mechanical Axis Work position
 - `Go to` opens a coordinate dialog populated from the live position. If Bregma has been set, saved locations and manual entries in this dialog use Bregma coordinates even if the main display is currently in Axis mode.
 
-Every user-initiated navigation action shows a cancellable moving dialog with live map-cross updates. `Esc` or **Cancel Movement** requests a stop. Home/Work use StereoDrive's native commands; their destination coordinates are not exposed. The GUI reports observed movement settling, rather than claiming a verified destination, and reports an unverifiable command if no movement was observed.
+Move to the desired Home or Work position, then open **Options** and press **Set Home** or **Set Work**. These positions are stored permanently in `settings.json` as mechanical Axis AP/ML/DV, remain unchanged by Bregma/anchor recalibration, and survive **Clear Project**. There is no fallback to StereoDrive's native Home/Work positions; unset positions must be saved first.
+
+Every user-initiated navigation action shows a cancellable moving dialog with live map-cross updates. `Esc` or **Cancel Movement** requests a stop. Home/Work always send their saved Axis coordinates, even in Bregma display mode, and verify arrival from mechanical Axis readouts.
 
 The top **Stop** cancels both drilling and injection workers and stops the manipulator and any running injection. Injection **Stop** also stops manipulator travel. Cancellation remains latched through target entry, GoTo delays, and retries, so a cancelled worker cannot issue a later GoTo. Moving dialogs confirm stable Axis readouts after stopping. Closing during an operation requests Stop and waits for its worker to finish; if it cannot confirm stopping, the window stays open.
 
