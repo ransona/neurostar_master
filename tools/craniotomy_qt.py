@@ -594,7 +594,7 @@ class ProjectionWidget(QWidget):
         if len(self._inner_ring_screen_points) > 1:
             for index, (start, end) in enumerate(zip(self._inner_ring_screen_points[:-1], self._inner_ring_screen_points[1:])):
                 frozen = index < len(self.frozen_points) and self.frozen_points[index]
-                painter.setPen(QPen(QColor("#2563eb" if frozen else "#16a34a"), 4))
+                painter.setPen(QPen(QColor("#2563eb" if frozen else "#16a34a"), 12 if frozen else 4))
                 painter.drawLine(start, end)
 
         for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
