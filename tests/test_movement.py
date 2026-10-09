@@ -140,6 +140,7 @@ def window():
     w.coordinate_mode = "bregma"
     w.craniotomy_coordinate_system = "bregma"
     w.injection_sites_coordinate_system = "bregma"
+    w.validation_clearance_mm = 0.5
     w.injection_sites = []
     w.drill_thread = w.injection_thread = w.benchmark_thread = w.usb_probe_thread = None
     w.validation_move_active = w.validation_modal_active = False
@@ -361,6 +362,22 @@ class GuiCoordinateTests(unittest.TestCase):
         self.w._approach_axis_position((33., 34., 19.), 18.5, lambda: False)
         self.assertEqual([kind for kind, _ in commands], ["go", "wait"] * 3)
         self.assertEqual(commands[0][1], (30., 31., 18.5))
+
+    def test_validation_uses_custom_height_above_recalibrated_bregma(self):
+        self.w.bregma_axis = (34., 35., 23.)
+        self.w.validation_clearance_mm = 1.5
+        self.w._move_through_axis_positions_with_progress = Mock(return_value=True)
+        self.w._move_to_injection_site_for_validation(Site(1., 2., None, True))
+        path = self.w._move_through_axis_positions_with_progress.call_args.args[0]
+        self.assertEqual(path[-1], (35., 37., 21.5))
+        self.assertEqual(path[0][:2], (30., 31.))
+
+    def test_validation_height_change_is_saved(self):
+        self.w.validation_clearance_edit = Mock(value=lambda: 1.25)
+        self.w._save_general_settings = Mock()
+        self.w.save_validation_clearance()
+        self.assertEqual(self.w.validation_clearance_mm, 1.25)
+        self.assertTrue(self.w._save_general_settings.called)
 
     def test_busy_worker_blocks_manual_nudges_and_recalibration(self):
         self.w.injection_thread = Mock(is_alive=lambda: True)

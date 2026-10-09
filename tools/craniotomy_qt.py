@@ -811,6 +811,7 @@ class CraniotomyWindow(QMainWindow):
         self.coordinate_mode = "axis"
         self.craniotomy_coordinate_system = "bregma"
         self.injection_sites_coordinate_system = "bregma"
+        self.validation_clearance_mm = 0.5
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
         self.anchor_bregma: tuple[float, float, float] | None = None
@@ -1530,7 +1531,12 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(clear_sites_btn, 2, 1)
         sites_layout.addWidget(resume_selected_btn, 2, 2)
         sites_layout.addWidget(self.block_check, 3, 0, 1, 3)
-        sites_layout.addWidget(self.injection_sites_list, 4, 0, 1, 3)
+        self.validation_clearance_edit = self._double_spinbox(self.validation_clearance_mm, minimum=0.0, maximum=20.0)
+        self.validation_clearance_edit.setToolTip("Starting DV height above GUI Bregma for every injection-site validation.")
+        self.validation_clearance_edit.editingFinished.connect(self.save_validation_clearance)
+        sites_layout.addWidget(QLabel("Validation height (mm above Bregma)"), 4, 0, 1, 2)
+        sites_layout.addWidget(self.validation_clearance_edit, 4, 2)
+        sites_layout.addWidget(self.injection_sites_list, 5, 0, 1, 3)
 
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
@@ -2070,6 +2076,7 @@ class CraniotomyWindow(QMainWindow):
             "anchor_axis": self.anchor_axis,
             "anchor_bregma": self.anchor_bregma,
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
+            "validation_clearance_mm": self.validation_clearance_mm,
             "window_geometry": getattr(self, "window_geometry", None),
         }
         self._write_config_file(self._general_settings_path(), payload)
@@ -2100,6 +2107,11 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
             self.window_geometry = payload.get("window_geometry")
+            clearance = float(payload.get("validation_clearance_mm", 0.5))
+            self.validation_clearance_mm = max(0.0, min(20.0, clearance)) if math.isfinite(clearance) else 0.5
+            self.validation_clearance_edit.blockSignals(True)
+            self.validation_clearance_edit.setValue(self.validation_clearance_mm)
+            self.validation_clearance_edit.blockSignals(False)
             recent_grids = payload.get("recent_injection_grid_configs", [])
             if isinstance(recent_grids, list):
                 self.recent_injection_grid_configs = [
@@ -3615,13 +3627,21 @@ class CraniotomyWindow(QMainWindow):
             self._run_injection_site_validation(start_index, validate_all_sites=False)
 
     def _move_to_injection_site_for_validation(self, site: InjectionSite) -> bool:
-        """Approach a site at Bregma DV -0.5 mm with a cancellable wait dialog."""
-        target_axis = self._bregma_to_axis((site.ap, site.ml, -0.5))
+        """Approach at the user's configured height above GUI Bregma."""
+        target_axis = self._bregma_to_axis((site.ap, site.ml, -self.validation_clearance_mm))
         return self._move_through_axis_positions_with_progress(
             self._axis_clearance_path(target_axis, target_axis[2]),
             title="Moving to Injection Site",
-            message="Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…",
+            message=f"Moving to the site {self.validation_clearance_mm:g} mm above Bregma DV zero. Waiting for StereoDrive to report arrival…",
         )
+
+    def save_validation_clearance(self) -> None:
+        if not self._require_idle("Validation Height"):
+            self.validation_clearance_edit.setValue(self.validation_clearance_mm)
+            return
+        self.validation_clearance_mm = float(self.validation_clearance_edit.value())
+        self._save_general_settings()
+        self.set_status(f"All site validations will start {self.validation_clearance_mm:g} mm above GUI Bregma.")
 
     def _move_to_axis_position_with_progress(
         self,
@@ -3827,7 +3847,7 @@ class CraniotomyWindow(QMainWindow):
         state = "unvalidated" if site.dv is None else f"surface DV {site.dv:.2f} mm"
         layout.addWidget(QLabel(
             f"Site {index + 1} of {total}: AP {site.ap:.2f}, ML {site.ml:.2f} ({state})\n\n"
-            "The manipulator is at this site, 0.5 mm above Bregma DV zero. Use the normal keyboard nudges "
+            f"The manipulator is at this site, {self.validation_clearance_mm:g} mm above Bregma DV zero. Use the normal keyboard nudges "
             "to refine AP/ML and lower DV until the tool touches surface."
         ))
         buttons = QDialogButtonBox()

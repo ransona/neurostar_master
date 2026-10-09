@@ -455,7 +455,9 @@ In this mode, clicks add sites without moving the tool, dragging still pans, and
 
 `Save Site Set` saves Bregma AP/ML site targets. `Load Site Set` replaces the current list with the saved targets, deliberately marking all of them unvalidated so surface location can be rechecked for the current preparation.
 
-Choose `Validate Sites` then either **Validate all** or **Validate unvalidated**. For each site the app moves to AP/ML at Bregma DV `-0.5 mm`, opens a modal validation dialog, and keeps the normal movement/speed keyboard shortcuts active. Adjust AP/ML/DV to the desired surface location, then choose:
+Set **Validation height (mm above Bregma)** in the Injection Sites controls to choose the approach height for all validations. It defaults to `0.5 mm` (GUI Bregma DV `-0.5 mm`); increase it when the surface bulges above the reference. The value is saved permanently in app settings.
+
+Choose `Validate Sites` then either **Validate all** or **Validate unvalidated**. For each site the app retracts vertically before travelling to AP/ML at the configured height, opens a modal validation dialog, and keeps the normal movement/speed keyboard shortcuts active. Adjust AP/ML/DV to the desired surface location, then choose:
 
 - **Validate and Next**: stores the refined AP/ML/surface DV and proceeds;
 - **Next Without Validating**: keeps the site unchanged/unvalidated;
