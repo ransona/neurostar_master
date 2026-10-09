@@ -32,7 +32,6 @@ class ProbeTests(unittest.TestCase):
         self.controller = probe.SimulatedController()
         self.service = probe.ProbeService(self.controller)
         self.addCleanup(self.service.close)
-        self.service.arm_local()
 
     def submit(self, **kwargs):
         payload = dict(command_id=str(time.monotonic_ns()), **kwargs)
@@ -80,33 +79,35 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(probe.Rejected):
             self.service.submit(dict(payload, direction=-1))
 
-    def test_stop_requires_local_rearm(self):
+    def test_stop_allows_next_command_without_rearming(self):
         self.service.stop()
-        with self.assertRaises(probe.Rejected):
-            self.service.heartbeat()
-        with self.assertRaises(probe.Rejected):
-            self.submit(kind="relative", coordinates={"AP": .01})
-        self.service.arm_local()
+        self.assertTrue(self.service.status()["ready"])
         self.submit(kind="relative", coordinates={"AP": .01})
 
-    def test_stale_heartbeat_cannot_revive_lease(self):
-        self.service.last_heartbeat -= 4
+    def test_ready_without_arm_or_heartbeat(self):
+        self.assertTrue(self.service.status()["ready"])
+        self.assertFalse(hasattr(self.service, "heartbeat"))
+        self.assertFalse(hasattr(self.service, "arm_local"))
+        self.submit(kind="relative", coordinates={"AP": .01})
+
+    def test_fault_blocks_further_commands(self):
+        self.service.stop("Hardware fault", fault=True)
         with self.assertRaises(probe.Rejected):
-            self.service.heartbeat()
-        self.assertFalse(self.service.armed)
+            self.submit(kind="relative", coordinates={"AP": .01})
+        self.assertFalse(self.service.status()["ready"])
         self.assertTrue(self.controller.cancelled)
 
-    def test_monitor_stops_after_heartbeat_loss(self):
-        self.service.last_heartbeat -= 4
+    def test_monitor_stops_outside_envelope(self):
+        self.controller.position[0] = .2
         self.service.monitor.join(timeout=.3)
-        self.assertFalse(self.service.armed)
+        self.assertFalse(self.service.status()["ready"])
         self.assertTrue(self.controller.cancelled)
 
     def test_failed_forward_does_not_reverse(self):
         self.controller.nudge_axis = lambda *args: (_ for _ in ()).throw(RuntimeError("readout failed"))
         result = self.submit(kind="out_and_back", axis="AP", direction=1, step_mm=.01)
         self.assertEqual(result["state"], "stopped")
-        self.assertFalse(self.service.armed)
+        self.assertFalse(self.service.status()["ready"])
         self.assertNotIn("REVERSE_REQUEST", [e["event"] for e in self.service.events])
 
     def test_stop_cancels_worker_and_busy_is_rejected(self):
@@ -119,29 +120,30 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(self.service.status()["operation"]["state"], "stopped")
         self.assertFalse(self.service.worker.is_alive())
 
-    def test_timeout_disarms(self):
+    def test_timeout_faults(self):
         self.service.timeout = .05
         self.controller.goto_axis_position = lambda *args, **kwargs: None
         result = self.submit(kind="relative", coordinates={"AP": .01})
         self.assertEqual(result["state"], "stopped")
-        self.assertFalse(self.service.armed)
+        self.assertFalse(self.service.status()["ready"])
 
     def test_dv_explicitly_enabled(self):
         self.service.allow_dv = True
         self.submit(kind="relative", coordinates={"DV": -.01})
         self.assertAlmostEqual(self.controller.position[2], -.01)
 
-    def test_http_auth_origin_and_endpoints(self):
-        self.service.lease_seconds = 30  # Network setup latency isn't a lease test.
-        server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service, "test-token"))
+    def test_token_free_http_rejects_browser_and_bad_host(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         url = f"http://127.0.0.1:{server.server_port}"
 
-        def call(path, payload=None, token="test-token", origin=None):
-            headers = {"Authorization": "Bearer " + token}
+        def call(path, payload=None, origin=None, host=None, content_type="application/json"):
+            headers = {"Content-Type": content_type}
+            if host:
+                headers["Host"] = host
             if origin:
                 headers["Origin"] = origin
             req = urllib.request.Request(url + path, headers=headers,
@@ -151,34 +153,38 @@ class ProbeTests(unittest.TestCase):
                 return json.load(response)
 
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            call("/status", token="wrong")
-        self.assertEqual(caught.exception.code, 401)
+            call("/status", host="malicious.example")
+        self.assertEqual(caught.exception.code, 403)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             call("/stop", {}, origin="https://example.com")
         self.assertEqual(caught.exception.code, 403)
-        self.assertTrue(call("/status")["armed"])
-        self.assertTrue(call("/heartbeat", {})["ok"])
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            call("/move", {}, content_type="text/plain")
+        self.assertEqual(caught.exception.code, 415)
+        self.assertTrue(call("/status")["ready"])
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            call("/heartbeat", {})
+        self.assertEqual(caught.exception.code, 404)
         call("/move", dict(command_id="http", kind="nudge", axis="AP", direction=1, step_mm=.01))
         self.service.worker.join(timeout=2)
         self.assertEqual(call("/status")["operation"]["state"], "completed")
         self.assertTrue(call("/events"))
         call("/stop", {})
-        self.assertFalse(call("/status")["armed"])
+        self.assertTrue(call("/status")["ready"])
         events = self.service.events
         incoming = [row for row in events if row["event"] == "INCOMING_MOVE"]
         self.assertEqual(incoming[0]["command"]["command_id"], "http")
         self.assertIn("peer", incoming[0])
-        self.assertTrue(any(row["event"] == "HTTP_RESULT" and row["status"] == 401 for row in events))
-        self.assertNotIn("test-token", json.dumps(events))
+        self.assertTrue(any(row["event"] == "HTTP_RESULT" and row["status"] == 403 for row in events))
 
     def test_rejected_movement_is_visible_in_audit(self):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service, "secret"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         payload = dict(command_id="bad", kind="relative", coordinates={"DV": .01}, password="do-not-log")
         req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/move",
-                                     data=json.dumps(payload).encode(), headers={"Authorization": "Bearer secret"})
+                                     data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with self.assertRaises(urllib.error.HTTPError) as caught:
             opener.open(req, timeout=2)
@@ -189,8 +195,8 @@ class ProbeTests(unittest.TestCase):
 
     def test_gui_event_filter_keeps_commands_and_failures(self):
         visible = gui_helpers["event_visible"]
-        self.assertFalse(visible(dict(event="HTTP_RESULT", endpoint="/heartbeat", status=200)))
-        self.assertTrue(visible(dict(event="HTTP_RESULT", endpoint="/heartbeat", status=400)))
+        self.assertFalse(visible(dict(event="HTTP_RESULT", endpoint="/status", status=200)))
+        self.assertTrue(visible(dict(event="HTTP_RESULT", endpoint="/status", status=400)))
         self.assertTrue(visible(dict(event="HTTP_REQUEST", endpoint="/move")))
         self.assertTrue(visible(dict(event="HTTP_REQUEST", endpoint="/status"), True))
         row = dict(sequence=1, utc="2026-10-09T10:00:00+00:00", event="INCOMING_MOVE", command={"kind":"nudge"})

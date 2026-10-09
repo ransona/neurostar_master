@@ -197,11 +197,11 @@ The top-bar **Update** button pulls the latest GitHub version while discarding l
 
 ## USB Controller Probe
 
-For an agent-controlled, supervised bench workflow over loopback or a private
-LAN, use the separate [Network Movement Probe](tools/movement_probe/README.md).
+For an agent-controlled, supervised bench workflow on the same Windows
+computer, use the separate [Local Movement Probe](tools/movement_probe/README.md).
 It supports bounded Axis nudges, relative/absolute GoTo, fine/planar movement,
-and verified out-and-back experiments with an authenticated HTTP API, local
-operator arming, heartbeat Stop and UTC logs. Agent safety instructions are in
+and verified out-and-back experiments with a loopback-only HTTP API, no tokens,
+arming or heartbeats, a local Stop button and UTC logs. Agent safety instructions are in
 [its AGENTS.md](tools/movement_probe/AGENTS.md). It does not capture or replay USB.
 
 The **Options → USB Controller Probe** is a manual correlation tool for

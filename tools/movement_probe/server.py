@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hmac
 import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
 from pathlib import Path
-import secrets
 import sys
 import threading
 import time
@@ -87,19 +85,18 @@ def real_controller():
 
 class ProbeService:
     def __init__(self, controller, radius=0.1, max_move=0.05, allow_dv=False,
-                 lease_seconds=3.0, timeout=15.0, log_path=None):
+                 timeout=15.0, log_path=None):
         self.controller = controller
         self.origin = self.read_position()
         self.radius, self.max_move = radius, max_move
         self.allow_dv = allow_dv
-        self.lease_seconds, self.timeout = lease_seconds, timeout
+        self.timeout = timeout
         self.log_path = log_path
         self.lock = threading.RLock()
         self.log_lock = threading.Lock()
-        self.armed = False
+        self.fault = None
         self.stop_event = threading.Event()
         self.closed = threading.Event()
-        self.last_heartbeat = 0.0
         self.operation = None
         self.operations = {}
         self.events = []
@@ -129,47 +126,27 @@ class ProbeService:
     def in_envelope(self, position):
         return all(abs(p - o) <= self.radius + 1e-9 for p, o in zip(position, self.origin))
 
-    def arm_local(self):
+    def stop(self, reason="Client Stop", fault=False):
         with self.lock:
-            if self.worker and self.worker.is_alive():
-                raise Rejected("Previous worker is still running.")
-            self.controller.safety_check()
-            if not self.in_envelope(self.read_position()):
-                raise Rejected("Outside the startup envelope. Reposition manually and restart.")
-            self.controller.wait_until_stopped() if hasattr(self.controller, "wait_until_stopped") else None
-            self.stop_event.clear()
-            self.armed = True
-            self.stop_error = None
-            self.last_heartbeat = time.monotonic()
-            self.log("ARMED_LOCALLY")
-
-    def heartbeat(self):
-        with self.lock:
-            if not self.armed:
-                raise Rejected("Disarmed; a local operator must use Arm in the server GUI (or console ARM).")
-            if time.monotonic() - self.last_heartbeat > self.lease_seconds:
-                self.stop("Heartbeat expired")
-                raise Rejected("Heartbeat expired; local rearming required.")
-            self.last_heartbeat = time.monotonic()
-
-    def stop(self, reason="Client Stop"):
-        with self.lock:
-            self.armed = False
+            if fault:
+                self.fault = reason
             self.stop_event.set()
             try:
                 self.controller.stop()
             except Exception as exc:
                 self.stop_error = str(exc)
+                self.fault = "Native Stop failed: " + str(exc)
             self.log("STOP", reason=reason, stop_error=self.stop_error)
 
     def status(self):
         with self.lock:
-            return dict(armed=self.armed, simulated=isinstance(self.controller, SimulatedController),
+            return dict(ready=not self.closed.is_set() and self.fault is None,
+                        fault=self.fault, simulated=isinstance(self.controller, SimulatedController),
                         coordinates="mechanical Axis mm; never native Bregma",
                         position=self.read_position(), origin=self.origin,
                         bounds={a: [o - self.radius, o + self.radius] for a, o in zip(AXES, self.origin)},
                         max_move_mm=self.max_move, allow_dv=self.allow_dv,
-                        lease_seconds=self.lease_seconds, stop_error=self.stop_error,
+                        stop_error=self.stop_error,
                         operation=dict(self.operation) if self.operation else None)
 
     def plan(self, payload, start):
@@ -223,8 +200,8 @@ class ProbeService:
                 if old[0] != payload:
                     raise Rejected("command_id already used with different contents.")
                 return dict(old[1])
-            if not self.armed or time.monotonic() - self.last_heartbeat > self.lease_seconds:
-                raise Rejected("Disarmed or expired heartbeat.")
+            if self.closed.is_set() or self.fault is not None:
+                raise Rejected("Server closed or faulted; resolve the fault and restart locally.")
             if self.worker and self.worker.is_alive():
                 raise Rejected("Busy; no movement queue. Wait or Stop.")
             if len(self.operations) >= 1000:
@@ -232,7 +209,7 @@ class ProbeService:
             start = self.read_position()
             self.controller.safety_check()
             if not self.in_envelope(start):
-                self.stop("Position outside envelope")
+                self.stop("Position outside envelope", fault=True)
                 raise Rejected("Position outside envelope.")
             method, target, reverse = self.plan(payload, start)
             self.operation = dict(id=command_id, state="running", start=start, target=target,
@@ -248,8 +225,6 @@ class ProbeService:
     def _check(self, deadline):
         if self.stop_event.is_set() or time.monotonic() >= deadline:
             raise RuntimeError("Movement cancelled or timed out.")
-        if time.monotonic() - self.last_heartbeat > self.lease_seconds:
-            raise RuntimeError("Heartbeat lost.")
         self.controller.safety_check()
         current = self.read_position()
         if not self.in_envelope(current):
@@ -325,7 +300,8 @@ class ProbeService:
                 self.operation["state"] = "completed"
             self.log("COMPLETED", id=self.operation["id"], position=self.read_position())
         except Exception as exc:
-            self.stop(str(exc))
+            # A normal Cancel/Stop is not a fault and needs no rearming.
+            self.stop(str(exc), fault=not self.stop_event.is_set())
             with self.lock:
                 self.operation.update(state="stopped", error=str(exc))
 
@@ -333,52 +309,59 @@ class ProbeService:
         while not self.closed.wait(0.1):
             try:
                 with self.lock:
-                    if not self.armed:
+                    if self.fault is not None:
                         continue
-                    if time.monotonic() - self.last_heartbeat > self.lease_seconds:
-                        self.stop("Heartbeat expired")
-                    else:
-                        self.controller.safety_check()
-                        if not self.in_envelope(self.read_position()):
-                            self.stop("Observed position outside envelope")
+                    self.controller.safety_check()
+                    if not self.in_envelope(self.read_position()):
+                        self.stop("Observed position outside envelope", fault=True)
             except Exception as exc:
-                self.stop("Monitor failure: " + str(exc))
+                self.stop("Monitor failure: " + str(exc), fault=True)
 
     def close(self):
-        self.stop("Server shutdown")
         self.closed.set()
+        self.stop("Server shutdown")
         if self.worker:
             self.worker.join(timeout=5)
         self.monitor.join(timeout=2)
 
 
-def handler(service, token):
+def handler(service):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass  # Never print authentication headers.
 
         def reply(self, code, value):
             service.log("HTTP_RESULT", peer=self.client_address[0],
-                        endpoint=self.path if self.path in ("/status", "/events", "/heartbeat", "/move", "/stop") else "<unknown>",
+                        endpoint=self.path if self.path in ("/status", "/events", "/move", "/stop") else "<unknown>",
                         status=code, error=value.get("error") if isinstance(value, dict) else None)
             data = json.dumps(value).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.end_headers()
+                self.wfile.write(data)
+            except (ConnectionError, OSError):
+                # A lost reply is not a new controller fault. The operation ID
+                # lets the local client inspect/retry without repeating motion.
+                pass
 
         def dispatch(self):
             self.connection.settimeout(2)
-            if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), ("Bearer " + token).encode()):
-                self.reply(401, {"error": "Authentication required"})
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                self.reply(403, {"error": "Same-computer connections only"})
                 return
-            # No browser cross-origin control, even if a token is supplied.
-            if self.headers.get("Origin") is not None:
+            # Restrict Host too: a malicious website must not use DNS rebinding
+            # to reach this unauthenticated loopback service.
+            hosts = (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
+            if self.headers.get("Host", "").lower() not in hosts:
+                self.reply(403, {"error": "Loopback Host required"})
+                return
+            if self.headers.get("Origin") is not None or self.headers.get("Sec-Fetch-Site") is not None:
                 self.reply(403, {"error": "Browser requests prohibited"})
                 return
-            endpoint = self.path if self.path in ("/status", "/events", "/heartbeat", "/move", "/stop") else "<unknown>"
+            endpoint = self.path if self.path in ("/status", "/events", "/move", "/stop") else "<unknown>"
             service.log("HTTP_REQUEST", peer=self.client_address[0], method=self.command, endpoint=endpoint)
             try:
                 if self.command == "GET" and self.path == "/status":
@@ -387,6 +370,9 @@ def handler(service, token):
                     with service.log_lock:
                         result = list(service.events)
                 elif self.command == "POST":
+                    if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                        self.reply(415, {"error": "Content-Type must be application/json"})
+                        return
                     size = int(self.headers.get("Content-Length", "0"))
                     if not 0 < size <= 4096:
                         raise Rejected("JSON request length must be 1–4096 bytes.")
@@ -400,10 +386,7 @@ def handler(service, token):
                                     command={key: payload[key] for key in
                                              ("command_id", "kind", "method", "axis", "direction", "step_mm", "target_mm", "coordinates")
                                              if key in payload})
-                    if self.path == "/heartbeat":
-                        service.heartbeat()
-                        result = {"ok": True}
-                    elif self.path == "/stop":
+                    if self.path == "/stop":
                         service.stop()
                         result = {"ok": service.stop_error is None, "stop_error": service.stop_error}
                     elif self.path == "/move":
@@ -418,7 +401,7 @@ def handler(service, token):
             except (ValueError, TypeError) as exc:
                 self.reply(400, {"error": str(exc)})
             except Exception as exc:
-                service.stop("API failure: " + str(exc))
+                service.stop("API failure: " + str(exc), fault=True)
                 self.reply(503, {"error": str(exc)})
 
         do_GET = dispatch
@@ -428,7 +411,7 @@ def handler(service, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bind", default="127.0.0.1", help="Use this computer's private LAN IP for remote agents; no public exposure.")
+    parser.add_argument("--bind", default="127.0.0.1", help="Loopback only; LAN/public connections are prohibited")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--console", action="store_true", help="Legacy terminal UI instead of the default small GUI")
@@ -439,10 +422,10 @@ def main():
     args = parser.parse_args()
     try:
         address = ipaddress.ip_address(args.bind)
-        if address.version != 4 or address.is_unspecified or address.is_multicast or not address.is_private:
+        if str(address) != "127.0.0.1":
             raise ValueError()
     except ValueError:
-        parser.error("Bind must be a specific private/loopback IPv4 address, not a public address or 0.0.0.0.")
+        parser.error("Bind must be 127.0.0.1; this token-free server only accepts same-computer connections.")
     if not (math.isfinite(args.radius_mm) and 0 < args.radius_mm <= 1
             and math.isfinite(args.max_move_mm) and 0 < args.max_move_mm <= min(args.radius_mm, 0.1)):
         parser.error("radius must be >0 and <=1 mm; max move >0 and <=0.1 mm and <=radius.")
@@ -451,30 +434,22 @@ def main():
     service = ProbeService(SimulatedController() if args.simulate else real_controller(),
                            radius=args.radius_mm, max_move=args.max_move_mm,
                            allow_dv=args.allow_dv, log_path=log_path)
-    token = secrets.token_urlsafe(32)
     server = None
     try:
-        server = ThreadingHTTPServer((args.bind, args.port), handler(service, token))
+        server = ThreadingHTTPServer((args.bind, args.port), handler(service))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         if not args.console:
             from gui import run_gui
-            run_gui(service, token, f"http://{args.bind}:{server.server_port}", log_path)
+            run_gui(service, f"http://{args.bind}:{server.server_port}", log_path)
             return
-        print(f"URL: http://{args.bind}:{args.port}\nToken (keep private): {token}\nLog: {log_path}")
+        print(f"URL: http://{args.bind}:{server.server_port}\nLog: {log_path}")
         print(json.dumps(service.status(), indent=2))
-        print("DISARMED. Close the main controller GUI. No specimen; tool safely retracted; drill off.")
-        print("Operator commands: ARM (explicit safety approval), STOP, STATUS, QUIT.")
-        print("Agent must start a heartbeat BEFORE you ARM; initial disarmed replies are expected.")
+        print("READY for local commands. No specimen; tool safely retracted; drill off. Close other automation.")
+        print("Operator commands: STOP, STATUS, QUIT. No token, arming or heartbeat required.")
         while True:
             command = input("probe> ").strip().upper()
-            if command == "ARM":
-                try:
-                    service.arm_local()
-                    print("Armed. Heartbeat required every <3 seconds; STOP disarms.")
-                except Exception as exc:
-                    print("Not armed:", exc)
-            elif command == "STOP":
+            if command == "STOP":
                 service.stop("Local operator Stop")
                 print("Stop requested. Use physical Stop if motion persists.")
             elif command == "STATUS":
