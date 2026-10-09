@@ -457,6 +457,8 @@ In this mode, clicks add sites without moving the tool, dragging still pans, and
 
 Set **Validation height (mm above Bregma)** in the Injection Sites controls to choose the approach height for all validations. It defaults to `0.5 mm` (GUI Bregma DV `-0.5 mm`); increase it when the surface bulges above the reference. The value is saved permanently in app settings.
 
+Right-click any site in the list and choose **Validate this site** to approach just that site and open the normal adjustment dialog. **Validate**, **Skip**, **Delete Point**, or **Cancel** ends this single-site pass without automatically moving to another site. The active site is highlighted blue during validation. This works in either coordinate display mode; stored coordinates remain GUI-Bregma-relative.
+
 Choose `Validate Sites` then either **Validate all** or **Validate unvalidated**. For each site the app retracts vertically before travelling to AP/ML at the configured height, opens a modal validation dialog, and keeps the normal movement/speed keyboard shortcuts active. Adjust AP/ML/DV to the desired surface location, then choose:
 
 - **Validate and Next**: stores the refined AP/ML/surface DV and proceeds;

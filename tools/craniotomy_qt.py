@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -1489,6 +1490,8 @@ class CraniotomyWindow(QMainWindow):
         sites_outer_layout.addWidget(sites_box, 1)
 
         self.injection_sites_list = QListWidget()
+        self.injection_sites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.injection_sites_list.customContextMenuRequested.connect(self.show_injection_site_context_menu)
         add_site_btn = QPushButton("Add Injection Site")
         add_site_btn.clicked.connect(self.add_injection_site)
         add_grid_btn = QPushButton("Add Grid")
@@ -3601,13 +3604,6 @@ class CraniotomyWindow(QMainWindow):
         if not self.injection_sites:
             QMessageBox.information(self, "Validate Sites", "Add one or more injection sites first.")
             return
-        if self.coordinate_mode != "bregma" or self.bregma_axis is None:
-            QMessageBox.information(
-                self,
-                "Validate Sites",
-                "Set Bregma and select Bregma coordinates before validating sites.",
-            )
-            return
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
         choice = QMessageBox(self)
@@ -3625,6 +3621,31 @@ class CraniotomyWindow(QMainWindow):
                 QMessageBox.information(self, "Validate Sites", "All injection sites are already validated.")
                 return
             self._run_injection_site_validation(start_index, validate_all_sites=False)
+
+    def show_injection_site_context_menu(self, position) -> None:
+        item = self.injection_sites_list.itemAt(position)
+        if item is None:
+            return
+        index = self.injection_sites_list.row(item)
+        self.injection_sites_list.setCurrentItem(item)
+        menu = QMenu(self)
+        validate_action = menu.addAction("Validate this site")
+        validate_action.setEnabled(not self._motion_is_active())
+        if menu.exec(self.injection_sites_list.viewport().mapToGlobal(position)) == validate_action:
+            self.validate_injection_site(index)
+
+    def validate_injection_site(self, index: int) -> None:
+        if not self._require_idle("Validate Site"):
+            return
+        try:
+            self._require_project_coordinates("injection_sites")
+            if not 0 <= index < len(self.injection_sites):
+                return
+            if self.nudge_all_sites_active:
+                self.nudge_all_sites_btn.setChecked(False)
+            self._run_injection_site_validation(index, validate_all_sites=True, single_site=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "Validate Site", str(exc))
 
     def _move_to_injection_site_for_validation(self, site: InjectionSite) -> bool:
         """Approach at the user's configured height above GUI Bregma."""
@@ -3839,7 +3860,7 @@ class CraniotomyWindow(QMainWindow):
             raise StereoDriveError("StereoDrive move ended without confirming arrival.")
         return True
 
-    def _validation_dialog(self, index: int, total: int, site: InjectionSite) -> tuple[str, QDialog]:
+    def _validation_dialog(self, index: int, total: int, site: InjectionSite, *, single_site: bool = False) -> tuple[str, QDialog]:
         dialog = QDialog(self)
         dialog.setWindowTitle("Validate Injection Site")
         dialog.setModal(True)
@@ -3851,8 +3872,8 @@ class CraniotomyWindow(QMainWindow):
             "to refine AP/ML and lower DV until the tool touches surface."
         ))
         buttons = QDialogButtonBox()
-        validate_button = buttons.addButton("Validate and Next", QDialogButtonBox.AcceptRole)
-        next_button = buttons.addButton("Next Without Validating", QDialogButtonBox.ActionRole)
+        validate_button = buttons.addButton("Validate" if single_site else "Validate and Next", QDialogButtonBox.AcceptRole)
+        next_button = buttons.addButton("Skip" if single_site else "Next Without Validating", QDialogButtonBox.ActionRole)
         delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
         cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
         layout.addWidget(buttons)
@@ -3881,7 +3902,7 @@ class CraniotomyWindow(QMainWindow):
                 return candidate
         return None
 
-    def _run_injection_site_validation(self, start_index: int, validate_all_sites: bool) -> None:
+    def _run_injection_site_validation(self, start_index: int, validate_all_sites: bool, *, single_site: bool = False) -> None:
         index: int | None = start_index
         try:
             while index is not None and index < len(self.injection_sites):
@@ -3890,7 +3911,7 @@ class CraniotomyWindow(QMainWindow):
                 self.set_status(f"Moving to injection site {index + 1}/{len(self.injection_sites)} for validation.")
                 if not self._move_to_injection_site_for_validation(site):
                     break
-                action, _dialog = self._validation_dialog(index, len(self.injection_sites), site)
+                action, _dialog = self._validation_dialog(index, len(self.injection_sites), site, single_site=single_site)
                 if action == "cancel":
                     self.set_status("Injection-site validation stopped.")
                     break
@@ -3901,6 +3922,8 @@ class CraniotomyWindow(QMainWindow):
                 elif action == "delete":
                     del self.injection_sites[index]
                     self.set_status(f"Deleted injection site {index + 1}.")
+                    if single_site:
+                        break
                     if validate_all_sites:
                         index = index if index < len(self.injection_sites) else None
                     else:
@@ -3910,6 +3933,8 @@ class CraniotomyWindow(QMainWindow):
                             None,
                         )
                     continue
+                if single_site:
+                    break
                 index = self._next_validation_index(index, validate_all_sites)
             else:
                 self.set_status("Injection-site validation complete.")

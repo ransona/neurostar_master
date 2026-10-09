@@ -379,6 +379,45 @@ class GuiCoordinateTests(unittest.TestCase):
         self.assertEqual(self.w.validation_clearance_mm, 1.25)
         self.assertTrue(self.w._save_general_settings.called)
 
+    def test_right_click_validation_runs_only_selected_site(self):
+        self.w.injection_sites = [Site(1., 2., None), Site(3., 4., None)]
+        self.w._run_injection_site_validation = Mock()
+        self.w.validate_injection_site(1)
+        self.w._run_injection_site_validation.assert_called_once_with(1, validate_all_sites=True, single_site=True)
+
+    def test_single_site_validation_captures_surface_without_advancing(self):
+        self.w.injection_sites = [Site(1., 2., None), Site(3., 4., None)]
+        self.w.controller.position = [33.1, 35.2, 19.3]
+        self.w.refresh_injection_sites_list = Mock()
+        self.w._move_to_injection_site_for_validation = Mock(return_value=True)
+        self.w._validation_dialog = Mock(return_value=("validate", None))
+        self.w._run_injection_site_validation(1, True, single_site=True)
+        self.w._move_to_injection_site_for_validation.assert_called_once()
+        self.assertIsNone(self.w.injection_sites[0].dv)
+        self.assertAlmostEqual(self.w.injection_sites[1].ap, 3.1)
+        self.assertAlmostEqual(self.w.injection_sites[1].ml, 4.2)
+        self.assertAlmostEqual(self.w.injection_sites[1].dv, .3)
+
+    def test_single_site_skip_keeps_unvalidated_position(self):
+        original = Site(3., 4., None, True)
+        self.w.injection_sites = [original, Site(5., 6., None)]
+        self.w.refresh_injection_sites_list = Mock()
+        self.w._move_to_injection_site_for_validation = Mock(return_value=True)
+        self.w._validation_dialog = Mock(return_value=("next", None))
+        self.w._run_injection_site_validation(0, True, single_site=True)
+        self.assertEqual(self.w.injection_sites[0], original)
+        self.w._move_to_injection_site_for_validation.assert_called_once()
+
+    def test_context_menu_routes_to_clicked_row(self):
+        item = Mock()
+        action = Mock()
+        menu = Mock(addAction=lambda text: action, exec=lambda position: action)
+        self.w.injection_sites_list = Mock(itemAt=lambda position: item, row=lambda candidate: 2)
+        self.w.validate_injection_site = Mock()
+        with patch.dict(GUI, QMenu=lambda parent: menu):
+            self.w.show_injection_site_context_menu(point(10., 20.))
+        self.w.validate_injection_site.assert_called_once_with(2)
+
     def test_busy_worker_blocks_manual_nudges_and_recalibration(self):
         self.w.injection_thread = Mock(is_alive=lambda: True)
         self.w.controller.nudge_axis = Mock()
