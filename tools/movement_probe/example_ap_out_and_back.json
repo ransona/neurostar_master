@@ -1,0 +1,7 @@
+{
+  "command_id": "ap-001-first-experiment",
+  "kind": "out_and_back",
+  "axis": "AP",
+  "direction": 1,
+  "step_mm": 0.01
+}

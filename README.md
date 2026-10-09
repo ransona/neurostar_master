@@ -197,6 +197,13 @@ The top-bar **Update** button pulls the latest GitHub version while discarding l
 
 ## USB Controller Probe
 
+For an agent-controlled, supervised bench workflow over loopback or a private
+LAN, use the separate [Network Movement Probe](tools/movement_probe/README.md).
+It supports bounded Axis nudges, relative/absolute GoTo, fine/planar movement,
+and verified out-and-back experiments with an authenticated HTTP API, local
+operator arming, heartbeat Stop and UTC logs. Agent safety instructions are in
+[its AGENTS.md](tools/movement_probe/AGENTS.md). It does not capture or replay USB.
+
 The **Options → USB Controller Probe** is a manual correlation tool for
 investigating the USB traffic produced by one StereoDrive axis nudge. It does
 not listen to USB by itself, and it never replays or injects captured packets.
