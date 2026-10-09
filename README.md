@@ -302,6 +302,8 @@ After a round:
 
 `Start Drilling` becomes `Pause` while a round is running.
 
+Starting or manually continuing a drilling sequence asks **Is the drill turned on?** Choose **Yes** to proceed; **No** (the default), closing the prompt, or pressing Esc leaves drilling unstarted. This confirmation does not turn the drill on automatically. Subsequent automatically started rounds continue without repeating the prompt.
+
 If paused:
 
 - the drill is raised to `2 mm` above surface

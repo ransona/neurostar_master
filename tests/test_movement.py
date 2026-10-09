@@ -392,12 +392,35 @@ class GuiCoordinateTests(unittest.TestCase):
         self.w.mid_ml = Mock(value=lambda: 2.)
         self.w.start_round_btn = Mock()
         self.w.update_current_target_depth_label = Mock()
-        with patch.object(threading, "Thread") as thread:
+        with patch.object(threading, "Thread") as thread, \
+                patch.object(GUI["QMessageBox"], "question", return_value=1):
             self.w.start_drilling_round()
             args = thread.call_args.kwargs["args"]
         self.assertEqual(args[0][0], (35., 37., 23.1))
         self.assertEqual(args[-1], (35., 37., 21.1))
         self.assertEqual(self.w.trajectory[0], (1., 2., .1))
+
+    def test_drilling_declined_confirmation_never_starts_motion(self):
+        self.w.trajectory = [(1., 2., .1)]
+        self.w.seeds = [GUI["SeedPoint"](0, 0., 1., 2., .1), GUI["SeedPoint"](1, 180., 1., 2., .1)]
+        self.w.drill_depth = Mock(value=lambda: .2)
+        self.w.current_target_depth_mm = .1
+        self.w.update_current_target_depth_label = Mock()
+        self.w.controller.prepare_motion = Mock()
+        with patch.object(GUI["QMessageBox"], "question", return_value=0) as question, \
+                patch.object(threading, "Thread") as thread:
+            self.w.start_drilling_round()
+        self.assertTrue(question.called)
+        self.assertFalse(self.w.controller.prepare_motion.called)
+        self.assertFalse(thread.called)
+        self.assertEqual(self.w.controller.clicks, [])
+
+    def test_pause_during_active_drilling_does_not_ask_for_drill_confirmation(self):
+        self.w.drill_thread = Mock(is_alive=lambda: True)
+        with patch.object(GUI["QMessageBox"], "question") as question:
+            self.w.start_drilling_round()
+        self.assertTrue(self.w.drill_pause_requested.is_set())
+        self.assertFalse(question.called)
 
     def test_continuous_drilling_segment_passes_axis_xyz(self):
         self.w.controller.position = [35., 37., 23.1]

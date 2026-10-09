@@ -5319,7 +5319,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = completed_points
         self.redraw_views()
 
-    def start_drilling_round(self) -> None:
+    def start_drilling_round(self, *, drill_confirmed: bool = False) -> None:
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
             return
@@ -5342,6 +5342,18 @@ class CraniotomyWindow(QMainWindow):
         if depth <= 0.0:
             QMessageBox.information(self, "Craniotomy", "Current target depth must be greater than zero.")
             return
+        if not drill_confirmed:
+            response = QMessageBox.question(
+                self,
+                "Confirm Drill Is On",
+                "Confirm that the drill is turned on before starting the craniotomy drilling sequence.\n\n"
+                "Is the drill turned on?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response != QMessageBox.Yes:
+                self.set_status("Drilling not started. Turn on the drill, then start again.")
+                return
         self.controller.prepare_motion()
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
@@ -5424,7 +5436,7 @@ class CraniotomyWindow(QMainWindow):
                 self.drilling_paused = False
                 self.start_round_btn.setText("Pause")
                 self.set_status(f"Starting next drilling round to {self.current_target_depth_mm:.3f} mm.")
-                QTimer.singleShot(100, self.start_drilling_round)
+                QTimer.singleShot(100, lambda: self.start_drilling_round(drill_confirmed=True))
             else:
                 self.drilling_paused = True
                 self.start_round_btn.setText("Continue")
