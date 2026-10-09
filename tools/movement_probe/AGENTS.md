@@ -11,6 +11,10 @@ StereoDrive visible, and correct startup Axis readings/bounds. Starting the real
 server enables requests with no further Arm step. Never proxy/forward/tunnel it
 to LAN/internet, weaken browser/bind restrictions or alter firewall policy.
 
+Defaults now permit ±1 mm per axis from startup and 1 mm Euclidean distance per
+command/each out-and-back leg. Verify that this entire space is clear; do not
+assume the older ±0.1 mm/0.05 mm limits still apply. DV remains disabled unless
+launched with --allow-dv. The larger defaults do not require larger experiments.
 Start with AP 0.01 mm out-and-back. One variable and one command at a time;
 poll the same operation ID to completion/stopped. Values are mechanical Axis mm,
 not native/main-GUI Bregma/anchor. Derive targets from live status, verify signs

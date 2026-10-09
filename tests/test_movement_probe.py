@@ -55,7 +55,7 @@ class ProbeTests(unittest.TestCase):
         self.assertLess(names.index("ARRIVED"), names.index("REVERSE_REQUEST"))
 
     def test_bad_commands_and_dv_rejected(self):
-        for payload in [dict(kind="relative", coordinates={"AP": .06}),
+        for payload in [dict(kind="relative", coordinates={"AP": 1.01}),
                         dict(kind="relative", coordinates={"DV": .01}),
                         dict(kind="axis", axis="AP", target_mm=float("nan")),
                         dict(kind="nudge", axis="AP", step_mm=.001, direction=1),
@@ -66,7 +66,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(self.controller.position, [0, 0, 0])
 
     def test_envelope_prevents_accumulated_drift(self):
-        self.controller.position[0] = .09
+        self.controller.position[0] = .99
         with self.assertRaises(probe.Rejected):
             self.submit(kind="relative", coordinates={"AP": .02})
 
@@ -98,7 +98,7 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(self.controller.cancelled)
 
     def test_monitor_stops_outside_envelope(self):
-        self.controller.position[0] = .2
+        self.controller.position[0] = 1.2
         self.service.monitor.join(timeout=.3)
         self.assertFalse(self.service.status()["ready"])
         self.assertTrue(self.controller.cancelled)
@@ -131,6 +131,35 @@ class ProbeTests(unittest.TestCase):
         self.service.allow_dv = True
         self.submit(kind="relative", coordinates={"DV": -.01})
         self.assertAlmostEqual(self.controller.position[2], -.01)
+
+    def test_default_one_mm_limits_and_full_distance_methods(self):
+        self.assertEqual(self.service.status()["bounds"]["AP"], [-1, 1])
+        self.assertEqual(self.service.status()["max_move_mm"], 1)
+        for method in ("goto", "nudged", "planar"):
+            with self.subTest(method=method):
+                self.controller.position[:] = [0, 0, 0]
+                result = self.submit(kind="relative", coordinates={"AP": 1}, method=method)
+                self.assertEqual(result["state"], "completed")
+                self.assertAlmostEqual(self.controller.position[0], 1)
+
+    def test_one_mm_out_and_back_and_diagonal_limit(self):
+        result = self.submit(kind="out_and_back", axis="ML", step_mm=1, direction=-1)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(self.controller.position, [0, 0, 0])
+        with self.assertRaises(probe.Rejected):
+            self.submit(kind="relative", coordinates={"AP": .8, "ML": .8})
+
+    def test_one_mm_dv_when_enabled(self):
+        self.service.allow_dv = True
+        self.assertEqual(self.submit(kind="relative", coordinates={"DV": -1})["state"], "completed")
+        self.assertAlmostEqual(self.controller.position[2], -1)
+
+    def test_three_axis_fine_move_can_exceed_100_increments(self):
+        self.service.allow_dv = True
+        result = self.submit(kind="relative", coordinates={"AP": .57, "ML": .57, "DV": .57}, method="nudged")
+        self.assertEqual(result["state"], "completed")
+        for value in self.controller.position:
+            self.assertAlmostEqual(value, .57)
 
     def test_token_free_http_rejects_browser_and_bad_host(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service))

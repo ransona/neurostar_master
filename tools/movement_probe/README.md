@@ -31,8 +31,8 @@ Axis mm, never native or main-GUI Bregma.
 
 Operate only within the human-approved, supervised bench setup: no specimen,
 tool clear, drill off and physical Stop accessible. Begin with the supplied
-AP 0.01 mm out-and-back example; default limits are ±0.1 mm from startup and
-0.05 mm per movement, with DV disabled unless the operator approves --allow-dv.
+AP 0.01 mm out-and-back example; default limits are ±1 mm per axis from startup
+and 1 mm total distance per movement, with DV disabled unless the operator approves --allow-dv.
 One command at a time; do not bypass limits, dismiss skull warnings or replay
 USB packets. Stop via client.py stop, POST /stop, the GUI Stop button or Esc;
 another explicit command is allowed after cancellation finishes, while closing
@@ -94,7 +94,7 @@ numerical directions mechanically; signs do not prove anatomical up/down.
 
 | kind | fields | behaviour |
 | --- | --- | --- |
-| nudge | axis, direction (+1/-1), step_mm | One arrow click: 0.01, 0.02 or 0.05 mm |
+| nudge | axis, direction (+1/-1), step_mm | One arrow click: 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 or 1 mm |
 | out_and_back | same as nudge | Verified outward nudge and matching reverse |
 | axis | axis, target_mm, optional method | Single-axis absolute target |
 | relative | coordinates object, optional method | Signed offsets from live readings |
@@ -105,9 +105,12 @@ Methods: `goto` (default) uses Axis text fields/GoTo and may move multiple axes;
 ML then DV via verified 0.01 mm increments. `planar` interleaves AP/ML increments
 by greatest remaining distance; DV forbidden. It is not continuous drilling DDA.
 
-Default bounds: ±0.1 mm per axis from startup. Maximum Euclidean distance per
-command/each probe leg: 0.05 mm. Locally approved `--radius-mm`/`--max-move-mm`
-can increase to at most 1 mm radius/0.1 mm per command. DV requires `--allow-dv`
+Default bounds: ±1 mm per axis from startup. Maximum Euclidean distance per
+command/each probe leg: 1 mm. These are also the hard maximums; use
+`--radius-mm`/`--max-move-mm` to choose smaller limits (max move must not exceed
+radius). For multi-axis requests the 1 mm limit is total distance, not 1 mm on
+every axis simultaneously. Restarting establishes a new startup position.
+DV requires `--allow-dv`
 at locally approved startup. No drill, syringe, native Home/Work, Bregma reset
 or calibration API. No automatic skull-clearance/recovery moves. Bounds cannot
 prove collision safety. Direct-entry builds may move before GoTo; targets are

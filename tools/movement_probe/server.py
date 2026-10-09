@@ -14,7 +14,7 @@ import time
 import uuid
 
 AXES = ("AP", "ML", "DV")
-STEPS = (0.01, 0.02, 0.05)
+STEPS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
 
 
 class Rejected(ValueError):
@@ -84,7 +84,7 @@ def real_controller():
 
 
 class ProbeService:
-    def __init__(self, controller, radius=0.1, max_move=0.05, allow_dv=False,
+    def __init__(self, controller, radius=1.0, max_move=1.0, allow_dv=False,
                  timeout=15.0, log_path=None):
         self.controller = controller
         self.origin = self.read_position()
@@ -165,7 +165,7 @@ class ProbeService:
             else:
                 step = number(payload.get("step_mm"))
                 if step not in STEPS:
-                    raise Rejected("Single nudge step must be 0.01, 0.02, or 0.05 mm.")
+                    raise Rejected("Single nudge step must be 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, or 1 mm.")
                 direction = payload.get("direction")
                 if type(direction) is not int or direction not in (-1, 1):
                     raise Rejected("direction must be -1 or 1.")
@@ -268,7 +268,9 @@ class ProbeService:
             return
         # Fine/planar moves issue one verified 0.01 mm increment at a time,
         # never the main app's rapid drilling loop. Planar interleaves AP/ML.
-        for _ in range(100):
+        # A 1 mm 3-axis diagonal can need up to ~174 individual increments;
+        # include the final completion check rather than timing out at arrival.
+        for _ in range(201):
             current = self._check(deadline)
             axes = range(2) if method == "planar" else range(3)
             pending = [i for i in axes if abs(target[i] - current[i]) > 0.006]
@@ -416,8 +418,8 @@ def main():
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--console", action="store_true", help="Legacy terminal UI instead of the default small GUI")
     parser.add_argument("--allow-dv", action="store_true", help="Local operator allows DV experiments in an empty/retracted workspace.")
-    parser.add_argument("--radius-mm", type=float, default=0.1)
-    parser.add_argument("--max-move-mm", type=float, default=0.05)
+    parser.add_argument("--radius-mm", type=float, default=1.0)
+    parser.add_argument("--max-move-mm", type=float, default=1.0)
     parser.add_argument("--log-dir", type=Path, default=Path.home() / "StereoDriveProbeLogs")
     args = parser.parse_args()
     try:
@@ -427,8 +429,8 @@ def main():
     except ValueError:
         parser.error("Bind must be 127.0.0.1; this token-free server only accepts same-computer connections.")
     if not (math.isfinite(args.radius_mm) and 0 < args.radius_mm <= 1
-            and math.isfinite(args.max_move_mm) and 0 < args.max_move_mm <= min(args.radius_mm, 0.1)):
-        parser.error("radius must be >0 and <=1 mm; max move >0 and <=0.1 mm and <=radius.")
+            and math.isfinite(args.max_move_mm) and 0 < args.max_move_mm <= min(args.radius_mm, 1.0)):
+        parser.error("radius must be >0 and <=1 mm; max move >0 and <=1 mm and <=radius.")
     args.log_dir.mkdir(parents=True, exist_ok=True)
     log_path = args.log_dir / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8] + ".jsonl")
     service = ProbeService(SimulatedController() if args.simulate else real_controller(),
