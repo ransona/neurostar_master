@@ -2,6 +2,8 @@ import ctypes
 import json
 import re
 import time
+import threading
+import math
 from dataclasses import dataclass
 
 
@@ -146,6 +148,8 @@ class StereoDriveError(RuntimeError):
 
 class StereoDriveController:
     def __init__(self) -> None:
+        self._motion_cancelled = threading.Event()
+        self._motion_lock = threading.RLock()
         self.main_hwnd = self._find_main_window()
         self._active_injectomate_trigger_control_id: int | None = None
 
@@ -620,14 +624,17 @@ class StereoDriveController:
         text = self._get_text(hwnd)
         if not text:
             raise StereoDriveError(f"Control ID {control_id} has no numeric value.")
-        return float(text)
+        value = float(text.replace(",", "."))
+        if not math.isfinite(value):
+            raise StereoDriveError(f"Control ID {control_id} has a non-finite value.")
+        return value
 
     def _axis_ids(self, axis: str) -> tuple[int, int, int]:
         normalized = axis.upper()
         mapping = {
-            "AP": (CURRENT_AP_ID, STEP_AP_ID, BUTTON_AP_POSITIVE_ID),
-            "ML": (CURRENT_ML_ID, STEP_ML_ID, BUTTON_ML_POSITIVE_ID),
-            "DV": (CURRENT_DV_ID, STEP_DV_ID, BUTTON_DV_POSITIVE_ID),
+            "AP": (AXIS_CURRENT_AP_ID, STEP_AP_ID, BUTTON_AP_POSITIVE_ID),
+            "ML": (AXIS_CURRENT_ML_ID, STEP_ML_ID, BUTTON_ML_POSITIVE_ID),
+            "DV": (AXIS_CURRENT_DV_ID, STEP_DV_ID, BUTTON_DV_POSITIVE_ID),
         }
         if normalized not in mapping:
             raise StereoDriveError(f"Unknown axis '{axis}'.")
@@ -932,10 +939,10 @@ class StereoDriveController:
         )
 
     def goto_home(self) -> None:
-        self._click(GOTO_HOME_ID)
+        self._motion_click(GOTO_HOME_ID)
 
     def goto_work(self) -> None:
-        self._click(GOTO_WORK_ID)
+        self._motion_click(GOTO_WORK_ID)
 
     def fill_injectomate(self) -> None:
         self.show_injectomate()
@@ -1096,7 +1103,38 @@ class StereoDriveController:
 
     def nudge_axis(self, axis: str, positive: bool) -> None:
         negative_button_id, positive_button_id = self._axis_button_ids(axis)
-        self._click(positive_button_id if positive else negative_button_id)
+        self._motion_click(positive_button_id if positive else negative_button_id)
+
+    def prepare_motion(self) -> None:
+        """Start a new GUI-owned operation after the previous worker has stopped."""
+        with self._motion_lock:
+            self._motion_cancelled.clear()
+
+    def _check_motion_cancelled(self, stop_requested=None) -> None:
+        if self._motion_cancelled.is_set() or (stop_requested is not None and stop_requested()):
+            raise StereoDriveError("Movement cancelled.")
+
+    @staticmethod
+    def _validate_axis_targets(*values) -> None:
+        if not all(math.isfinite(value) for value in values):
+            raise StereoDriveError("Movement coordinates must be finite numbers.")
+
+    def _motion_click(self, control_id: int, stop_requested=None) -> None:
+        with self._motion_lock:
+            self._check_motion_cancelled(stop_requested)
+            self._click(control_id)
+
+    def _set_axis_target_text(self, control_id: int, text: str, stop_requested=None) -> None:
+        with self._motion_lock:
+            self._check_motion_cancelled(stop_requested)
+            try:
+                self._set_edit_control_text(control_id, text)
+            except StereoDriveError:
+                # Direct-entry builds can consume and clear a value immediately.
+                # GoTo/wait still must verify the actual mechanical position.
+                if self._get_text(self._control_handle(control_id)).strip():
+                    raise
+            self._check_motion_cancelled(stop_requested)
 
     def move_axis_to_target(
         self,
@@ -1108,13 +1146,13 @@ class StereoDriveController:
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
+        self._validate_axis_targets(target, step_mm, tolerance)
+        if step_mm <= 0 or tolerance <= 0:
+            raise StereoDriveError("Movement step and tolerance must be positive.")
         max_iterations = 10000
-        moved = False
-        positive = False
         active_step: float | None = None
         for _ in range(max_iterations):
-            if stop_requested is not None and stop_requested():
-                raise StereoDriveError("Operation paused.")
+            self._check_motion_cancelled(stop_requested)
             current = self.get_current_axis(axis)
             diff = target - current
             if abs(diff) <= tolerance:
@@ -1123,14 +1161,11 @@ class StereoDriveController:
             if active_step is None or not abs(active_step - chosen_step) < 1e-9:
                 self.set_nudge_step(axis, chosen_step)
                 active_step = chosen_step
-            if not moved:
-                positive = diff > 0
-            elif (positive and current >= target) or ((not positive) and current <= target):
-                return
+            positive = diff > 0
+            self._check_motion_cancelled(stop_requested)
             self.nudge_axis(axis, positive)
             if axis.upper() == "DV" and positive:
                 self.confirm_below_skull_warning(timeout_seconds=0.05, poll_seconds=0.01)
-            moved = True
             if status_callback is not None:
                 status_callback(f"Nudging {axis.upper()} to {target:.3f} (current {current:.3f})")
             time.sleep(dwell_seconds)
@@ -1223,8 +1258,11 @@ class StereoDriveController:
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
+        self._validate_axis_targets(ap, ml, step_mm, tolerance)
+        if step_mm <= 0 or tolerance <= 0:
+            raise StereoDriveError("Movement step and tolerance must be positive.")
         max_iterations = 20000
-        start_ap, start_ml, _start_dv = self.get_current_position()
+        start_ap, start_ml, _start_dv = self.get_current_axis_position()
         total_ap = ap - start_ap
         total_ml = ml - start_ml
         total_length_sq = total_ap * total_ap + total_ml * total_ml
@@ -1255,9 +1293,8 @@ class StereoDriveController:
             return ap_error * ap_error + ml_error * ml_error
 
         for _ in range(max_iterations):
-            if stop_requested is not None and stop_requested():
-                raise StereoDriveError("Operation paused.")
-            current_ap, current_ml, _current_dv = self.get_current_position()
+            self._check_motion_cancelled(stop_requested)
+            current_ap, current_ml, _current_dv = self.get_current_axis_position()
             ap_diff = ap - current_ap
             ml_diff = ml - current_ml
             if abs(ap_diff) <= tolerance and abs(ml_diff) <= tolerance:
@@ -1273,6 +1310,9 @@ class StereoDriveController:
                 candidate_ml = current_ml + (ml_step if directions["ML"] else -ml_step)
                 candidates.append((perpendicular_error_sq(current_ap, candidate_ml), -abs(ml_diff), "ML", ml_step))
             if not candidates:
+                for axis, target in (("AP", ap), ("ML", ml)):
+                    self.move_axis_to_target(axis, target, step_mm=step_mm, tolerance=tolerance,
+                                             stop_requested=stop_requested, dwell_seconds=dwell_seconds)
                 return
 
             _error, _distance, axis, chosen_step = min(candidates)
@@ -1300,14 +1340,16 @@ class StereoDriveController:
         status_callback=None,
         dwell_seconds: float = 0.02,
     ) -> None:
+        self._validate_axis_targets(ap, ml, step_mm, tolerance)
+        if step_mm <= 0 or tolerance <= 0:
+            raise StereoDriveError("Movement step and tolerance must be positive.")
         max_iterations = 20000
         active_steps: dict[str, float] = {}
         move_directions: dict[str, bool] = {}
         moved_axes: dict[str, bool] = {"AP": False, "ML": False}
         for _ in range(max_iterations):
-            if stop_requested is not None and stop_requested():
-                raise StereoDriveError("Operation paused.")
-            current_ap, current_ml, _current_dv = self.get_current_position()
+            self._check_motion_cancelled(stop_requested)
+            current_ap, current_ml, _current_dv = self.get_current_axis_position()
             diffs = {"AP": ap - current_ap, "ML": ml - current_ml}
             remaining_axes = [axis for axis, diff in diffs.items() if abs(diff) > tolerance]
             if not remaining_axes:
@@ -1327,6 +1369,9 @@ class StereoDriveController:
 
             candidate_axes = [axis for axis in remaining_axes if can_continue(axis)]
             if not candidate_axes:
+                for axis, target in (("AP", ap), ("ML", ml)):
+                    self.move_axis_to_target(axis, target, step_mm=step_mm, tolerance=tolerance,
+                                             stop_requested=stop_requested, dwell_seconds=dwell_seconds)
                 return
             axis = max(candidate_axes, key=lambda name: abs(diffs[name]))
             diff = diffs[axis]
@@ -1370,13 +1415,14 @@ class StereoDriveController:
             time.sleep(0.05)
         return self._axis_position_matches(ap, ml, dv)
 
-    def set_axis_target_position(self, ap: float, ml: float, dv: float) -> bool:
+    def set_axis_target_position(self, ap: float, ml: float, dv: float, stop_requested=None) -> bool:
         """Write Axis targets, returning True when StereoDrive has actioned direct entry."""
-        self._set_edit_control_text(AXIS_TARGET_AP_ID, f"{ap:.2f}")
+        self._validate_axis_targets(ap, ml, dv)
+        self._set_axis_target_text(AXIS_TARGET_AP_ID, f"{ap:.2f}", stop_requested)
         time.sleep(0.05)
-        self._set_edit_control_text(AXIS_TARGET_ML_ID, f"{ml:.2f}")
+        self._set_axis_target_text(AXIS_TARGET_ML_ID, f"{ml:.2f}", stop_requested)
         time.sleep(0.05)
-        self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
+        self._set_axis_target_text(AXIS_TARGET_DV_ID, f"{dv:.2f}", stop_requested)
         time.sleep(0.2)
         try:
             actual = self._axis_target_position()
@@ -1415,7 +1461,7 @@ class StereoDriveController:
                 ) from exc
         return values[0], values[1], values[2]
 
-    def _rearm_cleared_axis_targets(self, ap: float, ml: float, dv: float) -> None:
+    def _rearm_cleared_axis_targets(self, ap: float, ml: float, dv: float, stop_requested=None) -> None:
         """Restore target fields that StereoDrive clears before the GoTo click."""
         for control_id, requested in (
             (AXIS_TARGET_AP_ID, ap),
@@ -1425,10 +1471,13 @@ class StereoDriveController:
             expected = f"{requested:.2f}"
             actual = self._get_text(self._control_handle(control_id))
             if actual != expected:
-                self._set_edit_control_text(control_id, expected)
+                self._set_axis_target_text(control_id, expected, stop_requested)
 
-    def rearm_axis_dv_and_goto_if_needed(self, dv: float) -> bool:
+    def rearm_axis_dv_and_goto_if_needed(self, dv: float, stop_requested=None) -> bool:
         """Re-enter a missing Axis DV target and reissue GoTo; return whether it was reissued."""
+        self._check_motion_cancelled(stop_requested)
+        if abs(self.get_current_axis("DV") - dv) <= 0.02:
+            return False
         text = self._get_text(self._control_handle(AXIS_TARGET_DV_ID))
         try:
             target_is_present = abs(float(text.replace(",", ".")) - dv) <= 0.005
@@ -1436,8 +1485,8 @@ class StereoDriveController:
             target_is_present = False
         if target_is_present:
             return False
-        self._set_edit_control_text(AXIS_TARGET_DV_ID, f"{dv:.2f}")
-        self._click(GOTO_ID)
+        self._set_axis_target_text(AXIS_TARGET_DV_ID, f"{dv:.2f}", stop_requested)
+        self._motion_click(GOTO_ID, stop_requested)
         self.confirm_below_skull_warning(timeout_seconds=0.25, poll_seconds=0.02)
         self.confirm_no_actual_movement_dialog(timeout_seconds=0.25, poll_seconds=0.02)
         return True
@@ -1468,15 +1517,19 @@ class StereoDriveController:
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
         self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
 
-    def goto_axis_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75) -> None:
-        already_reached = self.set_axis_target_position(ap, ml, dv)
+    def goto_axis_position(self, ap: float, ml: float, dv: float, delay_seconds: float = 0.75, stop_requested=None) -> None:
+        self._validate_axis_targets(ap, ml, dv)
+        self._check_motion_cancelled(stop_requested)
+        if self._axis_position_matches(ap, ml, dv):
+            return
+        already_reached = self.set_axis_target_position(ap, ml, dv, stop_requested)
         if already_reached:
             return
         time.sleep(delay_seconds)
         # DV is known to be transiently cleared by some StereoDrive builds.
         # Re-arm the requested values immediately before issuing GoTo.
-        self._rearm_cleared_axis_targets(ap, ml, dv)
-        self._click(GOTO_ID)
+        self._rearm_cleared_axis_targets(ap, ml, dv, stop_requested)
+        self._motion_click(GOTO_ID, stop_requested)
         self.confirm_below_skull_warning(timeout_seconds=1.0, poll_seconds=0.02)
         self.confirm_no_actual_movement_dialog(timeout_seconds=0.5, poll_seconds=0.02)
 
@@ -1516,24 +1569,73 @@ class StereoDriveController:
         timeout_seconds: float = 60.0,
         poll_seconds: float = 0.1,
         stop_requested=None,
+        position_callback=None,
     ) -> None:
         """Wait until StereoDrive's mechanical Axis fields reach a target."""
+        self._validate_axis_targets(ap, ml, dv)
         deadline = time.monotonic() + timeout_seconds
+        last_rearm_at = time.monotonic()
         while time.monotonic() < deadline:
-            if stop_requested is not None and stop_requested():
-                raise StereoDriveError("Operation paused.")
+            self._check_motion_cancelled(stop_requested)
             self.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
             current_ap, current_ml, current_dv = self.get_current_axis_position()
+            if position_callback is not None:
+                position_callback((current_ap, current_ml, current_dv))
             if (
                 abs(current_ap - ap) <= tolerance_mm
                 and abs(current_ml - ml) <= tolerance_mm
                 and abs(current_dv - dv) <= tolerance_mm
             ):
                 return
+            if time.monotonic() - last_rearm_at >= 0.5:
+                self.rearm_axis_dv_and_goto_if_needed(dv, stop_requested)
+                last_rearm_at = time.monotonic()
             time.sleep(poll_seconds)
         raise StereoDriveError(
             f"Timed out waiting for Axis position [{ap:.2f}, {ml:.2f}, {dv:.2f}] in StereoDrive."
         )
 
     def stop(self) -> None:
-        self._click(STOP_ID)
+        self._motion_cancelled.set()
+        with self._motion_lock:
+            self._click(STOP_ID)
+
+    def wait_until_stopped(self, timeout_seconds: float = 5.0) -> None:
+        """Confirm stable mechanical readings after a Stop command."""
+        deadline = time.monotonic() + timeout_seconds
+        previous = self.get_current_axis_position()
+        stable_since = time.monotonic()
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            current = self.get_current_axis_position()
+            if any(abs(a - b) > 0.003 for a, b in zip(current, previous)):
+                stable_since = time.monotonic()
+                previous = current
+            elif time.monotonic() - stable_since >= 0.5:
+                return
+        raise StereoDriveError("Could not confirm that StereoDrive movement stopped.")
+
+    def wait_for_named_motion(self, initial_axis, stop_requested=None, position_callback=None,
+                              timeout_seconds: float = 60.0) -> None:
+        """Observe Home/Work motion settling without claiming an unknown destination."""
+        started_at = time.monotonic()
+        stable_reference = initial_axis
+        stable_since = started_at
+        movement_seen = False
+        while time.monotonic() - started_at < timeout_seconds:
+            self._check_motion_cancelled(stop_requested)
+            current = self.get_current_axis_position()
+            if position_callback is not None:
+                position_callback(current)
+            if any(abs(a - b) > 0.02 for a, b in zip(current, initial_axis)):
+                movement_seen = True
+            if any(abs(a - b) > 0.003 for a, b in zip(current, stable_reference)):
+                stable_reference = current
+                stable_since = time.monotonic()
+            if movement_seen and time.monotonic() - stable_since >= 1.0:
+                return
+            if not movement_seen and time.monotonic() - started_at >= 3.0:
+                raise StereoDriveError("No movement was observed. StereoDrive does not expose the Home/Work "
+                                       "destination, so arrival cannot be verified; check its current position.")
+            time.sleep(0.05)
+        raise StereoDriveError("Timed out waiting for StereoDrive Home/Work movement to settle.")

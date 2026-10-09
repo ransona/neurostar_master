@@ -97,7 +97,9 @@ Top-row actions include:
 
 `Set Bregma` records the current **mechanical Axis** position as this GUI's local Bregma origin. It does **not** reset or modify StereoDrive's native Bregma reference. It clears any existing GUI anchor and selects Bregma mode.
 
-In Bregma mode, entered/planned AP/ML/DV values are converted to Axis targets before being sent to StereoDrive. In Axis mode, values are sent directly as Axis coordinates.
+The Axis/Bregma buttons select the live coordinate display and the coordinate frame of map clicks. Craniotomy plans, injection sites, and A/B/C positions are always stored in **GUI Bregma coordinates**, including when captured while displaying Axis coordinates. Set GUI Bregma before creating these project positions. The maps convert their stored points to Axis coordinates when Axis mode is selected.
+
+Injection and drilling runs convert a copy of their targets to mechanical Axis coordinates using the current GUI Bregma origin before starting. This includes controlled descent, overshoot, continuous tracing, frozen-section retraction, and pause retraction. All arrival checks read StereoDrive's mechanical Axis fields. StereoDrive's own Bregma reference is not used for these movements.
 
 ### Anchor workflow
 
@@ -117,7 +119,11 @@ Use an anchor when Bregma is no longer physically accessible:
 - `Work` moves to StereoDrive work
 - `Go to` opens a coordinate dialog populated from the live position. If Bregma has been set, saved locations and manual entries in this dialog use Bregma coordinates even if the main display is currently in Axis mode.
 
-Every user-initiated navigation action shows a cancellable moving dialog with live map-cross updates. `Esc` or **Cancel Movement** requests a stop.
+Every user-initiated navigation action shows a cancellable moving dialog with live map-cross updates. `Esc` or **Cancel Movement** requests a stop. Home/Work use StereoDrive's native commands; their destination coordinates are not exposed. The GUI reports observed movement settling, rather than claiming a verified destination, and reports an unverifiable command if no movement was observed.
+
+The top **Stop** cancels both drilling and injection workers and stops the manipulator and any running injection. Injection **Stop** also stops manipulator travel. Cancellation remains latched through target entry, GoTo delays, and retries, so a cancelled worker cannot issue a later GoTo. Moving dialogs confirm stable Axis readouts after stopping. Closing during an operation requests Stop and waits for its worker to finish; if it cannot confirm stopping, the window stays open.
+
+One motor operation runs at a time. Navigation, benchmarks, probes, keyboard motor nudges, and reference changes are blocked during an active procedure. During the stationary site-validation dialog, normal movement and movement-step shortcuts remain available. Editable text/shortcut fields do not trigger motor shortcuts.
 
 ### Saved Go to positions
 
@@ -131,7 +137,7 @@ You can store three extra locations:
 - `Set B` / `B`
 - `Set C` / `C`
 
-These are intended for frequently revisited points and are stored in the current project session.
+These are intended for frequently revisited points and are stored in GUI Bregma coordinates in the current project session. After a tool change and **At Anchor**, they use the recalibrated GUI reference, regardless of the selected display mode.
 
 ### Clear Project
 
@@ -164,13 +170,17 @@ Both the Craniotomy and Injection tabs provide interactive maps. Select a calibr
 
 Use the mouse wheel to zoom and left-button drag to pan. Scrolling out always reaches the full skull without going farther out. The craniotomy map provides **Zoom to craniotomy**, **Zoom to mid-range**, and **Zoom to skull**; the injection map provides craniotomy, injection-map, and skull focus modes.
 
-Double-clicking a map point requests a two-leg move: first to a safe height, then to the selected target. A single cancellable progress dialog remains visible through both legs, updates the red cross from the live Axis fields, and displays the current Axis AP/ML/DV target. Arrival is confirmed from live Axis coordinates; if the final DV target disappears, the app re-enters it and reissues GoTo while waiting.
+Double-clicking a map point requests three stages: retract vertically at the current AP/ML, travel laterally at clearance height, then move vertically to the selected target. Bregma-mode map moves use clearance DV `-0.5 mm` and target DV `0 mm`; Axis-mode map moves use clearance 0.5 mm above the starting DV and return to the starting DV. If the tool is already higher, lateral travel uses that higher position. One cancellable moving dialog remains visible throughout and shows the current Axis target and stage. Navigation, injection validation, and protocol approaches also confirm vertical clearance before lateral travel. Missing DV targets are retried through the shared Axis arrival check in all procedures, unless live DV has already arrived.
 
 ## Project Recovery
 
 Active projects are autosaved about once per second to `Documents/Neurostar_Master/Configs/project_session.json`. Recovery includes the GUI Bregma/anchor transform, craniotomy setup and captured surfaces, trajectory/drilling state, injection settings/sites, stored locations, selected overlay, map zoom choices, and active tab. The startup prompt can restore this project, but never resumes physical movement, drilling, or injection automatically.
 
+New sessions record the coordinate frame explicitly. Older sessions without this metadata retain their saved data, but ambiguous craniotomies/sites cannot drive movement: recreate the craniotomy, clear/load injection sites, and re-save A/B/C positions. Named Go-to positions were already Bregma-defined and remain available. This avoids guessing which display mode was active when an old position was captured.
+
 ## Options And Updates
+
+Movement regression checks can be run from the repository root with `python -B -m unittest discover -s tests -v`. They use simulated Windows controls and the GUI's original movement methods, with no hardware access. They cover references/tool changes, protocol targets, clearance, cancellation, target recovery, and session metadata. These checks do not replace testing the Windows GUI against the physical controller.
 
 Open **Options** from the top-right button to:
 
@@ -396,6 +406,7 @@ For each site, the current protocol is:
 
 ### Important Injection Details
 
+- insertion overshoot and final injection depth are explicitly reached even when timed sampling or syringe calls span a movement phase boundary
 - insertion and retraction are handled by controlled DV motion
 - the pipette advances downward while injection is occurring
 - overshoot defaults to `0.05 mm`
@@ -429,6 +440,8 @@ Each stored site contains:
 - surface DV
 
 If no sites are stored, the current location is treated as the active site and its current DV is treated as the surface.
+
+Site capture always converts mechanical Axis readings to GUI Bregma coordinates. Injection execution uses a frozen copy converted back to Axis coordinates with the latest calibration, including after **At Anchor**; selecting Axis display mode does not change the injection destinations.
 
 ### Grid sites and validation
 

@@ -180,6 +180,7 @@ class StoredLocation:
     ap: float
     ml: float
     dv: float
+    coordinate_system: str = "bregma"
 
 
 @dataclass
@@ -774,6 +775,8 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
         self.coordinate_mode = "axis"
+        self.craniotomy_coordinate_system = "bregma"
+        self.injection_sites_coordinate_system = "bregma"
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
         self.anchor_bregma: tuple[float, float, float] | None = None
@@ -839,6 +842,23 @@ class CraniotomyWindow(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._motion_is_active():
+            self.stop_motion()
+            try:
+                self.controller.wait_until_stopped()
+            except Exception as exc:
+                QMessageBox.warning(self, "Close", str(exc))
+                event.ignore()
+                return
+            # Keep the process alive until cancelled workers have unwound.
+            workers = (self.drill_thread, self.injection_thread, self.benchmark_thread, self.usb_probe_thread)
+            for worker in workers:
+                if worker is not None:
+                    worker.join(timeout=0.5)
+            if any(worker is not None and worker.is_alive() for worker in workers):
+                self.set_status("Stopping operations. Close again once they have finished.")
+                event.ignore()
+                return
         try:
             self.window_geometry = {
                 "x": self.x(), "y": self.y(),
@@ -1568,7 +1588,37 @@ class CraniotomyWindow(QMainWindow):
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
             or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
             or self.validation_move_active
+            or self.validation_modal_active
         )
+
+    def _require_idle(self, title: str = "Movement") -> bool:
+        if self._motion_is_active():
+            QMessageBox.information(self, title, "Finish or stop the current operation first.")
+            return False
+        return True
+
+    def get_bregma_position(self) -> tuple[float, float, float]:
+        return self._axis_to_bregma(self.controller.get_current_axis_position())
+
+    def _require_project_coordinates(self, kind: str) -> None:
+        if self.bregma_axis is None:
+            raise StereoDriveError("Set GUI Bregma before using project positions.")
+        frame = getattr(self, f"{kind}_coordinate_system")
+        if frame != "bregma":
+            raise StereoDriveError("This older session has ambiguous coordinate references. "
+                                   "Recreate the craniotomy, or clear/load a new injection site set before moving.")
+
+    def _axis_clearance_path(self, target: tuple[float, float, float], clearance_dv: float) -> list[tuple[float, float, float]]:
+        current = self.controller.get_current_axis_position()
+        if all(abs(a - b) <= 0.02 for a, b in zip(current, target)):
+            return [target]
+        safe_dv = min(current[2], clearance_dv, target[2])
+        return [(current[0], current[1], safe_dv), (target[0], target[1], safe_dv), target]
+
+    def _approach_axis_position(self, target: tuple[float, float, float], clearance_dv: float, stop_requested) -> None:
+        for position in self._axis_clearance_path(target, clearance_dv):
+            self.controller.goto_axis_position(*position, delay_seconds=0.5, stop_requested=stop_requested)
+            self.controller.wait_for_axis_position(*position, stop_requested=stop_requested)
 
     def start_usb_controller_probe(self) -> None:
         if self._motion_is_active():
@@ -1593,6 +1643,7 @@ class CraniotomyWindow(QMainWindow):
             return
         self.usb_probe_button.setEnabled(False)
         self.usb_probe_output.clear()
+        self.controller.prepare_motion()
         self.usb_probe_thread = threading.Thread(
             target=self._run_usb_controller_probe,
             args=(axis, step_mm),
@@ -1609,6 +1660,7 @@ class CraniotomyWindow(QMainWindow):
     ) -> float:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
+            self.controller._check_motion_cancelled()
             current = self.controller.get_current_axis(axis)
             if abs(current - expected) <= tolerance_mm:
                 return current
@@ -1641,6 +1693,11 @@ class CraniotomyWindow(QMainWindow):
             )
             self.usb_probe_finished_signal.emit("USB controller probe completed; position returned to its starting value.")
         except Exception as exc:
+            try:
+                self.controller.stop()
+                self.controller.wait_until_stopped()
+            except Exception as stop_exc:
+                self.usb_probe_log_signal.emit(f"Stop confirmation failed: {stop_exc}")
             self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} ERROR {exc}")
             self.usb_probe_finished_signal.emit(
                 "USB controller probe stopped. Check the Axis display before moving again; no unverified reversal was issued."
@@ -1651,6 +1708,8 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(status)
 
     def update_from_github(self) -> None:
+        if not self._require_idle("Update"):
+            return
         answer = QMessageBox.warning(
             self,
             "Discard Local Changes?",
@@ -1747,7 +1806,9 @@ class CraniotomyWindow(QMainWindow):
 
     def _project_session_dict(self) -> dict[str, object]:
         return {
-            "format": "neurostar-project-session-v1",
+            "format": "neurostar-project-session-v2",
+            "craniotomy_coordinate_system": self.craniotomy_coordinate_system,
+            "injection_sites_coordinate_system": self.injection_sites_coordinate_system,
             "coordinate_mode": self.coordinate_mode,
             "bregma_axis": self.bregma_axis,
             "anchor_axis": self.anchor_axis,
@@ -1783,7 +1844,7 @@ class CraniotomyWindow(QMainWindow):
                 for site in self.injection_sites
             ],
             "quick_locations": {
-                name: {"ap": location.ap, "ml": location.ml, "dv": location.dv}
+                name: {"ap": location.ap, "ml": location.ml, "dv": location.dv, "coordinate_system": location.coordinate_system}
                 for name, location in self.quick_locations.items()
             },
             "named_locations": {
@@ -1816,7 +1877,8 @@ class CraniotomyWindow(QMainWindow):
         if not isinstance(value, list) or len(value) != 3:
             return None
         try:
-            return tuple(float(item) for item in value)
+            position = tuple(float(item) for item in value)
+            return position if all(math.isfinite(item) for item in position) else None
         except (TypeError, ValueError):
             return None
 
@@ -1871,6 +1933,8 @@ class CraniotomyWindow(QMainWindow):
         if isinstance(injection_config, dict):
             self._apply_injection_config_dict(injection_config)
         self.bregma_axis = self._session_axis(payload.get("bregma_axis"))
+        self.craniotomy_coordinate_system = str(payload.get("craniotomy_coordinate_system", "unknown" if payload.get("seeds") or payload.get("trajectory") else "bregma"))
+        self.injection_sites_coordinate_system = str(payload.get("injection_sites_coordinate_system", "unknown" if payload.get("injection_sites") else "bregma"))
         self.anchor_axis = self._session_axis(payload.get("anchor_axis"))
         self.anchor_bregma = self._session_axis(payload.get("anchor_bregma"))
         self.coordinate_mode = "bregma" if payload.get("coordinate_mode") == "bregma" and self.bregma_axis else "axis"
@@ -1911,6 +1975,7 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(name, str) and isinstance(raw_location, dict):
                     self.quick_locations[name] = StoredLocation(
                         ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
+                        coordinate_system=str(raw_location.get("coordinate_system", "unknown")),
                     )
         self.named_locations = {}
         raw_named_locations = payload.get("named_locations")
@@ -1941,6 +2006,12 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites_zoom_combo.setCurrentIndex(max(0, min(2, int(payload.get("injection_zoom_index", self.injection_sites_zoom_combo.currentIndex())))))
         self.tabs.setCurrentIndex(max(0, min(self.tabs.count() - 1, int(payload.get("active_tab", self.tabs.currentIndex())))))
         self.redraw_views()
+
+        if self.craniotomy_coordinate_system != "bregma" or self.injection_sites_coordinate_system != "bregma":
+            QMessageBox.information(self, "Previous Project Coordinates",
+                "This older project did not record coordinate references. Its saved data is retained, "
+                "but recreate the craniotomy and clear/load injection sites before using them for movement. "
+                "Re-save A/B/C positions before using them. Named Bregma positions remain available.")
 
     def _save_general_settings(self) -> None:
         bindings = {}
@@ -2211,6 +2282,8 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Saved craniotomy config to {path}")
 
     def load_craniotomy_config(self) -> None:
+        if not self._require_idle("Load Craniotomy Settings"):
+            return
         directory = self._config_dir("craniotomy")
         path_str, _selected = QFileDialog.getOpenFileName(
             self,
@@ -2335,7 +2408,7 @@ class CraniotomyWindow(QMainWindow):
 
     def _focus_is_editable(self) -> bool:
         focus_widget = QApplication.focusWidget()
-        return isinstance(focus_widget, (QLineEdit, QComboBox))
+        return isinstance(focus_widget, (QLineEdit, QComboBox, QPlainTextEdit, QKeySequenceEdit))
 
     def adjust_move_speed(self, direction: int) -> None:
         current_index = min(
@@ -2348,11 +2421,12 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Move speed set to {self.move_speed_step_mm:g} mm")
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str) -> None:
-        if self.drill_thread is not None and self.drill_thread.is_alive():
+        if self._motion_is_active() and not self.validation_modal_active:
             return
         if self._focus_is_editable():
             return
         try:
+            self.controller.prepare_motion()
             self.update_move_speed_label()
             self.controller.set_nudge_step(axis, self.move_speed_step_mm)
             self.controller.nudge_axis(axis, positive)
@@ -2390,6 +2464,8 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Nudge All Sites disabled: AP/ML arrows move the manipulator.")
 
     def nudge_all_injection_sites(self, axis: str, positive: bool, label: str) -> None:
+        if self._motion_is_active():
+            return
         if not self.injection_sites:
             self.set_status("No injection sites to nudge.")
             return
@@ -2459,7 +2535,7 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Manual injection volume set to {self.manual_injection_volume_nl} nl")
 
     def manual_syringe_step(self, up: bool) -> None:
-        if self.injection_thread is not None and self.injection_thread.is_alive():
+        if not self._require_idle("Syringe"):
             return
         try:
             self.ensure_syringe_move_allowed(self.manual_injection_volume_nl, up)
@@ -2541,7 +2617,7 @@ class CraniotomyWindow(QMainWindow):
         QMessageBox.warning(self, "Syringe Limit", message)
 
     def update_syringe_position_from_scale(self) -> None:
-        if self.injection_thread is not None and self.injection_thread.is_alive():
+        if self._motion_is_active():
             return
         self._start_syringe_position_scale_read()
 
@@ -2579,7 +2655,7 @@ class CraniotomyWindow(QMainWindow):
         self.set_syringe_position(0.0)
 
     def test_for_blockage(self) -> None:
-        if self.injection_thread is not None and self.injection_thread.is_alive():
+        if not self._require_idle("Test Volume"):
             return
         try:
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
@@ -2592,7 +2668,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Injectomate", str(exc))
 
     def empty_syringe(self) -> None:
-        if self.injection_thread is not None and self.injection_thread.is_alive():
+        if not self._require_idle("Empty Syringe"):
             return
         try:
             self.controller.empty_syringe()
@@ -2608,6 +2684,8 @@ class CraniotomyWindow(QMainWindow):
         self.bregma_mode_btn.setStyleSheet(active if self.coordinate_mode == "bregma" else inactive)
 
     def set_coordinate_mode(self, mode: str) -> None:
+        if not self._require_idle("Coordinate Mode"):
+            return
         if mode == "bregma" and self.bregma_axis is None:
             QMessageBox.information(self, "Bregma Coordinates", "Set Bregma in this GUI before using Bregma coordinates.")
             return
@@ -2616,6 +2694,7 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.set_coordinate_mode_bregma(mode == "bregma")
         self.injection_sites_view.set_coordinate_mode_bregma(mode == "bregma")
         self.refresh_live_position()
+        self.redraw_views()
         self.set_status(f"Using {mode.title()} coordinates.")
 
     def _axis_to_bregma(self, axis_position: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -2626,7 +2705,10 @@ class CraniotomyWindow(QMainWindow):
     def _bregma_to_axis(self, bregma_position: tuple[float, float, float]) -> tuple[float, float, float]:
         if self.bregma_axis is None:
             raise StereoDriveError("GUI Bregma has not been set.")
-        return tuple(self.bregma_axis[index] + bregma_position[index] for index in range(3))
+        position = tuple(self.bregma_axis[index] + bregma_position[index] for index in range(3))
+        if not all(math.isfinite(value) for value in position):
+            raise StereoDriveError("Movement coordinates must be finite numbers.")
+        return position
 
     def get_gui_position(self) -> tuple[float, float, float]:
         axis_position = self.controller.get_current_axis_position()
@@ -2644,19 +2726,22 @@ class CraniotomyWindow(QMainWindow):
         title: str = "Moving",
         message: str = "Moving to the requested position. Waiting for StereoDrive to report arrival…",
         show_progress: bool = False,
-    ) -> None:
+    ) -> bool:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
         if show_progress:
             if not self._move_to_axis_position_with_progress(axis_position, title=title, message=message, delay_seconds=delay_seconds):
-                raise StereoDriveError("Movement cancelled.")
+                return False
         else:
             self.controller.goto_axis_position(*axis_position, delay_seconds=delay_seconds)
+        return True
 
     def wait_for_gui_position(self, ap: float, ml: float, dv: float, **kwargs) -> None:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
         self.controller.wait_for_axis_position(*axis_position, **kwargs)
 
     def set_local_bregma(self) -> None:
+        if not self._require_idle("Set Bregma"):
+            return
         try:
             # GUI Bregma is deliberately independent of StereoDrive's native
             # Bregma reference. Preserve the mechanical Axis values and use
@@ -2674,6 +2759,8 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Bregma Coordinates", str(exc))
 
     def set_anchor(self) -> None:
+        if not self._require_idle("Set Anchor"):
+            return
         try:
             if self.bregma_axis is None:
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
@@ -2688,6 +2775,8 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Anchor", str(exc))
 
     def at_anchor(self) -> None:
+        if not self._require_idle("At Anchor"):
+            return
         try:
             if self.bregma_axis is None or self.anchor_bregma is None:
                 raise StereoDriveError("Set Bregma and Set Anchor before using At Anchor.")
@@ -2747,7 +2836,7 @@ class CraniotomyWindow(QMainWindow):
                 title="Moving to Home",
                 message="Moving to StereoDrive Home. Waiting for StereoDrive to report arrival…",
             ):
-                self.set_status("Moved to StereoDrive Home.")
+                self.set_status("Home command movement has settled. Verify the native Home position in StereoDrive.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
@@ -2758,23 +2847,25 @@ class CraniotomyWindow(QMainWindow):
                 title="Moving to Work",
                 message="Moving to StereoDrive Work. Waiting for StereoDrive to report arrival…",
             ):
-                self.set_status("Moved to StereoDrive Work.")
+                self.set_status("Work command movement has settled. Verify the native Work position in StereoDrive.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def goto_bregma(self) -> None:
         try:
-            self.goto_gui_position(
-                0.0, 0.0, 0.0,
+            if not self._move_to_axis_position_with_progress(
+                self._bregma_to_axis((0.0, 0.0, 0.0)),
                 title="Moving to Bregma",
                 message="Moving to Bregma. Waiting for StereoDrive to report arrival…",
-                show_progress=True,
-            )
-            self.set_status("Moving to Bregma: AP 0.00, ML 0.00, DV 0.00.")
+            ):
+                return
+            self.set_status("Reached GUI Bregma: AP 0.00, ML 0.00, DV 0.00.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def open_goto_dialog(self) -> None:
+        if not self._require_idle("Go to Position"):
+            return
         try:
             axis_position = self.controller.get_current_axis_position()
             using_bregma = self.bregma_axis is not None
@@ -2909,12 +3000,13 @@ class CraniotomyWindow(QMainWindow):
                     return
                 self.set_status(f"Moved to Bregma AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
             else:
-                self.goto_gui_position(
+                if not self.goto_gui_position(
                     ap, ml, dv,
                     title="Moving to Position",
                     message="Moving to the requested position. Waiting for StereoDrive to report arrival…",
                     show_progress=True,
-                )
+                ):
+                    return
                 self.set_status(f"Moved to Axis AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -2923,6 +3015,8 @@ class CraniotomyWindow(QMainWindow):
         return NumericLineEdit(value=value, minimum=-100.0, maximum=100.0)
 
     def start_axis_benchmark(self) -> None:
+        if not self._require_idle("Benchmark"):
+            return
         if self.benchmark_thread is not None and self.benchmark_thread.is_alive():
             QMessageBox.information(self, "Benchmark", "Benchmark is already running.")
             return
@@ -2936,6 +3030,7 @@ class CraniotomyWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         self.set_status("Running axis movement benchmark...")
+        self.controller.prepare_motion()
         self.benchmark_thread = threading.Thread(target=self._run_axis_benchmark, daemon=True)
         self.benchmark_thread.start()
 
@@ -2971,6 +3066,11 @@ class CraniotomyWindow(QMainWindow):
                 )
             self.benchmark_finished_signal.emit("\n".join(lines))
         except Exception as exc:
+            try:
+                self.controller.stop()
+                self.controller.wait_until_stopped()
+            except Exception as stop_exc:
+                self.status_signal.emit(f"Stop confirmation failed: {stop_exc}")
             self.benchmark_finished_signal.emit(f"Benchmark failed:\n{exc}")
         finally:
             self.benchmark_thread = None
@@ -2992,8 +3092,10 @@ class CraniotomyWindow(QMainWindow):
         dialog.exec()
 
     def set_quick_location(self, slot: str) -> None:
+        if not self._require_idle("Store Position"):
+            return
         try:
-            ap, ml, dv = self.get_gui_position()
+            ap, ml, dv = self.get_bregma_position()
             self.quick_locations[slot] = StoredLocation(ap=ap, ml=ml, dv=dv)
             self.set_status(f"Stored location {slot}: AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
@@ -3005,15 +3107,17 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(self, "Stored Location", f"Location {slot} has not been set.")
             return
         try:
-            self.goto_gui_position(
-                location.ap, location.ml, location.dv,
+            if location.coordinate_system != "bregma":
+                raise StereoDriveError("Re-save this older position: its coordinate reference was not recorded.")
+            if not self._move_to_axis_position_with_progress(
+                self._bregma_to_axis((location.ap, location.ml, location.dv)),
                 delay_seconds=0.5,
                 title=f"Moving to Location {slot}",
                 message=f"Moving to stored location {slot}. Waiting for StereoDrive to report arrival…",
-                show_progress=True,
-            )
+            ):
+                return
             self.set_status(
-                f"Moving to location {slot}: AP {location.ap:.2f}, ML {location.ml:.2f}, DV {location.dv:.2f}."
+                f"Reached location {slot}: AP {location.ap:.2f}, ML {location.ml:.2f}, DV {location.dv:.2f}."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -3149,8 +3253,11 @@ class CraniotomyWindow(QMainWindow):
         return indexes
 
     def add_injection_site(self) -> None:
+        if not self._require_idle("Add Injection Site"):
+            return
         try:
-            ap, ml, dv = self.get_gui_position()
+            self._require_project_coordinates("injection_sites")
+            ap, ml, dv = self.get_bregma_position()
             self.injection_sites.append(InjectionSite(ap=ap, ml=ml, dv=dv, generated=False))
             self.refresh_injection_sites_list()
         except Exception as exc:
@@ -3188,6 +3295,11 @@ class CraniotomyWindow(QMainWindow):
         self._save_general_settings()
 
     def add_injection_site_grid(self) -> None:
+        if not self._require_idle("Add Injection Grid"):
+            return
+        if self.injection_sites_coordinate_system != "bregma":
+            QMessageBox.warning(self, "Add Injection Grid", "Clear the older site list before adding a grid.")
+            return
         if self.coordinate_mode != "bregma" or self.bregma_axis is None:
             QMessageBox.information(
                 self,
@@ -3253,7 +3365,7 @@ class CraniotomyWindow(QMainWindow):
             }
             if config["ap_spacing_mm"] <= 0 or config["ml_spacing_mm"] <= 0:
                 raise ValueError("Spacing must be greater than zero.")
-            center_ap, center_ml, _center_dv = self.get_gui_position()
+            center_ap, center_ml, _center_dv = self.get_bregma_position()
             for ap_index in range(int(config["ap_count"])):
                 ap = center_ap + (ap_index - (int(config["ap_count"]) - 1) / 2.0) * float(config["ap_spacing_mm"])
                 for ml_index in range(int(config["ml_count"])):
@@ -3280,6 +3392,11 @@ class CraniotomyWindow(QMainWindow):
 
     def save_injection_site_set(self) -> None:
         """Save Bregma AP/ML targets, deliberately excluding their surface validation."""
+        try:
+            self._require_project_coordinates("injection_sites")
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Injection Sites", str(exc))
+            return
         if not self._require_bregma_site_set_context("Save Injection Site Set"):
             return
         if not self.injection_sites:
@@ -3310,6 +3427,8 @@ class CraniotomyWindow(QMainWindow):
 
     def load_injection_site_set(self) -> None:
         """Load targets as unvalidated so their surfaces are always rechecked."""
+        if not self._require_idle("Load Injection Sites"):
+            return
         if not self._require_bregma_site_set_context("Load Injection Site Set"):
             return
         directory = self._config_dir("injection_sites")
@@ -3355,18 +3474,24 @@ class CraniotomyWindow(QMainWindow):
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
         self.injection_sites = sites
+        self.injection_sites_coordinate_system = "bregma"
         self.refresh_injection_sites_list()
         self.set_status(
             f"Loaded {len(sites)} injection sites. All are unvalidated; run Validate Sites before injection."
         )
 
     def remove_selected_injection_site(self) -> None:
+        if not self._require_idle("Remove Injection Site"):
+            return
         row = self.injection_sites_list.currentRow()
         if 0 <= row < len(self.injection_sites):
             del self.injection_sites[row]
             self.refresh_injection_sites_list()
 
     def clear_injection_sites(self) -> None:
+        if not self._require_idle("Clear Injection Sites"):
+            return
+        self.injection_sites_coordinate_system = "bregma"
         self.injection_sites.clear()
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
@@ -3375,6 +3500,13 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_injection_sites_list()
 
     def start_injection_site_validation(self) -> None:
+        if not self._require_idle("Validate Sites"):
+            return
+        try:
+            self._require_project_coordinates("injection_sites")
+        except Exception as exc:
+            QMessageBox.warning(self, "Validate Sites", str(exc))
+            return
         if self._motion_is_active():
             QMessageBox.warning(self, "Validate Sites", "Wait for the current movement, drill, injection, benchmark, or probe to finish first.")
             return
@@ -3409,8 +3541,8 @@ class CraniotomyWindow(QMainWindow):
     def _move_to_injection_site_for_validation(self, site: InjectionSite) -> bool:
         """Approach a site at Bregma DV -0.5 mm with a cancellable wait dialog."""
         target_axis = self._bregma_to_axis((site.ap, site.ml, -0.5))
-        return self._move_to_axis_position_with_progress(
-            target_axis,
+        return self._move_through_axis_positions_with_progress(
+            self._axis_clearance_path(target_axis, target_axis[2]),
             title="Moving to Injection Site",
             message="Moving to the site 0.5 mm above Bregma DV zero. Waiting for StereoDrive to report arrival…",
         )
@@ -3425,7 +3557,9 @@ class CraniotomyWindow(QMainWindow):
         stage_messages: list[str] | None = None,
     ) -> bool:
         return self._move_through_axis_positions_with_progress(
-            [target_axis], title=title, message=message, delay_seconds=delay_seconds,
+            self._axis_clearance_path(target_axis, self.bregma_axis[2] - 0.5)
+            if self.bregma_axis is not None else [target_axis],
+            title=title, message=message, delay_seconds=delay_seconds,
             stage_messages=stage_messages,
         )
 
@@ -3441,6 +3575,9 @@ class CraniotomyWindow(QMainWindow):
         """Move through one or more Axis targets with one cancellable progress dialog."""
         if not target_axes:
             return True
+        if not self._require_idle(title):
+            return False
+        self.controller.prepare_motion()
         cancelled = threading.Event()
         result: dict[str, object] = {}
         progress_state = {"message": message}
@@ -3450,31 +3587,23 @@ class CraniotomyWindow(QMainWindow):
                 for target_index, target_axis in enumerate(target_axes):
                     if cancelled.is_set():
                         return
-                    if stage_messages and target_index < len(stage_messages):
-                        progress_state["message"] = stage_messages[target_index]
-                    self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds)
-                    deadline = time.monotonic() + 60.0
-                    last_dv_rearm_at = 0.0
-                    while time.monotonic() < deadline:
-                        if cancelled.is_set():
-                            raise StereoDriveError("Movement cancelled.")
-                        self.controller.confirm_below_skull_warning(timeout_seconds=0.01, poll_seconds=0.005)
-                        current_axis = self.controller.get_current_axis_position()
-                        self.validation_move_position_signal.emit(current_axis)
-                        if all(abs(current - target) <= 0.03 for current, target in zip(current_axis, target_axis)):
-                            break
-                        if (
-                            target_index == len(target_axes) - 1
-                            and time.monotonic() - last_dv_rearm_at >= 0.5
-                        ):
-                            self.controller.rearm_axis_dv_and_goto_if_needed(target_axis[2])
-                            last_dv_rearm_at = time.monotonic()
-                        time.sleep(0.05)
-                    else:
-                        raise StereoDriveError("Timed out waiting for StereoDrive to reach the requested position.")
+                    description = stage_messages[target_index] if stage_messages and target_index < len(stage_messages) else message
+                    progress_state["message"] = (
+                        f"{description}\n\nStage {target_index + 1}/{len(target_axes)}: "
+                        f"waiting for Axis AP {target_axis[0]:.2f}, ML {target_axis[1]:.2f}, DV {target_axis[2]:.2f} mm."
+                    )
+                    self.controller.goto_axis_position(*target_axis, delay_seconds=delay_seconds,
+                                                       stop_requested=cancelled.is_set)
+                    self.controller.wait_for_axis_position(*target_axis, stop_requested=cancelled.is_set,
+                        position_callback=self.validation_move_position_signal.emit)
                 result["completed"] = True
             except Exception as exc:
                 result["error"] = exc
+                try:
+                    self.controller.stop()
+                    self.controller.wait_until_stopped()
+                except Exception as stop_exc:
+                    result["error"] = stop_exc
 
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -3524,18 +3653,22 @@ class CraniotomyWindow(QMainWindow):
             timer.stop()
             self.validation_move_active = False
             self.validation_move_cancel_callback = None
-        if cancelled.is_set():
-            self.set_status("Movement cancelled.")
-            return False
         error = result.get("error")
-        if isinstance(error, Exception):
+        if isinstance(error, Exception) and (not cancelled.is_set() or "cancelled" not in str(error).lower()):
             raise error
+        if cancelled.is_set():
+            self.controller.wait_until_stopped()
+            self.set_status("Movement cancelled; stopped position confirmed.")
+            return False
         if not result.get("completed"):
             raise StereoDriveError("StereoDrive move ended without confirming arrival.")
         return True
 
     def _run_named_motion_with_progress(self, command, *, title: str, message: str) -> bool:
         """Run a Home/Work command when StereoDrive does not expose its target coordinates."""
+        if not self._require_idle(title):
+            return False
+        self.controller.prepare_motion()
         initial_axis = self.controller.get_current_axis_position()
         cancelled = threading.Event()
         result: dict[str, object] = {}
@@ -3543,36 +3676,16 @@ class CraniotomyWindow(QMainWindow):
         def move_worker() -> None:
             try:
                 command()
-                deadline = time.monotonic() + 60.0
-                previous_axis = initial_axis
-                movement_seen = False
-                stable_samples = 0
-                started_at = time.monotonic()
-                while time.monotonic() < deadline:
-                    if cancelled.is_set():
-                        raise StereoDriveError("Movement cancelled.")
-                    current_axis = self.controller.get_current_axis_position()
-                    self.validation_move_position_signal.emit(current_axis)
-                    if any(abs(current - initial) > 0.02 for current, initial in zip(current_axis, initial_axis)):
-                        movement_seen = True
-                    if movement_seen:
-                        if all(abs(current - previous) <= 0.005 for current, previous in zip(current_axis, previous_axis)):
-                            stable_samples += 1
-                        else:
-                            stable_samples = 0
-                        if stable_samples >= 8:
-                            result["completed"] = True
-                            return
-                    elif time.monotonic() - started_at >= 2.0:
-                        # Home/Work may already be selected; no movement is a
-                        # successful settled state once the command has had time to act.
-                        result["completed"] = True
-                        return
-                    previous_axis = current_axis
-                    time.sleep(0.05)
-                raise StereoDriveError("Timed out waiting for StereoDrive to finish moving.")
+                self.controller.wait_for_named_motion(initial_axis, stop_requested=cancelled.is_set,
+                    position_callback=self.validation_move_position_signal.emit)
+                result["completed"] = True
             except Exception as exc:
                 result["error"] = exc
+                try:
+                    self.controller.stop()
+                    self.controller.wait_until_stopped()
+                except Exception as stop_exc:
+                    result["error"] = stop_exc
 
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -3619,12 +3732,13 @@ class CraniotomyWindow(QMainWindow):
             timer.stop()
             self.validation_move_active = False
             self.validation_move_cancel_callback = None
-        if cancelled.is_set():
-            self.set_status("Movement cancelled.")
-            return False
         error = result.get("error")
-        if isinstance(error, Exception):
+        if isinstance(error, Exception) and (not cancelled.is_set() or "cancelled" not in str(error).lower()):
             raise error
+        if cancelled.is_set():
+            self.controller.wait_until_stopped()
+            self.set_status("Movement cancelled; stopped position confirmed.")
+            return False
         if not result.get("completed"):
             raise StereoDriveError("StereoDrive move ended without confirming arrival.")
         return True
@@ -3685,7 +3799,7 @@ class CraniotomyWindow(QMainWindow):
                     self.set_status("Injection-site validation stopped.")
                     break
                 if action == "validate":
-                    ap, ml, dv = self.get_gui_position()
+                    ap, ml, dv = self.get_bregma_position()
                     self.injection_sites[index] = InjectionSite(ap=ap, ml=ml, dv=dv, generated=False)
                     self.set_status(f"Validated injection site {index + 1}.")
                 elif action == "delete":
@@ -3712,7 +3826,10 @@ class CraniotomyWindow(QMainWindow):
     def refresh_injection_sites_list(self, active_index: int | None = None) -> None:
         self.injection_sites_list.clear()
         for index, site in enumerate(self.injection_sites, start=1):
-            if site.dv is None:
+            if self.injection_sites_coordinate_system != "bregma":
+                item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f} — reference unknown; recreate/load sites")
+                item.setForeground(QColor("#a3a3a3"))
+            elif site.dv is None:
                 item = QListWidgetItem(f"{index}. AP {site.ap:.2f}, ML {site.ml:.2f} — unvalidated")
                 item.setForeground(QColor("#a3a3a3"))
             else:
@@ -3730,16 +3847,19 @@ class CraniotomyWindow(QMainWindow):
             self.redraw_views()
 
     def _active_injection_sites(self) -> list[InjectionSite]:
+        self._require_project_coordinates("injection_sites")
         if self.injection_sites:
             unvalidated = [index + 1 for index, site in enumerate(self.injection_sites) if site.dv is None]
             if unvalidated:
                 numbers = ", ".join(str(index) for index in unvalidated)
                 raise StereoDriveError(f"Validate injection site(s) {numbers} before starting an injection.")
             return list(self.injection_sites)
-        ap, ml, dv = self.get_gui_position()
+        ap, ml, dv = self.get_bregma_position()
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
 
     def start_single_injection(self) -> None:
+        if not self._require_idle("Injection"):
+            return
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
         try:
@@ -3779,6 +3899,8 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Injection", str(exc))
 
     def resume_injection_from_selected(self) -> None:
+        if not self._require_idle("Injection"):
+            return
         if self.injection_thread is not None and self.injection_thread.is_alive():
             return
         if not self.injection_sites:
@@ -3797,6 +3919,7 @@ class CraniotomyWindow(QMainWindow):
             )
             return
         try:
+            self._require_project_coordinates("injection_sites")
             settings = self._injection_protocol_settings()
             self._set_number_edit(self.single_injection_volume_nl, settings.main_volume_nl)
             self._set_number_edit(self.insertion_injection_rate_nl_min, settings.insertion_rate_nl_min)
@@ -3840,6 +3963,14 @@ class CraniotomyWindow(QMainWindow):
         total_site_count: int,
         initial_status: str,
     ) -> None:
+        self._require_project_coordinates("injection_sites")
+        # Saved sites stay GUI-Bregma-relative; workers receive frozen Axis targets.
+        sites = [InjectionSite(*self._bregma_to_axis((site.ap, site.ml, site.dv)), generated=site.generated)
+                 for site in sites]
+        self.injection_clearance_axis_dv = self.bregma_axis[2] - 0.5
+        self.controller.prepare_motion()
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
         self.injection_pause_requested.clear()
         self.injection_stop_requested.clear()
         self.injection_progress.setValue(int((start_site_offset / max(1, total_site_count)) * 100))
@@ -3878,6 +4009,10 @@ class CraniotomyWindow(QMainWindow):
         self.injection_stop_requested.set()
         self.set_status("Stopping injection")
         try:
+            self.controller.stop()
+        except Exception as exc:
+            self.set_status(f"Could not stop manipulator: {exc}")
+        try:
             self.controller.stop_injectomate_motion()
         except Exception:
             pass
@@ -3912,8 +4047,10 @@ class CraniotomyWindow(QMainWindow):
                     f"Moving to 1 mm above surface for site {site_index}/{total_units}",
                 )
                 above_dv = self._above_surface_dv(site)
-                self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-                self.wait_for_gui_position(
+                self._approach_axis_position((site.ap, site.ml, above_dv),
+                                             self.injection_clearance_axis_dv,
+                                             self.injection_stop_requested.is_set)
+                self.controller.wait_for_axis_position(
                     site.ap,
                     site.ml,
                     above_dv,
@@ -3936,6 +4073,8 @@ class CraniotomyWindow(QMainWindow):
                     self.sequence_step_signal.emit(step_indexes["block"])
                     self._run_block_test(site, settings, test_volume_nl)
             if self.injection_stop_requested.is_set():
+                self.controller.stop()
+                self.controller.wait_until_stopped()
                 self.sequence_step_signal.emit(-1)
                 self.active_injection_site_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection stopped")
@@ -3944,6 +4083,14 @@ class CraniotomyWindow(QMainWindow):
                 self.active_injection_site_signal.emit(-1)
                 self.injection_finished_signal.emit("Injection protocol complete")
         except Exception as exc:
+            try:
+                self.controller.stop()
+                self.controller.wait_until_stopped()
+            except Exception as stop_exc:
+                self.sequence_step_signal.emit(-1)
+                self.active_injection_site_signal.emit(-1)
+                self.injection_finished_signal.emit(f"Stop confirmation failed: {stop_exc}. Original error: {exc}")
+                return
             if self.injection_stop_requested.is_set():
                 self.sequence_step_signal.emit(-1)
                 self.active_injection_site_signal.emit(-1)
@@ -3970,8 +4117,9 @@ class CraniotomyWindow(QMainWindow):
             int(((site_index - 1) / max(1, site_count)) * 100),
             f"Moving to surface for injection site {site_index}/{site_count}",
         )
-        self.goto_gui_position(site.ap, site.ml, site.dv, delay_seconds=0.5)
-        self.wait_for_gui_position(
+        self.controller.goto_axis_position(site.ap, site.ml, site.dv, delay_seconds=0.5,
+                                           stop_requested=self.injection_stop_requested.is_set)
+        self.controller.wait_for_axis_position(
             site.ap,
             site.ml,
             site.dv,
@@ -3990,6 +4138,8 @@ class CraniotomyWindow(QMainWindow):
         protocol_duration_s = max(active_work_s, 0.1)
         injection_events = self._scheduled_main_injection_events(injection_plan, settings)
         movement_targets = self._protocol_movement_targets(site, settings)
+        next_movement_endpoint = 1
+        endpoint_step_mm, endpoint_dwell_s = self._slow_axis_step_and_dwell(settings)
         delivered = 0
         event_index = 0
         start_time = time.monotonic()
@@ -3997,6 +4147,14 @@ class CraniotomyWindow(QMainWindow):
         while not self.injection_stop_requested.is_set():
             start_time += self._wait_while_injection_paused()
             elapsed = time.monotonic() - start_time
+            # Do not skip overshoot/depth endpoints when a UI/syringe call
+            # takes longer than a sampling interval.
+            while next_movement_endpoint < len(movement_targets) and elapsed >= movement_targets[next_movement_endpoint][0]:
+                self.controller.move_axis_to_target(
+                    "DV", movement_targets[next_movement_endpoint][1], step_mm=endpoint_step_mm,
+                    stop_requested=self.injection_stop_requested.is_set, dwell_seconds=endpoint_dwell_s,
+                )
+                next_movement_endpoint += 1
             if elapsed >= protocol_duration_s and event_index >= len(injection_events):
                 break
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
@@ -4011,10 +4169,10 @@ class CraniotomyWindow(QMainWindow):
                 delivered += step_nl
                 event_index += 1
             if movement_targets and elapsed - last_move_at >= 0.05:
-                target_bregma_dv = self._interpolated_movement_dv(movement_targets, elapsed)
+                target_axis_dv = self._interpolated_movement_dv(movement_targets, elapsed)
                 self.controller.move_axis_to_target(
                     "DV",
-                    self._bregma_dv_to_axis(target_bregma_dv),
+                    target_axis_dv,
                     step_mm=5.0,
                     stop_requested=self.injection_stop_requested.is_set,
                     status_callback=None,
@@ -4051,6 +4209,14 @@ class CraniotomyWindow(QMainWindow):
             time.sleep(0.02)
         if self.injection_stop_requested.is_set():
             return
+        # The timed loop may finish between samples. Confirm its final depth
+        # before the post-injection hold or surface retraction starts.
+        if movement_targets:
+            final_step_mm, final_dwell_s = self._slow_axis_step_and_dwell(settings)
+            self.controller.move_axis_to_target(
+                "DV", movement_targets[-1][1], step_mm=final_step_mm,
+                stop_requested=self.injection_stop_requested.is_set, dwell_seconds=final_dwell_s,
+            )
         if settings.post_inject_pause_s > 0:
             self.sequence_step_signal.emit(step_indexes["pause"])
             pause_started = time.monotonic()
@@ -4077,7 +4243,7 @@ class CraniotomyWindow(QMainWindow):
         retract_step_mm, retract_dwell_s = self._slow_axis_step_and_dwell(settings)
         self.controller.move_axis_to_target(
             "DV",
-            self._bregma_dv_to_axis(site.dv),
+            site.dv,
             step_mm=retract_step_mm,
             tolerance=0.003,
             stop_requested=self.injection_stop_requested.is_set,
@@ -4090,8 +4256,9 @@ class CraniotomyWindow(QMainWindow):
             int((site_index / max(1, site_count)) * 100),
             f"Moving normally to 1 mm above surface for site {site_index}/{site_count}",
         )
-        self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-        self.wait_for_gui_position(
+        self.controller.goto_axis_position(site.ap, site.ml, above_dv, delay_seconds=0.5,
+                                           stop_requested=self.injection_stop_requested.is_set)
+        self.controller.wait_for_axis_position(
             site.ap,
             site.ml,
             above_dv,
@@ -4128,13 +4295,7 @@ class CraniotomyWindow(QMainWindow):
         return site.dv - 1.0
 
     def _bregma_dv_to_axis(self, bregma_dv: float) -> float:
-        """Translate a GUI-Bregma DV value for direct Axis motor control.
-
-        Injection sites are defined relative to this application's Bregma
-        origin.  The protocol's fine insertion/retraction loop drives the
-        Axis DV motor directly, so it must not pass those relative values
-        through unchanged after an anchor-based tool recalibration.
-        """
+        """Translate a GUI-Bregma DV value to mechanical Axis DV."""
         return self._bregma_to_axis((0.0, 0.0, bregma_dv))[2]
 
     def _main_injection_duration_s(self, settings: InjectionProtocolSettings) -> float:
@@ -4196,8 +4357,9 @@ class CraniotomyWindow(QMainWindow):
     ) -> None:
         self.injection_progress_signal.emit(100, "Retracting pipette")
         above_dv = self._above_surface_dv(site)
-        self.goto_gui_position(site.ap, site.ml, above_dv, delay_seconds=0.5)
-        self.wait_for_gui_position(
+        self.controller.goto_axis_position(site.ap, site.ml, above_dv, delay_seconds=0.5,
+                                           stop_requested=self.injection_stop_requested.is_set)
+        self.controller.wait_for_axis_position(
             site.ap,
             site.ml,
             above_dv,
@@ -4658,8 +4820,10 @@ class CraniotomyWindow(QMainWindow):
         self.refresh_live_position()
 
     def generate_seeds(self) -> None:
+        if not self._require_idle("Craniotomy"):
+            return
         try:
-            ap, ml, _dv = self.get_gui_position()
+            ap, ml, _dv = self.get_bregma_position()
             self.mid_ap.setValue(ap)
             self.mid_ml.setValue(ml)
             diameter = self.diameter.value()
@@ -4670,6 +4834,7 @@ class CraniotomyWindow(QMainWindow):
             mid_ap = self.mid_ap.value()
             mid_ml = self.mid_ml.value()
             self.seeds = []
+            self.craniotomy_coordinate_system = "bregma"
             for index in range(seed_count):
                 theta = 2.0 * math.pi * index / seed_count
                 self.seeds.append(
@@ -4718,11 +4883,10 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
     def set_craniotomy_center(self) -> None:
+        if not self._require_idle("Craniotomy Center"):
+            return
         try:
-            axis_position = self.controller.get_current_axis_position()
-            position = axis_position
-            if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
-                position = self._axis_to_bregma(axis_position)
+            position = self.get_bregma_position()
             self.mid_ap.setValue(position[0])
             self.mid_ml.setValue(position[1])
             self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}.")
@@ -4740,6 +4904,8 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
+        if not self._require_idle("Map Move"):
+            return
         answer = QMessageBox.question(
             self, "Move to Map Location",
             f"Move to AP {ap:.2f}, ML {ml:.2f}? The drill will first move 0.5 mm above the reference DV.",
@@ -4763,11 +4929,13 @@ class CraniotomyWindow(QMainWindow):
                     f"ML {position[1]:.2f} mm, DV {position[2]:.2f} mm."
                 )
 
+            path = self._axis_clearance_path(target, safe[2])
             if not self._move_through_axis_positions_with_progress(
-                [safe, target],
+                path,
                 title="Moving to Map Location",
                 message=stage_message(safe_message, safe),
                 stage_messages=[
+                    "Retracting vertically before lateral travel.",
                     stage_message(safe_message, safe),
                     stage_message("Moving to the selected map location.", target),
                 ],
@@ -4846,14 +5014,15 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(self, "Craniotomy", "Generate seed points first.")
             return
         try:
+            self._require_project_coordinates("craniotomy")
             seed = self.seeds[self.current_seed_index]
-            self.goto_gui_position(
-                seed.ap, seed.ml, -1.0,
+            if not self._move_to_axis_position_with_progress(
+                self._bregma_to_axis((seed.ap, seed.ml, -1.0)),
                 delay_seconds=1.0,
                 title=f"Moving to Seed {seed.index + 1}",
                 message="Moving to the seed position. Waiting for StereoDrive to report arrival…",
-                show_progress=True,
-            )
+            ):
+                return
             self.set_status(
                 f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'Set Surface'."
             )
@@ -4861,10 +5030,13 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def capture_surface(self) -> None:
+        if not self._require_idle("Capture Surface"):
+            return
         if self.current_seed_index is None or not self.seeds:
             QMessageBox.information(self, "Craniotomy", "Generate seed points first.")
             return
         try:
+            self._require_project_coordinates("craniotomy")
             if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
                 for seed in self.seeds:
                     seed.dv = 0.0
@@ -4876,7 +5048,7 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_views()
                 self.set_status("Debug: set all seed surfaces to DV 0.00 and updated the trajectory.")
                 return
-            ap, ml, dv = self.get_gui_position()
+            ap, ml, dv = self.get_bregma_position()
             seed = self.seeds[self.current_seed_index]
             seed.dv = dv
             seed.sampled_ap = ap
@@ -4898,6 +5070,8 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def clear_surface_measurements(self) -> None:
+        if not self._require_idle("Clear Surfaces"):
+            return
         for seed in self.seeds:
             seed.dv = None
             seed.sampled_ap = None
@@ -4930,12 +5104,7 @@ class CraniotomyWindow(QMainWindow):
 
     def clear_craniotomy(self) -> None:
         """Discard the active craniotomy plan without changing injection or calibration data."""
-        if self._motion_is_active():
-            QMessageBox.warning(
-                self,
-                "Clear Craniotomy",
-                "Wait for the current movement, drilling, injection, benchmark, or probe to finish first.",
-            )
+        if not self._require_idle("Clear Craniotomy"):
             return
         if not self.seeds and not self.trajectory:
             self.set_status("There is no active craniotomy to clear.")
@@ -4951,6 +5120,7 @@ class CraniotomyWindow(QMainWindow):
         if response != QMessageBox.Yes:
             return
         self.seeds.clear()
+        self.craniotomy_coordinate_system = "bregma"
         self.trajectory.clear()
         self.drilled_depths.clear()
         self.frozen_points.clear()
@@ -5021,6 +5191,8 @@ class CraniotomyWindow(QMainWindow):
         self.anchor_axis = None
         self.anchor_bregma = None
         self.coordinate_mode = "axis"
+        self.craniotomy_coordinate_system = "bregma"
+        self.injection_sites_coordinate_system = "bregma"
         self.quick_locations.clear()
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
@@ -5041,6 +5213,8 @@ class CraniotomyWindow(QMainWindow):
         self.set_status("Cleared the current project and its recovery session.")
 
     def compute_trajectory(self) -> None:
+        if not self._require_idle("Compute Trajectory"):
+            return
         captured = [seed for seed in self.seeds if seed.dv is not None]
         if len(captured) < 2:
             radius = self.diameter.value() / 2.0
@@ -5125,12 +5299,21 @@ class CraniotomyWindow(QMainWindow):
         return values[-1]
 
     def stop_motion(self) -> None:
+        self.drill_stop_requested.set()
+        self.injection_stop_requested.set()
+        if self.validation_move_cancel_callback is not None:
+            self.validation_move_cancel_callback()
         try:
-            self.drill_stop_requested.set()
             self.controller.stop()
             self.set_status("Sent Stop command.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
+        finally:
+            if self.injection_thread is not None and self.injection_thread.is_alive():
+                try:
+                    self.controller.stop_injectomate_motion()
+                except Exception as exc:
+                    self.set_status(f"Syringe stop could not be confirmed: {exc}")
 
     def set_drill_completed_points(self, completed_points: int) -> None:
         self.drill_completed_points = completed_points
@@ -5140,7 +5323,14 @@ class CraniotomyWindow(QMainWindow):
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
             return
-        if not self.trajectory or any(seed.dv is None for seed in self.seeds):
+        if not self._require_idle("Drilling"):
+            return
+        try:
+            self._require_project_coordinates("craniotomy")
+        except Exception as exc:
+            QMessageBox.warning(self, "Drilling", str(exc))
+            return
+        if not self.trajectory or len(self.seeds) < 2 or any(seed.dv is None for seed in self.seeds):
             QMessageBox.information(self, "Craniotomy", "Capture all seed surfaces before drilling.")
             return
         max_depth = max(0.0, self.drill_depth.value())
@@ -5152,6 +5342,9 @@ class CraniotomyWindow(QMainWindow):
         if depth <= 0.0:
             QMessageBox.information(self, "Craniotomy", "Current target depth must be greater than zero.")
             return
+        self.controller.prepare_motion()
+        if self.nudge_all_sites_active:
+            self.nudge_all_sites_btn.setChecked(False)
         self.drill_pause_requested.clear()
         self.drill_stop_requested.clear()
         self.drilling_paused = False
@@ -5167,18 +5360,19 @@ class CraniotomyWindow(QMainWindow):
         self.active_drill_depth_mm = depth
         self.active_depth_ratio = 0.0
         self.start_round_btn.setText("Pause")
-        surface_targets = list(self.trajectory)
+        surface_targets = [self._bregma_to_axis(point) for point in self.trajectory]
+        self.drill_clearance_axis_dv = self.bregma_axis[2] - 0.5
         target_depths = [
             current_depth if frozen else max(current_depth, depth)
             for current_depth, frozen in zip(current_depths, frozen_points, strict=False)
         ]
         if surface_targets:
             self.active_surface_dv = surface_targets[0][2]
-        center_above_position = (
+        center_above_position = self._bregma_to_axis((
             self.mid_ap.value(),
             self.mid_ml.value(),
             self._craniotomy_center_surface_dv() - 2.0,
-        )
+        ))
         self.drill_thread = threading.Thread(
             target=self._run_drilling_round,
             args=(
@@ -5246,7 +5440,7 @@ class CraniotomyWindow(QMainWindow):
         if captured_dvs:
             return (sum(captured_dvs) / len(captured_dvs)) + self.cut_offset.value()
         if self.active_surface_dv is not None:
-            return self.active_surface_dv
+            return self.active_surface_dv - self.bregma_axis[2]
         return 0.0
 
     def show_next_round_countdown(self, target_depth_mm: float) -> bool:
@@ -5529,8 +5723,9 @@ class CraniotomyWindow(QMainWindow):
                     self.status_signal.emit(
                         f"Moving to start continuous cut at {int(order_position / max(1, point_count) * 100)}%"
                     )
-                    self.goto_gui_position(ap, ml, current_dv_target, delay_seconds=0.5)
-                    self.wait_for_gui_position(
+                    self._approach_axis_position((ap, ml, current_dv_target),
+                        min(surface_dv - 2.0, self.drill_clearance_axis_dv), self._should_abort_drilling)
+                    self.controller.wait_for_axis_position(
                         ap,
                         ml,
                         current_dv_target,
@@ -5577,8 +5772,9 @@ class CraniotomyWindow(QMainWindow):
             if not self._should_abort_drilling():
                 center_ap, center_ml, center_dv = center_above_position
                 self.status_signal.emit("Round complete. Returning above craniotomy center.")
-                self.goto_gui_position(center_ap, center_ml, center_dv, delay_seconds=0.5)
-                self.wait_for_gui_position(
+                self._approach_axis_position((center_ap, center_ml, center_dv),
+                                             self.drill_clearance_axis_dv, self._should_abort_drilling)
+                self.controller.wait_for_axis_position(
                     center_ap,
                     center_ml,
                     center_dv,
@@ -5594,7 +5790,14 @@ class CraniotomyWindow(QMainWindow):
                 outcome = "error"
                 self.status_signal.emit(str(exc))
         finally:
-            if self.drill_pause_requested.is_set():
+            if outcome == "error" or self.drill_stop_requested.is_set():
+                try:
+                    self.controller.stop()
+                    self.controller.wait_until_stopped()
+                except Exception as stop_exc:
+                    outcome = "error"
+                    self.status_signal.emit(f"Stop confirmation failed: {stop_exc}")
+            if self.drill_pause_requested.is_set() and not self.drill_stop_requested.is_set():
                 outcome = "paused"
                 try:
                     retract_dv = (self.active_surface_dv - 2.0) if self.active_surface_dv is not None else -2.0
@@ -5608,11 +5811,18 @@ class CraniotomyWindow(QMainWindow):
                     )
                     self.status_signal.emit("Drilling paused 2 mm above surface.")
                 except Exception as retract_exc:
+                    outcome = "error"
+                    try:
+                        self.controller.stop()
+                        self.controller.wait_until_stopped()
+                    except Exception as stop_exc:
+                        self.status_signal.emit(f"Stop confirmation failed: {stop_exc}")
                     self.status_signal.emit(str(retract_exc))
                 self.drill_pause_requested.clear()
             elif self.drill_stop_requested.is_set():
-                outcome = "stopped"
-                self.status_signal.emit("Drilling round stopped.")
+                if outcome != "error":
+                    outcome = "stopped"
+                    self.status_signal.emit("Drilling round stopped; stable Axis position confirmed.")
                 self.drill_stop_requested.clear()
             self.drill_round_started_at = None
             self.drill_round_target_seconds = 0.0
@@ -5627,11 +5837,16 @@ class CraniotomyWindow(QMainWindow):
         top_points: list[tuple[float, float, float]] = []
         skull_thickness_mm = max(self.skull_thickness_mm.value(), 0.001)
         current_depth_ratio = self.active_depth_ratio
-        for index, (ap, ml, _dv) in enumerate(self.trajectory):
+        map_trajectory = self.trajectory if self.craniotomy_coordinate_system == "bregma" else []
+        for index, (ap, ml, _dv) in enumerate(map_trajectory):
             depth_mm = self.drilled_depths[index] if index < len(self.drilled_depths) else 0.0
             point_depth_ratio = max(0.0, min(1.0, depth_mm / skull_thickness_mm))
-            top_points.append((ml, ap, point_depth_ratio))
-        top_seeds = [(seed.ml, seed.ap, seed.dv is not None) for seed in self.seeds]
+            display_ap, display_ml = self._project_map_position(ap, ml, self.craniotomy_coordinate_system)
+            top_points.append((display_ml, display_ap, point_depth_ratio))
+        top_seeds = []
+        for seed in self.seeds if self.craniotomy_coordinate_system == "bregma" else []:
+            display_ap, display_ml = self._project_map_position(seed.ap, seed.ml, self.craniotomy_coordinate_system)
+            top_seeds.append((display_ml, display_ap, seed.dv is not None))
         if current_point is None and (self.seeds or self.injection_sites or self.top_view.overlay_image is not None):
             try:
                 current_ap, current_ml, current_dv = self.controller.get_current_axis_position()
@@ -5642,7 +5857,7 @@ class CraniotomyWindow(QMainWindow):
                 current_point = None
         if self.drill_thread is not None and self.drill_thread.is_alive() and self.active_surface_dv is not None:
             try:
-                _current_ap, _current_ml, current_dv = self.get_gui_position()
+                _current_ap, _current_ml, current_dv = self.controller.get_current_axis_position()
                 current_depth_mm = max(0.0, current_dv - self.active_surface_dv)
                 computed_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
                 if self.active_depth_ratio is None or abs(computed_ratio - self.active_depth_ratio) >= 0.0005:
@@ -5662,7 +5877,10 @@ class CraniotomyWindow(QMainWindow):
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
         )
         show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
-        injection_site_points = [(site.ml, site.ap) for site in self.injection_sites]
+        injection_site_points = []
+        for site in self.injection_sites if self.injection_sites_coordinate_system == "bregma" else []:
+            display_ap, display_ml = self._project_map_position(site.ap, site.ml, self.injection_sites_coordinate_system)
+            injection_site_points.append((display_ml, display_ap))
         focus_points = [(point[0], point[1]) for point in top_points]
         if self.injection_sites_zoom_combo.currentIndex() == 1:
             focus_points = injection_site_points
@@ -5679,6 +5897,11 @@ class CraniotomyWindow(QMainWindow):
         )
         self.injection_sites_view.set_view_focus_points(focus_points or None)
         self.update_seed_selector_label()
+
+    def _project_map_position(self, ap: float, ml: float, frame: str) -> tuple[float, float]:
+        if self.coordinate_mode == "axis" and self.bregma_axis is not None and frame == "bregma":
+            return self.bregma_axis[0] + ap, self.bregma_axis[1] + ml
+        return ap, ml
 
     def _format_duration(self, seconds: float) -> str:
         total_seconds = max(0, int(round(seconds)))
