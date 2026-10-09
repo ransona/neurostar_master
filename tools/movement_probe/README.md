@@ -37,7 +37,7 @@ One command at a time; do not bypass limits, dismiss skull warnings or replay
 USB packets. Stop via client.py stop, POST /stop, the GUI Stop button or Esc;
 another explicit command is allowed after cancellation finishes, while closing
 the server disables all requests. There is no heartbeat-based disconnect Stop:
-an accepted movement may continue until arrival or its 15-second timeout.
+an accepted movement may continue until arrival or its 60-second timeout.
 Hardware faults require investigation and a local restart. Capture USB separately
 with Wireshark/USBPcap and read agreed saved captures using TShark -r; correlate
 them with UTC JSONL logs in %USERPROFILE%\StereoDriveProbeLogs. Preserve evidence
@@ -83,7 +83,7 @@ reverses and verifies return. No blind reversal if the outward move fails.
 worker exits, another explicit command is allowed without arming/restarting.
 **Close the server to prevent all further requests.** Closing also sends Stop.
 Failures (readout/controller, skull warning, leaving bounds, failed Stop or
-15-second timeout) latch FAULT; resolve and restart locally. There is no remote
+60-second timeout) latch FAULT; resolve and restart locally. There is no remote
 fault reset or limit change. Client disconnection does not cancel an accepted
 move: it may finish or run until timeout. Use local/physical Stop if needed.
 
@@ -104,6 +104,19 @@ Methods: `goto` (default) uses Axis text fields/GoTo and may move multiple axes;
 0.01 mm target resolution, 0.006 mm arrival tolerance. `nudged` performs AP then
 ML then DV via verified 0.01 mm increments. `planar` interleaves AP/ML increments
 by greatest remaining distance; DV forbidden. It is not continuous drilling DDA.
+
+GoTo's initial/direct-entry "already reached" checks use the same 0.006 mm
+tolerance, so a requested 0.01 mm movement is not silently skipped. Each native
+button action sends one click notification, not two. The probe reports arrival
+only after the native GoTo/relevant axis arrows are enabled and position readings
+have stayed within target tolerance and stable (within 0.001 mm) for at least
+200 ms. A busy control or changing/out-of-tolerance reading restarts this timer.
+This applies before every fine increment and before an out-and-back reversal.
+The overall timeout is 60 seconds to accommodate settling during 1 mm fine
+moves. Display/control checks are not independent proof of physical tool position;
+verify the first experiments visually. If controls remain disabled after actual
+arrival, preserve logs and report which controls stayed disabled rather than
+bypassing the completion check or issuing another move.
 
 Default bounds: ±1 mm per axis from startup. Maximum Euclidean distance per
 command/each probe leg: 1 mm. These are also the hard maximums; use

@@ -567,7 +567,8 @@ class StereoDriveController:
     def _click(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
         user32.SendMessageW(hwnd, BM_CLICK, 0, 0)
-        user32.SendMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
+        # BM_CLICK already generates BN_CLICKED/WM_COMMAND at the parent.
+        # Sending that notification again can execute a second motor nudge.
 
     def activate_drill_toggle(self) -> None:
         """Open the Drill panel and click its custom red drill toggle."""
@@ -619,13 +620,19 @@ class StereoDriveController:
         hwnd = self._control_handle(control_id, timeout_seconds=0.2, poll_seconds=0.01)
         return bool(user32.IsWindowEnabled(hwnd))
 
+    def motion_controls_ready(self, axes=("AP", "ML", "DV")) -> bool:
+        """Native GoTo and relevant axis arrows must be available after motion."""
+        ids = [GOTO_ID]
+        for axis in axes:
+            ids.extend(self._axis_button_ids(axis))
+        return all(self._is_control_enabled(control_id) for control_id in ids)
+
     def _post_click(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
         user32.PostMessageW(hwnd, BM_CLICK, 0, 0)
 
     def _post_click_handle(self, hwnd: int, control_id: int) -> None:
         user32.PostMessageW(hwnd, BM_CLICK, 0, 0)
-        user32.PostMessageW(self.main_hwnd, WM_COMMAND, control_id, hwnd)
 
     def _post_command(self, control_id: int) -> None:
         hwnd = self._control_handle(control_id)
@@ -1472,7 +1479,7 @@ class StereoDriveController:
         time.sleep(0.2)
         self._verify_target_position(ap, ml, dv)
 
-    def _axis_position_matches(self, ap: float, ml: float, dv: float, tolerance_mm: float = 0.02) -> bool:
+    def _axis_position_matches(self, ap: float, ml: float, dv: float, tolerance_mm: float = 0.006) -> bool:
         """Return whether the live Axis display has already reached a target."""
         try:
             current = self.get_current_axis_position()
@@ -1598,7 +1605,7 @@ class StereoDriveController:
             return
         current = self.get_current_axis_position()
         for axis, target, value in zip(("AP", "ML", "DV"), (ap, ml, dv), current):
-            self._record_axis_motion(axis, target, value)
+            self._record_axis_motion(axis, target, value, tolerance=0.006)
         already_reached = self.set_axis_target_position(ap, ml, dv, stop_requested)
         if already_reached:
             return

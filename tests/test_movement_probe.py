@@ -29,6 +29,17 @@ exec(compile(ast.Module(body=[node for node in gui_tree.body if isinstance(node,
 
 class ProbeTests(unittest.TestCase):
     def setUp(self):
+        self.clock = SimpleNamespace(now=0., on_sleep=None)
+        self.clock.monotonic = lambda: self.clock.now
+        def sleep(duration):
+            self.clock.now += duration
+            if self.clock.on_sleep:
+                self.clock.on_sleep()
+            time.sleep(.001)  # Yield to Stop/API threads without real settling delays.
+        self.clock.sleep = sleep
+        clock_patch = patch.object(probe, "time", self.clock)
+        clock_patch.start()
+        self.addCleanup(clock_patch.stop)
         self.controller = probe.SimulatedController()
         self.service = probe.ProbeService(self.controller)
         self.addCleanup(self.service.close)
@@ -160,6 +171,59 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["state"], "completed")
         for value in self.controller.position:
             self.assertAlmostEqual(value, .57)
+
+    def test_arrival_requires_native_controls_ready_and_stable_readings(self):
+        self.service.operation = {"axes": ["AP"]}
+        self.controller.position[0] = .01
+        self.controller.motion_controls_ready = lambda axes: self.clock.now >= .3
+        self.service._wait((.01, 0, 0), .006, deadline=2)
+        self.assertGreaterEqual(self.clock.now, .5)
+        self.assertEqual(self.service.events[-1]["settled_seconds"], .2)
+
+    def test_transient_matching_reading_does_not_report_arrival(self):
+        self.service.operation = {"axes": ["AP"]}
+        self.controller.position[0] = .01
+        self.clock.on_sleep = lambda: self.controller.position.__setitem__(0, .03)
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            self.service._wait((.01, 0, 0), .006, deadline=.5)
+        self.assertNotIn("ARRIVED", [e["event"] for e in self.service.events])
+
+    def test_arrival_timer_resets_while_display_still_changes(self):
+        self.service.operation = {"axes": ["AP"]}
+        self.controller.position[0] = .005
+        def update():
+            if self.clock.now >= .15:
+                self.controller.position[0] = .01
+        self.clock.on_sleep = update
+        self.service._wait((.01, 0, 0), .006, deadline=2)
+        self.assertGreaterEqual(self.clock.now, .35)
+
+    def test_busy_controls_never_report_arrival(self):
+        self.service.operation = {"axes": ["AP"]}
+        self.controller.position[0] = .01
+        self.controller.motion_controls_ready = lambda axes: False
+        with self.assertRaises(RuntimeError):
+            self.service._wait((.01, 0, 0), .006, deadline=.5)
+        self.assertNotIn("ARRIVED", [e["event"] for e in self.service.events])
+
+    def test_small_goto_through_actual_adapter_and_probe(self):
+        from test_movement import SimController, controller as native_module
+        class NativeFake(SimController):
+            def safety_check(self):
+                pass
+            def _is_control_enabled(self, control_id):
+                return True
+        native = NativeFake()
+        with patch.object(native_module, "time", self.clock):
+            service = probe.ProbeService(native)
+            try:
+                service.submit(dict(command_id="actual-adapter", kind="relative", coordinates={"AP": .01}))
+                service.worker.join(timeout=2)
+                self.assertEqual(service.status()["operation"]["state"], "completed")
+                self.assertAlmostEqual(native.position[0], 30.01)
+                self.assertEqual(native.clicks.count(native_module.GOTO_ID), 1)
+            finally:
+                service.close()
 
     def test_token_free_http_rejects_browser_and_bad_host(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), probe.handler(self.service))

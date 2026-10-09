@@ -59,6 +59,9 @@ class SimulatedController:
     def safety_check(self):
         pass
 
+    def motion_controls_ready(self, axes=AXES):
+        return True
+
 
 def real_controller():
     if sys.platform != "win32":
@@ -85,7 +88,7 @@ def real_controller():
 
 class ProbeService:
     def __init__(self, controller, radius=1.0, max_move=1.0, allow_dv=False,
-                 timeout=15.0, log_path=None):
+                 timeout=60.0, log_path=None):
         self.controller = controller
         self.origin = self.read_position()
         self.radius, self.max_move = radius, max_move
@@ -213,7 +216,8 @@ class ProbeService:
                 raise Rejected("Position outside envelope.")
             method, target, reverse = self.plan(payload, start)
             self.operation = dict(id=command_id, state="running", start=start, target=target,
-                                  method=method, error=None)
+                                  method=method, error=None,
+                                  axes=[axis for axis, a, b in zip(AXES, start, target) if abs(a - b) > 1e-9])
             self.operations[command_id] = (dict(payload), self.operation)
             self.stop_event.clear()
             self.controller.prepare_motion()
@@ -234,13 +238,23 @@ class ProbeService:
     def _wait(self, target, tolerance, deadline):
         # No blind retries/rearming of target boxes: an ambiguous move stops the
         # experiment instead of sending additional command traffic.
+        stable_since = None
+        stable_position = None
         while True:
             current = self._check(deadline)
             with self.lock:
                 self.operation["position"] = current
-            if all(abs(a - b) <= tolerance for a, b in zip(current, target)):
-                self.log("ARRIVED", position=current, target=target)
-                return
+            within_target = all(abs(a - b) <= tolerance for a, b in zip(current, target))
+            ready = self.controller.motion_controls_ready(self.operation["axes"])
+            if within_target and ready:
+                if stable_position is None or any(abs(a - b) > 0.001 for a, b in zip(current, stable_position)):
+                    stable_since = time.monotonic()
+                    stable_position = current
+                elif time.monotonic() - stable_since >= 0.2:
+                    self.log("ARRIVED", position=current, target=target, settled_seconds=0.2)
+                    return
+            else:
+                stable_since = stable_position = None
             time.sleep(0.05)
 
     def _move(self, method, target, deadline, nudge_delta=None):

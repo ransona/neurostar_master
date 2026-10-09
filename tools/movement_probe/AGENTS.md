@@ -21,6 +21,12 @@ not native/main-GUI Bregma/anchor. Derive targets from live status, verify signs
 physically, and never zero references to fit bounds. Request human visual checks
 for the first move of each type/direction. Multi-axis GoTo has no clearance path.
 
+Completion now requires native motion controls enabled and stable in-tolerance
+readings for 200 ms, not the first rounded target reading. GoTo's skip check is
+0.006 mm (not 0.02 mm); button notifications are no longer duplicated. Overall
+movement timeout is 60 seconds, including all fine increments and reverse legs.
+Do not treat an intermediate target reading as permission to reverse early.
+
 For uncertain HTTP responses, inspect status and retry only identical ID/body
 within the same session, never new IDs. After restart, ask the operator instead
 of replaying. Changing --allow-dv/limits needs human approval and clear workspace.

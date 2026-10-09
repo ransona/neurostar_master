@@ -181,6 +181,30 @@ class MechanicalMovementTests(unittest.TestCase):
         self.assertEqual(self.c.get_current_axis("DV"), 19.)
         self.assertEqual(self.c.get_current_position(), (1., 1., 1.))
 
+    def test_one_hundredth_mm_goto_is_not_skipped(self):
+        self.c.goto_axis_position(30.01, 31., 19.)
+        self.assertIn(controller.GOTO_ID, self.c.clicks)
+        self.assertEqual(self.c.fields[controller.AXIS_TARGET_AP_ID], "30.01")
+        self.assertAlmostEqual(self.c.position[0], 30.01)
+
+    def test_blank_target_does_not_treat_point_01_mm_as_arrival(self):
+        self.assertFalse(self.c._wait_for_axis_position_match(30.01, 31., 19., timeout_seconds=.25))
+
+    def test_button_click_sends_one_native_notification(self):
+        with patch.object(controller.user32, "SendMessageW") as send:
+            controller.StereoDriveController._click(self.c, controller.BUTTON_AP_POSITIVE_ID)
+            send.assert_called_once_with(controller.BUTTON_AP_POSITIVE_ID, controller.BM_CLICK, 0, 0)
+
+    def test_posted_button_click_sends_one_native_notification(self):
+        with patch.object(controller.user32, "PostMessageW") as send:
+            self.c._post_click_handle(123, controller.BUTTON_AP_POSITIVE_ID)
+            send.assert_called_once_with(123, controller.BM_CLICK, 0, 0)
+
+    def test_motion_controls_ready_checks_goto_and_relevant_arrows(self):
+        self.c._is_control_enabled = Mock(side_effect=lambda cid: cid != controller.BUTTON_AP_POSITIVE_ID)
+        self.assertFalse(self.c.motion_controls_ready(("AP",)))
+        self.assertTrue(self.c.motion_controls_ready(("ML",)))
+
     def test_pending_nudge_direction_tracks_mechanical_axis(self):
         self.c.defer_motion = True
         self.c.set_nudge_step("ML", .5)
