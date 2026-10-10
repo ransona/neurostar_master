@@ -862,6 +862,7 @@ class CraniotomyWindow(QMainWindow):
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
+    repeat_injection_site_signal = Signal(int)
     insertion_confirmation_signal = Signal()
     injection_pause_state_signal = Signal(bool)
     beep_signal = Signal()
@@ -949,6 +950,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
         self.block_prompt_result = "clear"
+        self.repeat_injection_site_event: threading.Event | None = None
+        self.repeat_injection_site_result = False
         self.insertion_confirmation_event: threading.Event | None = None
         self.insertion_confirmation_result = "pause"
         self.warning_auto_confirm_stop = threading.Event()
@@ -968,6 +971,7 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
+        self.repeat_injection_site_signal.connect(self.show_repeat_injection_site_prompt)
         self.insertion_confirmation_signal.connect(self.show_insertion_confirmation)
         self.injection_pause_state_signal.connect(self.set_injection_paused_ui)
         self.beep_signal.connect(self._beep)
@@ -4385,7 +4389,7 @@ class CraniotomyWindow(QMainWindow):
         if self.block_check.isChecked():
             steps.append(
                 "Run the blockage test above the stored surface; only continue if confirmed not blocked, "
-                "otherwise offer repeated test injections until declined."
+                "otherwise offer repeat tests; after a clear retest, optionally return and repeat that site."
             )
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
@@ -5293,44 +5297,52 @@ class CraniotomyWindow(QMainWindow):
         for relative,(site,plan) in enumerate(zip(sites,plans)):
             site_index=start_offset+relative
             self.active_injection_site_signal.emit(site_index)
-            completed=[0]
-            inserted_mm=[0.0]
-            delivered_dose_nl=[0]
-            insertion_depth=max(0.0,settings.injection_depth_mm)
-            site_volume_nl=settings.main_volume_nl+pulsed_protocol.insertion_volume(settings)
-            def on_event(event):
-                self.sequence_step_signal.emit(steps.get(phase_index[event.phase],steps['approach']))
-                completed[0]+=1
-                fraction=completed[0]/max(1,len(plan))
-                self.injection_site_progress_signal.emit(int(fraction*100))
-                if event.phase in ('insert','overshoot_retract') and event.target is not None:
-                    inserted_mm[0]=max(inserted_mm[0],min(insertion_depth,event.target[2]-site.dv))
-                if event.phase in ('insertion_dose','main_dose'):
-                    delivered_dose_nl[0]+=event.volume_nl
-                if event.phase in ('insert','overshoot_retract','insertion_dose','main_dose'):
-                    detail=self._format_injection_metrics(
-                        inserted_mm[0],insertion_depth,delivered_dose_nl[0],site_volume_nl
+            while True:
+                completed=[0]
+                inserted_mm=[0.0]
+                delivered_dose_nl=[0]
+                insertion_depth=max(0.0,settings.injection_depth_mm)
+                site_volume_nl=settings.main_volume_nl+pulsed_protocol.insertion_volume(settings)
+                def on_event(event):
+                    self.sequence_step_signal.emit(steps.get(phase_index[event.phase],steps['approach']))
+                    completed[0]+=1
+                    fraction=completed[0]/max(1,len(plan))
+                    self.injection_site_progress_signal.emit(int(fraction*100))
+                    if event.phase in ('insert','overshoot_retract') and event.target is not None:
+                        inserted_mm[0]=max(inserted_mm[0],min(insertion_depth,event.target[2]-site.dv))
+                    if event.phase in ('insertion_dose','main_dose'):
+                        delivered_dose_nl[0]+=event.volume_nl
+                    if event.phase in ('insert','overshoot_retract','insertion_dose','main_dose'):
+                        detail=self._format_injection_metrics(
+                            inserted_mm[0],insertion_depth,delivered_dose_nl[0],site_volume_nl
+                        )
+                    else:
+                        detail=f"{event.phase.replace('_',' ').capitalize()}"
+                    self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
+                        detail)
+                    planned_overshoot_dv=site.dv+settings.injection_depth_mm+settings.overshoot_mm
+                    if (self._confirm_insertion_enabled() and event.phase=='insert' and event.target is not None
+                            and abs(event.target[2]-planned_overshoot_dv)<1e-6):
+                        keep_running,_paused_s=self._confirm_pipette_insertion(planned_overshoot_dv,settings)
+                        if not keep_running:
+                            raise pulsed_protocol.PulseCancelled('Sequence stopped during insertion confirmation')
+                pulsed_protocol.execute(self.controller,plan,stop_requested=self.injection_stop_requested.is_set,
+                    pause_requested=self.injection_pause_requested.is_set,on_event=on_event,
+                    on_delivered=self.syringe_position_signal.emit)
+                if self.injection_stop_requested.is_set():
+                    raise pulsed_protocol.PulseCancelled('Sequence stopped')
+                repeat_site=False
+                if check_blocked:
+                    self.sequence_step_signal.emit(steps['block'])
+                    repeat_site=self._run_block_test(
+                        site, settings, test_volume_nl,
+                        overall_progress_percent=int((site_index + 1) / max(1, total_count) * 100),
+                        site_number=site_index+1,
                     )
-                else:
-                    detail=f"{event.phase.replace('_',' ').capitalize()}"
-                self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
-                    detail)
-                planned_overshoot_dv=site.dv+settings.injection_depth_mm+settings.overshoot_mm
-                if (self._confirm_insertion_enabled() and event.phase=='insert' and event.target is not None
-                        and abs(event.target[2]-planned_overshoot_dv)<1e-6):
-                    keep_running,_paused_s=self._confirm_pipette_insertion(planned_overshoot_dv,settings)
-                    if not keep_running:
-                        raise pulsed_protocol.PulseCancelled('Sequence stopped during insertion confirmation')
-            pulsed_protocol.execute(self.controller,plan,stop_requested=self.injection_stop_requested.is_set,
-                pause_requested=self.injection_pause_requested.is_set,on_event=on_event,
-                on_delivered=self.syringe_position_signal.emit)
-            if check_blocked:
-                self.sequence_step_signal.emit(steps['block'])
-                self._run_block_test(
-                    site, settings, test_volume_nl,
-                    overall_progress_percent=int((site_index + 1) / max(1, total_count) * 100),
-                )
-            if self.injection_stop_requested.is_set():raise pulsed_protocol.PulseCancelled('Sequence stopped')
+                if not repeat_site:
+                    break
+                self._ensure_repeat_site_capacity(settings,test_volume_nl,check_blocked)
+                self.injection_site_progress_signal.emit(0)
         self.sequence_step_signal.emit(-1);self.active_injection_site_signal.emit(-1)
         self.injection_progress_signal.emit(100, "Injection sequence complete")
         self.injection_finished_signal.emit("Pulsed injection workflow complete (estimated piston displacement, not measured delivery)")
@@ -5459,20 +5471,27 @@ class CraniotomyWindow(QMainWindow):
                 )
                 if self.injection_stop_requested.is_set():
                     break
-                self._run_protocol_at_site(
-                    site,
-                    settings,
-                    injection_plan,
-                    step_indexes,
-                    site_index,
-                    total_units,
-                )
-                if check_blocked and not self.injection_stop_requested.is_set():
+                while not self.injection_stop_requested.is_set():
+                    self._run_protocol_at_site(
+                        site,
+                        settings,
+                        injection_plan,
+                        step_indexes,
+                        site_index,
+                        total_units,
+                    )
+                    if self.injection_stop_requested.is_set() or not check_blocked:
+                        break
                     self.sequence_step_signal.emit(step_indexes["block"])
-                    self._run_block_test(
+                    repeat_site = self._run_block_test(
                         site, settings, test_volume_nl,
                         overall_progress_percent=int(site_index / max(1, total_units) * 100),
+                        site_number=site_index,
                     )
+                    if not repeat_site:
+                        break
+                    self._ensure_repeat_site_capacity(settings,test_volume_nl,check_blocked)
+                    self.injection_site_progress_signal.emit(0)
             if self.injection_stop_requested.is_set():
                 self.controller.stop()
                 self.controller.wait_until_stopped()
@@ -5839,11 +5858,13 @@ class CraniotomyWindow(QMainWindow):
         settings: InjectionProtocolSettings,
         test_volume_nl: int,
         overall_progress_percent: int = 0,
-    ) -> None:
+        site_number: int | None = None,
+    ) -> bool:
         # A blockage check is part of the current site, not the whole sequence.
         # Keep the overall bar at the completed-site fraction instead of
         # reporting 100% while later sites are still pending.
         progress = max(0, min(99, int(overall_progress_percent)))
+        blocked_was_reported = False
         self.injection_progress_signal.emit(progress, "Retracting pipette")
         above_dv = self._above_surface_dv(site)
         self.controller.goto_axis_position(site.ap, site.ml, above_dv, delay_seconds=0.5,
@@ -5863,12 +5884,12 @@ class CraniotomyWindow(QMainWindow):
                 self.controller.validate_piston_steps(self.controller.syringe_volume_steps(test_volume_nl,False))
             for remaining in range(5, 0, -1):
                 if self.injection_stop_requested.is_set():
-                    return
+                    return False
                 self.injection_progress_signal.emit(progress, f"Verifying no blockage in {remaining}s")
                 time.sleep(1.0)
             for step_nl in self._injection_step_plan(test_volume_nl):
                 if self.injection_stop_requested.is_set():
-                    return
+                    return False
                 self.injection_progress_signal.emit(progress, f"Verifying no blockage (test volume = {step_nl} nl)")
                 self.ensure_syringe_move_allowed(step_nl, False)
                 callbacks={"on_completed":self.syringe_position_signal.emit} if getattr(self.controller,"direct_api",False) else {}
@@ -5886,16 +5907,45 @@ class CraniotomyWindow(QMainWindow):
                 if self.block_prompt_event.wait(timeout=0.1):
                     break
             if self.injection_stop_requested.is_set():
-                return
+                return False
             if self.block_prompt_result == "clear":
                 self.injection_progress_signal.emit(progress, "Blockage test confirmed clear")
-                return
+                if not blocked_was_reported or site_number is None:
+                    return False
+                self.repeat_injection_site_event = threading.Event()
+                self.repeat_injection_site_result = False
+                self.repeat_injection_site_signal.emit(site_number)
+                while not self.injection_stop_requested.is_set():
+                    if self.repeat_injection_site_event.wait(timeout=0.1):
+                        break
+                return bool(
+                    not self.injection_stop_requested.is_set()
+                    and self.repeat_injection_site_result
+                )
             if self.block_prompt_result == "retest":
+                blocked_was_reported = True
                 self.injection_progress_signal.emit(progress, "Repeating blockage test injection")
                 continue
             self.injection_stop_requested.set()
             self.injection_progress_signal.emit(progress, "Sequence stopped after blockage test")
-            return
+            return False
+        return False
+
+    def _ensure_repeat_site_capacity(
+        self,
+        settings: InjectionProtocolSettings,
+        test_volume_nl: int,
+        check_blocked: bool,
+    ) -> None:
+        if getattr(self.controller,"pulsed_protocol",False):
+            insertion_volume_nl = pulsed_protocol.insertion_volume(settings)
+        else:
+            insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
+            insertion_volume_nl = settings.insertion_rate_nl_min * (insertion_time_s + retract_time_s) / 60.0
+        repeat_volume_nl = settings.main_volume_nl + insertion_volume_nl
+        if check_blocked:
+            repeat_volume_nl += test_volume_nl
+        self.ensure_total_syringe_capacity(repeat_volume_nl)
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
@@ -6031,6 +6081,21 @@ class CraniotomyWindow(QMainWindow):
         self.block_prompt_result = result
         if self.block_prompt_event is not None:
             self.block_prompt_event.set()
+
+    def show_repeat_injection_site_prompt(self, site_number: int) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Repeat Injection Site?")
+        box.setText(
+            f"The pipette is now clear. Return to site {site_number} and repeat its injection? "
+            "This repeats the planned insertion and injection volume."
+        )
+        repeat_button = box.addButton("Repeat Site", QMessageBox.AcceptRole)
+        continue_button = box.addButton("Continue", QMessageBox.RejectRole)
+        box.setDefaultButton(continue_button)
+        box.exec()
+        self.repeat_injection_site_result = box.clickedButton() == repeat_button
+        if self.repeat_injection_site_event is not None:
+            self.repeat_injection_site_event.set()
 
     def show_insertion_confirmation(self) -> None:
         result = "pause"

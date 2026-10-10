@@ -487,6 +487,61 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(progress_signal.emit.call_args_list)
         self.assertTrue(all(call.args[0] == 50 for call in progress_signal.emit.call_args_list))
 
+    def test_successful_retest_can_repeat_the_last_pulsed_site(self):
+        self.window.injection_stop_requested.clear()
+        site=planner.InjectionSite(0,0,0)
+        plan=object()
+        with (
+            patch.object(self.window,'_preflight_pulsed_injections',return_value=[[plan]]),
+            patch.object(planner.pulsed_protocol,'execute') as execute,
+            patch.object(self.window,'_run_block_test',side_effect=[True,False]) as blockage,
+            patch.object(self.window,'_ensure_repeat_site_capacity') as capacity,
+        ):
+            self.window._run_pulsed_injections([site],self.pulse_settings(),True,20,0,1)
+        self.assertEqual(execute.call_count,2)
+        self.assertEqual(blockage.call_count,2)
+        capacity.assert_called_once_with(self.pulse_settings(),20,True)
+
+    def test_block_test_offers_repeat_only_after_a_reported_blockage(self):
+        self.window.controller.close()
+        self.connect(allow_pulsed=True);self.window.controller.prepare_motion()
+        self.window.pulsed_clearance_mm=.02
+        prompt_index=[0]
+        def answer_block_prompt():
+            prompt_index[0]+=1
+            self.window.block_prompt_result='retest' if prompt_index[0]==1 else 'clear'
+            self.window.block_prompt_event.set()
+        def answer_repeat_prompt(site_number):
+            self.assertEqual(site_number,2)
+            self.window.repeat_injection_site_result=True
+            self.window.repeat_injection_site_event.set()
+        sleeper=time.sleep
+        with (
+            patch.object(self.window,'block_prompt_signal') as block_prompt,
+            patch.object(self.window,'repeat_injection_site_signal') as repeat_prompt,
+            patch.object(planner.time,'sleep',side_effect=lambda delay:None if delay==1 else sleeper(delay)),
+        ):
+            block_prompt.emit.side_effect=answer_block_prompt
+            repeat_prompt.emit.side_effect=answer_repeat_prompt
+            repeat=self.window._run_block_test(
+                planner.InjectionSite(0,0,0),self.pulse_settings(),20,
+                overall_progress_percent=25,site_number=2,
+            )
+        self.assertTrue(repeat)
+        self.assertEqual(prompt_index[0],2)
+        repeat_prompt.emit.assert_called_once_with(2)
+
+    def test_repeat_site_prompt_defaults_to_continue(self):
+        repeat_button,continue_button=object(),object()
+        box=self.dialogs.return_value
+        box.addButton.side_effect=[repeat_button,continue_button]
+        box.clickedButton.return_value=continue_button
+        self.window.repeat_injection_site_event=threading.Event()
+        self.window.show_repeat_injection_site_prompt(3)
+        self.assertFalse(self.window.repeat_injection_site_result)
+        self.assertTrue(self.window.repeat_injection_site_event.is_set())
+        self.assertEqual(box.setDefaultButton.call_args.args,(continue_button,))
+
     def test_benchmark_options_runs_and_displays_results(self):
         self.connect();timer=QTimer();timer.setInterval(50);started=[False];outputs=[]
         def automate():
