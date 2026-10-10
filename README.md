@@ -75,6 +75,16 @@ for the Nano 5 µL syringe. Signed motor-count overflow remains rejected.
 Pulsed drilling includes frozen sections, pause/retract/Continue and round progression.
 Pulsed injection includes Start/Resume, insertion and main doses, overshoot,
 post-injection hold, Pause/Resume, surface return and blockage tests.
+The craniotomy tab lists each distinct perimeter point; select one from the list
+or click it on the map, then choose **Set Surface**. The planner moves to the
+planned point above its surface and opens a shortcut-enabled dialog. Lower the
+tool to touch the skull and choose **At Surface** to save its current GUI Bregma
+position. Captured point surfaces are autosaved and become the surface targets
+used by drilling. The closing perimeter point is represented by the first list
+entry. **Drill On/Off** sends an explicit, state-checked ON or OFF command through
+the direct API; turning ON asks for confirmation and still requires verified
+USB setup/calibration and the drill opt-in. Reported power is not proof of spindle
+rotation or rest.
 Manual/test volumes up to 2000 nL are restored: larger requests expand into
 captured 10/20/50/100 nL steps, with whole-dose preflight and per-step verified
 counters. Keyboard movement step choices again include 2 and 5 mm, within travel limits.

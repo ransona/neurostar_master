@@ -212,6 +212,7 @@ class CraniotomyConfig:
 class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
     unfreeze_drawn = Signal(int)
+    trajectory_point_selected = Signal(int)
     location_double_clicked = Signal(float, float)
     location_clicked = Signal(float, float)
 
@@ -221,6 +222,7 @@ class ProjectionWidget(QWidget):
         self.y_label = y_label
         self.invert_y = invert_y
         self.trajectory: list[tuple[float, float, float]] = []
+        self.selected_trajectory_index: int | None = None
         self.seed_points: list[tuple[float, float, bool]] = []
         self.injection_site_points: list[tuple[float, float]] = []
         self.anchor_point: tuple[float, float] | None = None
@@ -306,11 +308,13 @@ class ProjectionWidget(QWidget):
         current_point: tuple[float, float] | None = None,
         injection_sites: list[tuple[float, float]] | None = None,
         anchor_point: tuple[float, float] | None = None,
+        selected_trajectory_index: int | None = None,
     ) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
         self.injection_site_points = injection_sites or []
         self.anchor_point = anchor_point
+        self.selected_trajectory_index = selected_trajectory_index
         self.frozen_points = frozen_points or [False] * len(trajectory)
         self.current_point = current_point
         self.update()
@@ -348,6 +352,17 @@ class ProjectionWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._pan_anchor is not None and event.button() == Qt.LeftButton:
             coordinates = self._position_to_coordinates(event.position()) if self.add_site_mode and not self._pan_dragged else None
+            if not self._pan_dragged and not self.add_site_mode and self._trajectory_screen_points:
+                nearest_index = min(
+                    range(len(self._trajectory_screen_points)),
+                    key=lambda index: math.hypot(
+                        self._trajectory_screen_points[index].x() - event.position().x(),
+                        self._trajectory_screen_points[index].y() - event.position().y(),
+                    ),
+                )
+                point = self._trajectory_screen_points[nearest_index]
+                if math.hypot(point.x() - event.position().x(), point.y() - event.position().y()) <= 14:
+                    self.trajectory_point_selected.emit(nearest_index)
             self._pan_anchor = None
             self._update_navigation_cursor()
             if coordinates is not None:
@@ -598,6 +613,12 @@ class ProjectionWidget(QWidget):
                 painter.setPen(QPen(QColor("#2563eb" if frozen else "#16a34a"), 12 if frozen else 4))
                 painter.drawLine(start, end)
 
+        for index, point in enumerate(self._trajectory_screen_points):
+            painter.setPen(QPen(QColor("#1d4ed8" if index == self.selected_trajectory_index else "#374151"), 2))
+            painter.setBrush(QColor("#60a5fa" if index == self.selected_trajectory_index else "#f9fafb"))
+            painter.drawEllipse(point, 5 if index == self.selected_trajectory_index else 2.5,
+                                5 if index == self.selected_trajectory_index else 2.5)
+
         for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
             pt = map_point(x, y)
             color = QColor("#0d8a63" if sampled else "#dd6e42")
@@ -773,6 +794,8 @@ class CraniotomyWindow(QMainWindow):
         self.setWindowTitle("Neurostar — Direct USB API Planner · "+("LIVE (calibration required)" if self.controller.live else "SIMULATION"))
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
+        self.craniotomy_surface_validated: list[bool] = []
+        self.selected_craniotomy_point_index: int | None = None
         self.drilled_depths: list[float] = []
         self.frozen_points: list[bool] = []
         self.current_seed_index: int | None = None
@@ -1203,6 +1226,7 @@ class CraniotomyWindow(QMainWindow):
         self.move_seed_btn = QPushButton("Next seed")
         self.move_seed_btn.clicked.connect(self.move_to_current_seed)
         self.capture_surface_btn = QPushButton("Set Surface")
+        self.capture_surface_btn.setText("Set Seed Surface")
         self.capture_surface_btn.setProperty("variant", "primary")
         self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
         self.capture_surface_btn.style().polish(self.capture_surface_btn)
@@ -1254,6 +1278,7 @@ class CraniotomyWindow(QMainWindow):
         self.top_view = ProjectionWidget("ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
+        self.top_view.trajectory_point_selected.connect(self.select_craniotomy_point)
         self.top_view.location_double_clicked.connect(self.move_to_map_location)
         self.top_view.set_navigation_enabled(True)
         self.top_view.setMinimumSize(420, 420)
@@ -1285,8 +1310,18 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addWidget(self.round_percent_label)
         legend_layout.addWidget(self.current_target_depth_label)
         legend_layout.addWidget(self.change_target_depth_btn)
-        legend_layout.addStretch(1)
         views_layout.addLayout(legend_layout, 0, 1)
+        surface_box = QGroupBox("Craniotomy Points")
+        surface_layout = QVBoxLayout(surface_box)
+        self.craniotomy_points_list = QListWidget()
+        self.craniotomy_points_list.setMinimumHeight(150)
+        self.craniotomy_points_list.currentRowChanged.connect(self.select_craniotomy_point)
+        self.set_craniotomy_surface_btn = QPushButton("Set Surface")
+        self.set_craniotomy_surface_btn.clicked.connect(self.set_selected_craniotomy_surface)
+        surface_layout.addWidget(self.craniotomy_points_list, 1)
+        surface_layout.addWidget(self.set_craniotomy_surface_btn)
+        legend_layout.addWidget(surface_box, 1)
+        legend_layout.addStretch(1)
         self.update_current_target_depth_label()
         self.update_move_speed_label()
         self._build_injection_tab()
@@ -1294,6 +1329,7 @@ class CraniotomyWindow(QMainWindow):
         default_index = self.overlay_combo.findText(default_overlay)
         if default_index >= 0:
             self.overlay_combo.setCurrentIndex(default_index)
+        self.refresh_craniotomy_points_list()
 
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
@@ -2228,6 +2264,7 @@ class CraniotomyWindow(QMainWindow):
                 for seed in self.seeds
             ],
             "trajectory": self.trajectory,
+            "craniotomy_surface_validated": self.craniotomy_surface_validated,
             "drilled_depths": self.drilled_depths,
             "frozen_points": self.frozen_points,
             "current_seed_index": self.current_seed_index,
@@ -2348,6 +2385,14 @@ class CraniotomyWindow(QMainWindow):
                 sampled_ml=None if raw_seed.get("sampled_ml") is None else float(raw_seed["sampled_ml"]),
             ))
         self.trajectory = [tuple(float(value) for value in point) for point in payload.get("trajectory", []) if isinstance(point, list) and len(point) == 3]
+        raw_surface_state = payload.get("craniotomy_surface_validated", [])
+        self.craniotomy_surface_validated = (
+            [bool(value) for value in raw_surface_state[:len(self.trajectory)]]
+            if isinstance(raw_surface_state, list) else []
+        )
+        if len(self.craniotomy_surface_validated) != len(self.trajectory):
+            self.craniotomy_surface_validated = [False] * len(self.trajectory)
+        self.selected_craniotomy_point_index = 0 if self.trajectory else None
         self.drilled_depths = [float(value) for value in payload.get("drilled_depths", [])]
         self.frozen_points = [bool(value) for value in payload.get("frozen_points", [])]
         self.current_seed_index = payload.get("current_seed_index") if isinstance(payload.get("current_seed_index"), int) else None
@@ -2394,6 +2439,7 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
         self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
         self.update_seed_selector_label()
+        self.refresh_craniotomy_points_list()
         self.update_current_target_depth_label()
         self.refresh_injection_sites_list()
         self.zoom_mode_combo.setCurrentIndex(max(0, min(2, int(payload.get("top_zoom_index", self.zoom_mode_combo.currentIndex())))))
@@ -3355,19 +3401,24 @@ class CraniotomyWindow(QMainWindow):
     def activate_stereodrive_drill(self) -> None:
         if not self._require_idle("Drill"):
             return
-        answer = QMessageBox.warning(
-            self,
-            "Activate Drill",
-            "Request drill ON/OFF directly through USB? Keep the spindle clear and physical Stop accessible. ON requires verified setup opt-in. Software power state does not prove spindle rotation has stopped.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
         try:
             self.controller.prepare_motion()
-            self.controller.activate_drill_toggle()
-            self.set_status("Direct USB drill toggle requested; waiting for reported power state.")
+            currently_on = bool(self.controller.reported_drill_state())
+            enabled = not currently_on
+            if enabled:
+                answer = QMessageBox.warning(
+                    self,
+                    "Turn Drill On",
+                    "Send the drill ON command directly through the StereoDrive API? Ensure the spindle is clear and physical Stop is accessible. Software power state does not prove spindle rotation or stopping.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            self.controller.set_drill_power(enabled, asynchronous=True)
+            self.set_status(
+                f"Direct API drill {'ON' if enabled else 'OFF'} command sent; waiting for reported power state."
+            )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive Drill", str(exc))
 
@@ -5608,6 +5659,8 @@ class CraniotomyWindow(QMainWindow):
                 )
             self.current_seed_index = 0
             self.trajectory = self._flat_circle_trajectory(mid_ap, mid_ml, radius)
+            self.craniotomy_surface_validated = [False] * len(self.trajectory)
+            self.selected_craniotomy_point_index = 0 if self.trajectory else None
             self.current_seed_spin.blockSignals(True)
             self.current_seed_spin.setRange(1, len(self.seeds))
             self.current_seed_spin.setValue(1)
@@ -5630,6 +5683,7 @@ class CraniotomyWindow(QMainWindow):
                 self.unfreeze_draw_btn.setChecked(False)
             self.update_current_target_depth_label()
             self.redraw_views()
+            self.refresh_craniotomy_points_list()
             self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
             reply = QMessageBox.question(
                 self,
@@ -5838,6 +5892,8 @@ class CraniotomyWindow(QMainWindow):
             seed.sampled_ap = None
             seed.sampled_ml = None
         self.trajectory = []
+        self.craniotomy_surface_validated = []
+        self.selected_craniotomy_point_index = None
         self.drilled_depths = []
         self.frozen_points = []
         self.drill_completed_points = 0
@@ -5859,6 +5915,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_seed_spin.setValue(1)
             self.current_seed_spin.blockSignals(False)
         self.update_seed_selector_label()
+        self.refresh_craniotomy_points_list()
         self.update_current_target_depth_label()
         self.redraw_views()
         self.set_status("Cleared all captured surface measurements.")
@@ -5883,6 +5940,8 @@ class CraniotomyWindow(QMainWindow):
         self.seeds.clear()
         self.craniotomy_coordinate_system = "bregma"
         self.trajectory.clear()
+        self.craniotomy_surface_validated.clear()
+        self.selected_craniotomy_point_index = None
         self.drilled_depths.clear()
         self.frozen_points.clear()
         self.current_seed_index = None
@@ -5906,6 +5965,7 @@ class CraniotomyWindow(QMainWindow):
         if self.unfreeze_draw_btn.isChecked():
             self.unfreeze_draw_btn.setChecked(False)
         self.update_seed_selector_label()
+        self.refresh_craniotomy_points_list()
         self.update_current_target_depth_label()
         self.redraw_views()
         self.set_status("Cleared the current craniotomy.")
@@ -5981,11 +6041,14 @@ class CraniotomyWindow(QMainWindow):
         if len(captured) < 2:
             radius = self.diameter.value() / 2.0
             self.trajectory = self._flat_circle_trajectory(self.mid_ap.value(), self.mid_ml.value(), radius)
+            self.craniotomy_surface_validated = [False] * len(self.trajectory)
+            self.selected_craniotomy_point_index = 0 if self.trajectory else None
             if len(self.drilled_depths) != len(self.trajectory):
                 self.drilled_depths = [0.0] * len(self.trajectory)
             if len(self.frozen_points) != len(self.trajectory):
                 self.frozen_points = [False] * len(self.trajectory)
             self.redraw_views()
+            self.refresh_craniotomy_points_list()
             return
         known = sorted(
             ((2.0 * math.pi * seed.index / len(self.seeds), seed.dv) for seed in self.seeds if seed.dv is not None),
@@ -6003,7 +6066,135 @@ class CraniotomyWindow(QMainWindow):
             self.trajectory.append((ap, ml, dv))
         self.drilled_depths = [0.0] * len(self.trajectory)
         self.frozen_points = [False] * len(self.trajectory)
+        self.craniotomy_surface_validated = [False] * len(self.trajectory)
+        self.selected_craniotomy_point_index = 0 if self.trajectory else None
         self.redraw_views()
+        self.refresh_craniotomy_points_list()
+
+    def _unique_craniotomy_point_count(self) -> int:
+        if len(self.trajectory) > 1:
+            first, last = self.trajectory[0], self.trajectory[-1]
+            if math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6:
+                return len(self.trajectory) - 1
+        return len(self.trajectory)
+
+    def refresh_craniotomy_points_list(self) -> None:
+        if not hasattr(self, "craniotomy_points_list"):
+            return
+        count = self._unique_craniotomy_point_count()
+        self.craniotomy_points_list.blockSignals(True)
+        self.craniotomy_points_list.clear()
+        for index in range(count):
+            ap, ml, dv = self.trajectory[index]
+            validated = index < len(self.craniotomy_surface_validated) and self.craniotomy_surface_validated[index]
+            state = f"surface DV {dv:.2f} mm" if validated else f"surface pending (plan DV {dv:.2f} mm)"
+            item = QListWidgetItem(f"Point {index + 1}: AP {ap:.2f}, ML {ml:.2f} — {state}")
+            item.setForeground(QColor("#111827" if validated else "#9ca3af"))
+            self.craniotomy_points_list.addItem(item)
+        if count:
+            selected = self.selected_craniotomy_point_index
+            if selected is None or not 0 <= selected < count:
+                selected = 0
+                self.selected_craniotomy_point_index = selected
+            self.craniotomy_points_list.setCurrentRow(selected)
+        else:
+            self.selected_craniotomy_point_index = None
+        self.craniotomy_points_list.blockSignals(False)
+        self.set_craniotomy_surface_btn.setEnabled(
+            bool(count) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
+        )
+        if hasattr(self, "top_view"):
+            self.redraw_views()
+
+    def select_craniotomy_point(self, index: int) -> None:
+        count = self._unique_craniotomy_point_count()
+        if count and index == count and len(self.trajectory) == count + 1:
+            index = 0
+        if not 0 <= index < count:
+            return
+        self.selected_craniotomy_point_index = index
+        if self.craniotomy_points_list.currentRow() != index:
+            self.craniotomy_points_list.setCurrentRow(index)
+        self.redraw_views()
+
+    def _craniotomy_surface_dialog(self, index: int, ap: float, ml: float, plan_dv: float) -> bool:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Craniotomy Point Surface")
+        dialog.setProperty("allow_motor_shortcuts", True)
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"Point {index + 1}: planned AP {ap:.2f}, ML {ml:.2f}, DV {plan_dv:.2f} mm.\n\n"
+            "Use the normal movement shortcuts to lower DV until the tool just touches the skull surface, "
+            "then select At Surface. Current AP, ML and DV will be saved for this point."
+        ))
+        buttons = QDialogButtonBox()
+        surface_button = buttons.addButton("At Surface", QDialogButtonBox.AcceptRole)
+        cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+        result = {"capture": False}
+
+        def capture() -> None:
+            if self.controller.has_active_motion():
+                self.set_status("Wait for the current movement to finish before recording the craniotomy surface.")
+                return
+            result["capture"] = True
+            dialog.accept()
+
+        surface_button.clicked.connect(capture)
+        cancel_button.clicked.connect(dialog.reject)
+        self.validation_modal_active = True
+        try:
+            dialog.exec()
+        finally:
+            self.validation_modal_active = False
+            if self.controller.has_active_motion():
+                self.stop_motion()
+                self.controller.wait_until_stopped()
+        return bool(result["capture"])
+
+    def set_selected_craniotomy_surface(self) -> None:
+        if not self._require_idle("Set Craniotomy Surface"):
+            return
+        if not self.trajectory:
+            QMessageBox.information(self, "Craniotomy Surface", "Generate a craniotomy trajectory first.")
+            return
+        if self.bregma_axis is None:
+            QMessageBox.information(self, "Craniotomy Surface", "Set GUI Bregma before recording craniotomy surfaces.")
+            return
+        index = self.selected_craniotomy_point_index
+        count = self._unique_craniotomy_point_count()
+        if index is None or not 0 <= index < count:
+            QMessageBox.information(self, "Craniotomy Surface", "Select a craniotomy point in the list or on the map first.")
+            return
+        ap, ml, plan_dv = self.trajectory[index]
+        try:
+            self._require_project_coordinates("craniotomy")
+            above_axis = self._bregma_to_axis((ap, ml, plan_dv - self.validation_clearance_mm))
+            safe_path = self._axis_clearance_path(above_axis, above_axis[2])
+            if not self._move_through_axis_positions_with_progress(
+                safe_path,
+                title="Moving Above Craniotomy Point",
+                message=f"Moving to point {index + 1}, {self.validation_clearance_mm:g} mm above its planned surface.",
+            ):
+                return
+            if not self._craniotomy_surface_dialog(index, ap, ml, plan_dv):
+                self.set_status(f"Surface capture cancelled for craniotomy point {index + 1}.")
+                return
+            actual_ap, actual_ml, actual_dv = self._axis_to_bregma(self.controller.get_current_axis_position())
+            self.trajectory[index] = (actual_ap, actual_ml, actual_dv)
+            if index == 0 and len(self.trajectory) > count:
+                self.trajectory[-1] = self.trajectory[index]
+            if len(self.craniotomy_surface_validated) != len(self.trajectory):
+                self.craniotomy_surface_validated = [False] * len(self.trajectory)
+            self.craniotomy_surface_validated[index] = True
+            if index == 0 and len(self.trajectory) > count:
+                self.craniotomy_surface_validated[-1] = True
+            self.refresh_craniotomy_points_list()
+            self._autosave_project_session()
+            self.set_status(f"Recorded surface at craniotomy point {index + 1}: DV {actual_dv:.2f} mm.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Craniotomy Surface", str(exc))
 
     def toggle_freeze_mode(self, enabled: bool) -> None:
         if enabled and self.unfreeze_draw_btn.isChecked():
@@ -6095,8 +6286,18 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Drilling", str(exc))
             return
-        if not self.trajectory or len(self.seeds) < 2 or any(seed.dv is None for seed in self.seeds):
-            QMessageBox.information(self, "Craniotomy", "Capture all seed surfaces before drilling.")
+        seed_surfaces_ready = len(self.seeds) >= 2 and all(seed.dv is not None for seed in self.seeds)
+        perimeter_surfaces_ready = (
+            bool(self.trajectory)
+            and len(self.craniotomy_surface_validated) == len(self.trajectory)
+            and all(self.craniotomy_surface_validated)
+        )
+        if not self.trajectory or not (seed_surfaces_ready or perimeter_surfaces_ready):
+            QMessageBox.information(
+                self,
+                "Craniotomy",
+                "Capture all seed surfaces, or manually set the surface for every perimeter point, before drilling.",
+            )
             return
         max_depth = max(0.0, self.drill_depth.value())
         if self.current_target_depth_mm <= 0.0:
@@ -6733,6 +6934,10 @@ class CraniotomyWindow(QMainWindow):
             current_point=current_point,
             anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
+            selected_trajectory_index=self.selected_craniotomy_point_index,
+        )
+        self.set_craniotomy_surface_btn.setEnabled(
+            bool(self.trajectory) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
         )
         show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
         injection_site_points = []

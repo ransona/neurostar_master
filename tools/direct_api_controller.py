@@ -248,6 +248,13 @@ class StereoDriveController:
     def turn_drill_off(self):
         return self._run(lambda d:d.drill_off())
 
+    def set_drill_power(self, enabled, *, asynchronous=False):
+        """Set drill power explicitly through the API and verify the reported state."""
+        if type(enabled) is not bool:
+            raise StereoDriveError("Drill power command must be explicitly ON or OFF.")
+        return self._run(lambda drive: drive.drill_on() if enabled else drive.drill_off(),
+                         asynchronous=asynchronous)
+
     def stop(self):
         self.cancelled.set()
         if self.drive: self.drive.stop()
@@ -262,10 +269,14 @@ class StereoDriveController:
         if self.drive and self.drive.is_moving(): raise StereoDriveError("Controller still reports movement.")
 
     def activate_drill_toggle(self):
+        # Query and command under the same exclusive API session, so a concurrent
+        # UI action cannot turn the drill back on after an OFF request.
         def toggle(d):
-            if d.drill_state(): d.drill_off()
-            else: d.drill_on()
-        return self._run(toggle,asynchronous=True)
+            if d.drill_state():
+                d.drill_off()
+            else:
+                d.drill_on()
+        return self._run(toggle, asynchronous=True)
 
     def close(self):
         self.cancelled.set()
