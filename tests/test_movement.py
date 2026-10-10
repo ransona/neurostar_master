@@ -342,6 +342,24 @@ class GuiCoordinateTests(unittest.TestCase):
         Window.set_status(self.w, "Drilling not started; the drill is off.")
         self.w.action_status_label.setText.assert_called_with("Status: Drilling not started")
 
+    def test_injection_status_includes_site_number_and_friendly_operation(self):
+        self.w.action_status_label = Mock()
+        self.w.injection_progress = Mock()
+        self.w.injection_status_site_index = 1
+        self.w.injection_status_site_count = 5
+        self.w.set_status = lambda message: Window.set_status(self.w, message)
+        Window.set_injection_progress(
+            self.w, 42, "Pulsed main_dose: site 2/5; verified serial commands"
+        )
+        self.w.action_status_label.setText.assert_called_with(
+            "Status: Injection 2/5: Delivering dose"
+        )
+        self.w.action_status_label.setText.reset_mock()
+        Window.set_injection_progress(self.w, 42, "Moving to surface for injection site")
+        self.w.action_status_label.setText.assert_called_with(
+            "Status: Injection 2/5: Moving to site"
+        )
+
     def test_bregma_button_targets_origin_in_axis_display(self):
         self.w.coordinate_mode = "axis"
         self.w._move_to_axis_position_with_progress = Mock(return_value=True)

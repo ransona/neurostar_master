@@ -3056,16 +3056,17 @@ class CraniotomyWindow(QMainWindow):
         self.current_action = message or "Trajectory"
         if hasattr(self, "action_status_label"):
             brief_source = " ".join(self.current_action.split())
+            is_injection_summary = brief_source.startswith("Injection ") and ":" in brief_source
             if brief_source.split() and brief_source.split()[0].rstrip(":").lower() == "status":
                 brief_source = (
                     brief_source.partition(":")[2].strip()
                     if ":" in brief_source
                     else " ".join(brief_source.split()[1:])
                 )
-            for separator in (";", ":", "!", "?"):
+            for separator in ((";", "!", "?") if is_injection_summary else (";", ":", "!", "?")):
                 brief_source = brief_source.partition(separator)[0]
             words = brief_source.split()
-            brief_message = " ".join(words[:4]) if words else "Ready now"
+            brief_message = " ".join(words[:5 if is_injection_summary else 4]) if words else "Ready now"
             if len(words) == 1:
                 brief_message = f"{brief_message} now"
             self.action_status_label.setText(f"Status: {brief_message}")
@@ -5257,6 +5258,8 @@ class CraniotomyWindow(QMainWindow):
             self.nudge_all_sites_btn.setChecked(False)
         self.injection_pause_requested.clear()
         self.injection_stop_requested.clear()
+        self.injection_status_site_index = start_site_offset
+        self.injection_status_site_count = total_site_count
         self.injection_progress.setValue(int((start_site_offset / max(1, total_site_count)) * 100))
         self.injection_site_progress.setValue(0)
         self.set_status(initial_status)
@@ -5703,7 +5706,32 @@ class CraniotomyWindow(QMainWindow):
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
-        self.set_status(message)
+        operation = self._injection_operation_label(message)
+        site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
+        site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
+        self.set_status(f"Injection {site_index + 1}/{site_count}: {operation}")
+
+    @staticmethod
+    def _injection_operation_label(message: str) -> str:
+        """Translate implementation details into a brief user-facing phase."""
+        phase = str(message).lower().replace("_", " ")
+        if "block" in phase or "verifying no blockage" in phase:
+            return "Checking blockage"
+        if "insertion dose" in phase or "inserting dose" in phase:
+            return "Delivering insertion dose"
+        if "main dose" in phase or "injecting" in phase or "main injection" in phase:
+            return "Delivering dose"
+        if "hold" in phase or "pause" in phase:
+            return "Waiting after dose"
+        if "retract" in phase or "return" in phase:
+            return "Retracting pipette"
+        if "insert" in phase or "advance" in phase:
+            return "Inserting pipette"
+        if "approach" in phase or "moving to" in phase or "surface" in phase:
+            return "Moving to site"
+        if "complete" in phase:
+            return "Finishing site"
+        return "Working at site"
 
     def set_injection_site_progress(self, percent: int) -> None:
         self.injection_site_progress.setValue(max(0, min(100, percent)))
@@ -5726,6 +5754,8 @@ class CraniotomyWindow(QMainWindow):
             self.sequence_steps_list.setCurrentRow(-1)
 
     def set_active_injection_site(self, row: int) -> None:
+        if row >= 0:
+            self.injection_status_site_index = row
         if not hasattr(self, "injection_sites_list"):
             return
         for index in range(self.injection_sites_list.count()):
