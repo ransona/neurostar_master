@@ -944,6 +944,7 @@ class CraniotomyWindow(QMainWindow):
         self.named_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
         self._injection_sequence_saved_enabled: dict[QWidget, bool] | None = None
+        self._drilling_sequence_saved_enabled: dict[QWidget, bool] | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
@@ -1105,6 +1106,32 @@ class CraniotomyWindow(QMainWindow):
             QPushButton[variant="quick-yellow"] {
                 background: #f1c232;
                 color: #2d2600;
+            }
+            QPushButton:disabled,
+            QPushButton[variant="primary"]:disabled,
+            QPushButton[variant="danger"]:disabled,
+            QPushButton[variant="quick-green"]:disabled,
+            QPushButton[variant="quick-blue"]:disabled,
+            QPushButton[variant="quick-yellow"]:disabled {
+                background: #e3e7e3;
+                color: #89928b;
+            }
+            QLineEdit:disabled,
+            QSpinBox:disabled,
+            QDoubleSpinBox:disabled,
+            QComboBox:disabled,
+            QListWidget:disabled,
+            QPlainTextEdit:disabled {
+                background: #e8ebe8;
+                color: #89928b;
+            }
+            QCheckBox:disabled,
+            QGroupBox:disabled {
+                color: #89928b;
+            }
+            QGroupBox:disabled {
+                border-color: #d6d9d6;
+                background: #e8ebe8;
             }
             QLabel[role="hero"] {
                 font-size: 34px;
@@ -6985,21 +7012,31 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def _set_borehole_controls_locked(self, locked: bool) -> None:
-        """Keep the active drilling plan fixed while a drilling round runs."""
-        self.drilling_mode_combo.setEnabled(not locked)
-        self.hole_spacing_mm.setEnabled(
-            not locked and self.drilling_mode_combo.currentData() == "boreholes"
-        )
-        for control in (
-            self.mid_ap, self.mid_ml, self.diameter, self.seed_count,
-            self.trajectory_points, self.cut_offset, self.drill_depth,
-            self.depth_per_round, self.skull_thickness_mm,
-            self.drill_rate_mm_per_s, self.generate_seeds_btn,
-            self.capture_surface_btn,
-        ):
-            control.setEnabled(not locked)
-        for control in (self.freeze_draw_btn, self.unfreeze_draw_btn, self.clear_freeze_btn):
-            control.setEnabled(not locked)
+        """Disable craniotomy editing and movement controls during a drill round."""
+        controls = list(self.craniotomy_setup_box.findChildren(QWidget))
+        controls.extend((
+            self.top_view, self.zoom_mode_combo, self.change_target_depth_btn,
+            self.craniotomy_points_list, self.set_craniotomy_surface_btn,
+        ))
+        controls = list(dict.fromkeys(controls))
+        if locked:
+            if self._drilling_sequence_saved_enabled is not None:
+                return
+            self._drilling_sequence_saved_enabled = {
+                control: control.isEnabled() for control in controls
+            }
+            for control in controls:
+                if control is not self.start_round_btn:
+                    control.setEnabled(False)
+            # This button becomes Pause while the worker is active.
+            self.start_round_btn.setEnabled(True)
+            return
+
+        if self._drilling_sequence_saved_enabled is None:
+            return
+        for control, was_enabled in self._drilling_sequence_saved_enabled.items():
+            control.setEnabled(was_enabled)
+        self._drilling_sequence_saved_enabled = None
 
     def _craniotomy_surface_dialog(self, index: int, ap: float, ml: float, plan_dv: float) -> str:
         dialog = QDialog(self)

@@ -171,6 +171,22 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.injection_map_box.isEnabled())
         self.assertTrue(self.window.sequence_steps_list.isEnabled())
 
+    def test_running_craniotomy_locks_editing_but_keeps_pause_control(self):
+        self.window._set_borehole_controls_locked(True)
+        for widget in (
+            self.window.mid_ap, self.window.drill_depth, self.window.drilling_mode_combo,
+            self.window.generate_seeds_btn, self.window.clear_craniotomy_btn,
+            self.window.craniotomy_load_btn, self.window.craniotomy_points_list,
+            self.window.set_craniotomy_surface_btn, self.window.zoom_mode_combo,
+            self.window.top_view,
+        ):
+            self.assertFalse(widget.isEnabled(), widget.objectName() or type(widget).__name__)
+        self.assertTrue(self.window.start_round_btn.isEnabled())
+        self.window._set_borehole_controls_locked(False)
+        self.assertTrue(self.window.mid_ap.isEnabled())
+        self.assertTrue(self.window.drilling_mode_combo.isEnabled())
+        self.assertTrue(self.window.top_view.isEnabled())
+
     def test_keyboard_nudges_are_ignored_during_injection(self):
         from unittest.mock import Mock
         self.window.injection_thread=Mock()
