@@ -1699,6 +1699,11 @@ class CraniotomyWindow(QMainWindow):
         resume_selected_btn.style().unpolish(resume_selected_btn)
         resume_selected_btn.style().polish(resume_selected_btn)
         resume_selected_btn.clicked.connect(self.resume_injection_from_selected)
+        self.injection_site_action_buttons = (
+            add_site_btn, add_grid_btn, remove_site_btn,
+            self.load_site_set_btn, self.save_site_set_btn, self.nudge_all_sites_btn,
+            self.validate_sites_btn, clear_sites_btn, resume_selected_btn,
+        )
         self.block_check = QCheckBox("Check blockage after each site")
         self.block_check.setChecked(True)
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
@@ -1718,6 +1723,21 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(QLabel("Validation / pulsed clearance (mm)"), 4, 0, 1, 2)
         sites_layout.addWidget(self.validation_clearance_edit, 4, 2)
         sites_layout.addWidget(self.injection_sites_list, 5, 0, 1, 3)
+        sites_layout.setColumnStretch(0, 1)
+        sites_layout.setColumnStretch(1, 1)
+        sites_layout.setColumnStretch(2, 1)
+        QTimer.singleShot(0, self._size_injection_site_action_buttons)
+
+    def _size_injection_site_action_buttons(self) -> None:
+        if not hasattr(self, "injection_sites_layout"):
+            return
+        layout = self.injection_sites_layout
+        available = layout.contentsRect().width()
+        spacing = layout.horizontalSpacing()
+        width = max(1, (available - 2 * spacing) // 3)
+        height = max(button.sizeHint().height() for button in self.injection_site_action_buttons)
+        for button in self.injection_site_action_buttons:
+            button.setFixedSize(width, height)
 
     def _size_injection_action_buttons(self) -> None:
         if not hasattr(self, "injection_actions_panel"):
@@ -1731,6 +1751,7 @@ class CraniotomyWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         QTimer.singleShot(0, self._size_injection_action_buttons)
+        QTimer.singleShot(0, self._size_injection_site_action_buttons)
 
     def _build_injection_map(self, parent_layout: QHBoxLayout) -> None:
         """Place the injection map in the full-height right-hand column."""

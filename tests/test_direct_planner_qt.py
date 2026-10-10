@@ -78,6 +78,8 @@ class PlannerTests(unittest.TestCase):
         self.assertNotEqual(self.window.validate_sites_btn.property('variant'),'primary')
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,0).widget(),self.window.load_site_set_btn)
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,1).widget(),self.window.save_site_set_btn)
+        site_action_sizes={(button.width(),button.height()) for button in self.window.injection_site_action_buttons}
+        self.assertEqual(len(site_action_sizes),1)
         self.assertEqual(self.window.start_injection_btn.width(),self.window.stop_injection_btn.width())
         self.assertEqual(self.window.capture_surface_btn.y(),self.window.move_seed_btn.y())
         self.assertEqual(self.window.capture_surface_btn.x()<self.window.move_seed_btn.x(),True)
