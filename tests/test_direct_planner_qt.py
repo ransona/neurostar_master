@@ -218,6 +218,26 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual([button.text() for button in observed['buttons']],
                          ['Validate and Next','Next Without Validating','Delete Point','Cancel'])
         self.assertEqual(len(observed['sizes']),1)
+
+    def test_craniotomy_surface_dialog_orders_equal_width_buttons(self):
+        observed={}
+        def inspect_and_close():
+            dialog=self.app.activeModalWidget()
+            self.assertIsNotNone(dialog)
+            buttons=dialog.findChildren(QPushButton)
+            buttons.sort(key=lambda button: button.mapTo(dialog,QPoint(0,0)).x())
+            observed['buttons']=buttons
+            observed['widths']={button.width() for button in buttons}
+            observed['default']=[button.text() for button in buttons if button.isDefault()]
+            buttons[-1].click()
+        from PySide6.QtCore import QPoint
+        QTimer.singleShot(0,inspect_and_close)
+        action=self.window._craniotomy_surface_dialog(0,0.0,0.0,-1.0)
+        self.assertEqual(action,'cancel')
+        self.assertEqual([button.text() for button in observed['buttons']],
+                         ['Set and Move to Next','Move to Next','Cancel'])
+        self.assertEqual(len(observed['widths']),1)
+        self.assertEqual(observed['default'],['Set and Move to Next'])
         self.assertTrue(observed['default'])
 
     def test_disconnected_keyboard_does_not_move(self):

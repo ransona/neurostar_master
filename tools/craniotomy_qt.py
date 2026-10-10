@@ -7155,12 +7155,16 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(QLabel("Move to surface"))
         position_label = QLabel("Current Bregma position: reading…")
         layout.addWidget(position_label)
-        buttons = QDialogButtonBox()
-        surface_button = buttons.addButton("Set and Move to Next", QDialogButtonBox.AcceptRole)
-        next_button = buttons.addButton("Move to Next", QDialogButtonBox.ActionRole)
-        cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
-        cancel_button.setText("Cancel")
-        layout.addWidget(buttons)
+        button_row = QHBoxLayout()
+        surface_button = QPushButton("Set and Move to Next")
+        next_button = QPushButton("Move to Next")
+        cancel_button = QPushButton("Cancel")
+        button_width = max(button.sizeHint().width() for button in (surface_button, next_button, cancel_button))
+        for button in (surface_button, next_button, cancel_button):
+            button.setFixedWidth(button_width)
+            button_row.addWidget(button, 1)
+        surface_button.setDefault(True)
+        layout.addLayout(button_row)
         result = {"action": "cancel"}
 
         position_timer = QTimer(dialog)
