@@ -1573,7 +1573,7 @@ class CraniotomyWindow(QMainWindow):
         self.single_injection_volume_nl.textChanged.connect(self.update_injection_rate_label)
         self.insertion_injection_rate_nl_min.textChanged.connect(self.update_injection_rate_label)
         self.main_injection_rate_nl_min.textChanged.connect(self.update_injection_rate_label)
-        self.block_test_volume_nl = self._number_edit(50)
+        self.block_test_volume_nl = self._number_edit(20)
         self.block_test_volume_nl.editingFinished.connect(self.round_test_volume_to_supported)
         for widget in (
             self.single_injection_volume_nl,
@@ -2844,7 +2844,7 @@ class CraniotomyWindow(QMainWindow):
         self._set_number_edit(self.insert_retract_speed_um_s, float(config.get("insert_retract_speed_um_s", 20.0)))
         self._set_number_edit(self.movement_overshoot_mm, float(config.get("overshoot_mm", 0.05)))
         self._set_number_edit(self.post_inject_pause_s, float(config.get("post_inject_pause_s", 5.0)))
-        self._set_number_edit(self.block_test_volume_nl, int(round(float(config.get("block_test_volume_nl", 50)))))
+        self._set_number_edit(self.block_test_volume_nl, int(round(float(config.get("block_test_volume_nl", 20)))))
         self.block_check.setChecked(bool(config.get("block_check_enabled", True)))
         self.round_single_injection_volume_up()
         self.round_test_volume_to_supported()
@@ -3304,7 +3304,7 @@ class CraniotomyWindow(QMainWindow):
     def round_test_volume_to_supported(self) -> None:
         self._set_number_edit(
             self.block_test_volume_nl,
-            self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000)),
+            self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 20, 10, 2000)),
         )
 
     def on_manual_volume_combo_changed(self) -> None:
@@ -3462,7 +3462,7 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Test Volume"):
             return
         try:
-            volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
+            volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 20, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
             self.ensure_syringe_move_allowed(volume_nl, False)
             if getattr(self.controller,"direct_api",False):
@@ -5215,7 +5215,7 @@ class CraniotomyWindow(QMainWindow):
         self._start_syringe_position_scale_read(wait_for_injection_thread=True)
 
     def _rounded_test_volume(self) -> int:
-        volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
+        volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 20, 10, 2000))
         self._set_number_edit(self.block_test_volume_nl, volume_nl)
         return volume_nl
 

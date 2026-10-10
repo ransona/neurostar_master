@@ -77,6 +77,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.direct_limit_edits['PISTON'][1].value(),4500)
         self.assertEqual((self.window.syringe_goto_target_nl.minimum(),self.window.syringe_goto_target_nl.maximum()),(500,4500))
         self.assertEqual(self.window.syringe_goto_btn.text(),'Go To')
+        self.assertEqual(self.window.block_test_volume_nl.text(),'20')
         self.assertNotEqual(self.window.validate_sites_btn.property('variant'),'primary')
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,0).widget(),self.window.load_site_set_btn)
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,1).widget(),self.window.save_site_set_btn)
