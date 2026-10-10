@@ -254,6 +254,25 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(accepted)
         self.assertEqual(observed['labels'],['Yes','No'])
         self.assertEqual(observed['default'],'Yes')
+
+    def test_drill_power_prompt_defaults_yes_and_places_it_first(self):
+        observed={}
+        def inspect_and_choose_yes():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QMessageBox)
+            buttons=dialog.buttons()
+            observed['labels']=[button.text() for button in buttons]
+            observed['default']=dialog.defaultButton().text()
+            buttons[0].click()
+        with patch.object(planner,'QMessageBox',QMessageBox), \
+             patch.object(self.window.controller,'reported_drill_state',side_effect=[False,True]), \
+             patch.object(self.window.controller,'prepare_motion'), \
+             patch.object(self.window.controller,'set_drill_power'):
+            QTimer.singleShot(0,inspect_and_choose_yes)
+            turned_on=self.window._ensure_drill_on_for_drilling()
+        self.assertTrue(turned_on)
+        self.assertEqual(observed['labels'],['Yes','No'])
+        self.assertEqual(observed['default'],'Yes')
         self.assertTrue(observed['default'])
 
     def test_disconnected_keyboard_does_not_move(self):

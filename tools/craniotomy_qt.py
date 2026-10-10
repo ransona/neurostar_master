@@ -3928,14 +3928,14 @@ class CraniotomyWindow(QMainWindow):
             )
             return False
 
-        response = QMessageBox.question(
-            self,
-            "Drill Is Off",
-            "The drill is currently reported as OFF. Would you like to turn it on now?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if response != QMessageBox.Yes:
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Drill Is Off")
+        prompt.setText("The drill is currently reported as OFF. Would you like to turn it on now?")
+        yes_button = prompt.addButton("Yes", QMessageBox.AcceptRole)
+        prompt.addButton("No", QMessageBox.RejectRole)
+        prompt.setDefaultButton(yes_button)
+        prompt.exec()
+        if prompt.clickedButton() is not yes_button:
             self.set_status("Drilling not started; the drill is off.")
             return False
 
