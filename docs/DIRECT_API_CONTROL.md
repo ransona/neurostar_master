@@ -47,12 +47,14 @@ ignored for control and retained until the user explicitly saves new setup.
 | Map move and validation approach | Entire retract/XY/approach path preflighted before the first leg |
 | Selected-site/grid validation | Direct keyboard fine adjustment; verified Axis capture converted back to Bregma |
 | Position labels/map crosses | Verified idle counts or moving motor telemetry; stale displays cleared on read failure |
-| Manual piston/test volume | Worker-owned bounded steps; counter updated from verified result, not assumed delivery |
+| Manual piston/test volume | Larger volumes expand into captured free steps; whole-dose preflight and verified per-step counters |
 | Drill toggle | Worker-owned API ON/OFF; ON requires calibration/opt-in; Stop always attempts OFF |
 | Injection start, Resume, sequence and worker | Explicit pulsed opt-in; complete travel/dose preflight, serial 10 nL delivery, no catch-up |
 | Automatic drilling entry and worker | Pulsed opt-in and drill confirmation/reported ON; microsteps, frozen gaps, verified pause/retraction |
-| Empty/fill and native benchmark | Disabled, no guessed replacement |
+| Empty/fill | Confirmed captured-step sequence toward configured piston limit; cancellable progress, actual counter and <10 nL remainder if necessary |
+| Axis benchmark | Selectable supervised out-and-back path; whole-path preflight, drill OFF, DV opt-in, cancellable progress and CSV |
 | Local HTTP server | Same calibrated API adapter; mandatory measured setup, free-piston only |
+| Branch Update / Restart | Verified direct branch/root, disconnect first, recoverable Git stash, pinned fetched commit, restart gate and preserved live flag |
 | Native control-ID/screenshot diagnostics | Direct diagnostics/no native handles; not a source of direct counters |
 
 New public API calls: `move_axis_to(axis, value_mm)`,
@@ -80,10 +82,12 @@ requested; otherwise AP/ML/DV), **not collision planning or simultaneous traject
 - Disconnected simulation startup; live requires flag plus verified setup. Separate
   settings/state, one planner per mode, exclusive live transport, StereoDrive refused.
 - Options ranges default to 0–40 mm per mechanical Axis and 0–5000 nL piston;
-  connection-relative windows are removed. Estimated 0–5000 nL capacity remains; no unlimited
-  fill/empty or rate-controlled injection hidden behind free-step requests.
+  connection-relative windows are removed. Estimated 0–5000 nL capacity remains;
+  empty/fill stop within the configured range, not unlimited or controlled-rate delivery.
 - Resume injection uses whole-plan preflight/bench confirmation; faults/disconnects clear stale
-  crosses/readings. Branch updater cannot reset this branch to `origin/main`.
+  crosses/readings. Branch updater only uses the verified direct branch; local edits
+  are stashed, another branch/drifting checkout is refused, and restart is required
+  before USB reconnects. Restart explicitly releases the old single-instance lock.
 - Options probe waits for verified idle before reversal, not transient target counts;
   progress dialogs poll moving telemetry so map crosses stay current.
 - Current history disagreement at restoration, boolean history/speed values and
@@ -103,7 +107,13 @@ Insertion volume is additional to main volume and rounded UP to 10 nL units.
 Preflight checks all sites, depths, overshoot, return paths and two test volumes/site
 against the actual remaining piston window/capacity. Every repeated blockage test
 is checked again before its first dose. Piston counters come from verified API
-results, not subtraction of assumed delivery. Pause freezes future events; drilling
+results, not subtraction of assumed delivery. Larger manual/blockage test volumes
+expand into captured steps, and repeated tests are preflighted as a complete dose.
+Empty/fill use commanded fractional counts to plan without rounding across a bound;
+any unachievable <10 nL remainder is reported. Benchmarks reject a bad later axis
+before any target and stop on Cancel/fault without automatic reversal. Ordinary
+Options/confirmation modals do not enable physical movement shortcuts.
+Pause freezes future events; drilling
 waits for idle, retracts via a preflighted path and requests drill OFF. Continue
 requires explicit drill ON again. Frozen gaps are crossed at clearance.
 
@@ -117,8 +127,10 @@ overdue timing, pause/cancel, frozen gaps, whole-plan rejection, end-to-end Qt
 injection/Bregma/counters and drilling pause/completion. All test connections use
 simulators, not hardware. Run both suites before bench testing.
 
-Final pulsed-integration check: 136 application tests and 22 API/GUI tests pass with
-no skips. Seven changed Python sources compile; `git diff --check` passes. Added
+The original pulsed-integration check passed 136 application tests and 22 API/GUI
+tests. Subsequent regressions cover travel/speed Options, larger free-step doses,
+empty/fill limits and counters, benchmark preflight/cancellation/CSV, and modal
+navigation safety. Run the full suites for the current check. Added
 regressions cover fractional/rounded held coordinates at envelope edges and an idle
 display read racing command startup. The adapter serializes idle reads/preflight
 with command startup; moving telemetry shares only the transport's I/O lock.

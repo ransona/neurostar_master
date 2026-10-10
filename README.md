@@ -75,7 +75,32 @@ for the Nano 5 µL syringe. Signed motor-count overflow remains rejected.
 Pulsed drilling includes frozen sections, pause/retract/Continue and round progression.
 Pulsed injection includes Start/Resume, insertion and main doses, overshoot,
 post-injection hold, Pause/Resume, surface return and blockage tests.
-Continuous firmware rate control, empty/fill and native benchmarks remain unsupported.
+Manual/test volumes up to 2000 nL are restored: larger requests expand into
+captured 10/20/50/100 nL steps, with whole-dose preflight and per-step verified
+counters. Keyboard movement step choices again include 2 and 5 mm, within travel limits.
+**Empty Syringe / Fill Syringe** move toward the configured lower/upper piston
+limit with a confirmation and cancellable progress dialog. Remove the pipette from
+the specimen and verify safe collection/aspiration first. If the endpoint is not
+reachable in 10 nL units, they stop short by less than 10 nL and show the real
+verified piston estimate; they never pretend the syringe is exactly empty/full.
+**Options → Benchmark Axis Moves** selects axes, distances (<=1 mm) and repeats;
+AP/ML are selected by default, DV is off. The entire out-and-back path is preflighted,
+drill power must be OFF, and Cancel/Esc stops without automatic return. Copyable CSV
+reports count-derived displacement and elapsed command time, not encoder feedback.
+Continuous firmware speed/flow, automatic hardware homing and native Auto-Speed/
+safety zones are not established by the captured protocol; no guessed packets are sent.
+Ordinary Options/confirmation dialogs suppress motor shortcuts; the dedicated
+site-validation modal still accepts the requested movement and step-size shortcuts.
+**Update** now works on this branch: confirm while idle, USB disconnects, the direct
+branch is fetched, local tracked/non-ignored untracked edits are saved in a Git stash,
+and the checkout is set to the verified remote commit. It refuses another branch
+or a checkout changed during fetch/backup, or changes Git cannot stash. Do not run
+other Git operations during updating. Ignored files and external settings are preserved.
+The progress dialog remains responsive; Cancel waits for the current Git command.
+It offers **Restart now** and retains live/simulation mode without auto-connecting.
+If you defer restarting (or cancel/fail an update), reconnecting is blocked until
+restart to prevent mixing old in-memory code with changed source. Restore a backup
+on a closed app with `git stash list` and `git stash apply <saved-stash-hash>`.
 Begin with small supervised bench plans. Larger site grids are allowed only if
 their entire path and dose fit the configured travel ranges and available volume.
 The dedicated network probe retains its independent experiment radius/command limits.

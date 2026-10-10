@@ -79,6 +79,16 @@ Reported ON/OFF is not proof of spindle rotation/stationarity.
 
 ## Timing, limits and failure behavior
 
+Manual/test volumes larger than 100 nL use preflighted serial captured steps.
+Empty/Fill ask for confirmation and run toward the configured piston minimum/
+maximum, with Cancel/Esc and per-step verified estimates. They may stop short by
+less than 10 nL because smaller firmware steps are not established. Verify collection/
+aspiration with no specimen before using them; never equate piston counts with fluid.
+Options includes a supervised selectable benchmark (DV unchecked by default),
+full out-and-back path preflight, drill-OFF guard, progress and copyable CSV. Cancellation
+or a fault does not automatically return to the starting point. Rates in its CSV
+include command/settle overhead and are not independent physical measurements.
+
 Each pulse uses the existing captured 1 or 2 mm/s axis profile or fixed free-piston
 profile. The requested slow rate is an **average timing ceiling**, not instantaneous
 speed/flow. A command can occupy multiple 200 ms settle periods. Overruns push later

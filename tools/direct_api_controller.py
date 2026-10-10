@@ -97,7 +97,11 @@ class StereoDriveController:
                 # Validation failure is visible but is not a lost physical reference.
                 self.last_rejection = str(exc)
             except Exception as exc:
-                self.error = str(exc)
+                cancelled=self.cancelled.is_set() or (stop_requested and stop_requested())
+                if cancelled:
+                    try:drive.position() # An idle cancellation between packets need not lose calibration.
+                    except Exception:self.error=str(exc)
+                else:self.error = str(exc)
                 if not asynchronous: raise StereoDriveError(str(exc)) from exc
             finally:
                 finished.set()
@@ -206,13 +210,30 @@ class StereoDriveController:
     def syringe_step(self, volume_label, up=True, stop_requested=None, asynchronous=False, on_completed=None):
         try: volume=float(volume_label.lower().replace("nl", "").strip())
         except ValueError as exc: raise StereoDriveError("Invalid syringe volume") from exc
-        if volume not in (10,20,50,100):
-            raise StereoDriveError("Direct piston supports 10/20/50/100 nL free steps, not controlled injection rate.")
-        def step(d):
-            result=d.piston_step("up" if up else "down",volume)
-            if on_completed:on_completed(result["PISTON"])
-            return result
-        return self._run(step,stop_requested=stop_requested,asynchronous=asynchronous)
+        steps=self.syringe_volume_steps(volume,up)
+        self.validate_piston_steps(steps)
+        return self._run(lambda d:self._execute_piston_steps(d,steps,stop_requested,on_completed),
+                         stop_requested=stop_requested,asynchronous=asynchronous)
+
+    @staticmethod
+    def syringe_volume_steps(volume,up):
+        if isinstance(volume,bool) or not isinstance(volume,(int,float)) or not math.isfinite(volume) or not 10<=volume<=5000 or volume%10:
+            raise StereoDriveError('Syringe volume must be a multiple of 10 nL within 10–5000 nL')
+        remaining=int(volume);steps=[]
+        for size in (100,50,20,10):
+            count,remaining=divmod(remaining,size)
+            steps.extend([(1 if up else -1)*size]*count)
+        return steps
+
+    def _execute_piston_steps(self,drive,steps,stop_requested,on_completed):
+        drive.validate_piston_steps(steps) # Recheck at exclusive command ownership.
+        result={'PISTON':drive.position()['piston_nl_estimate']}
+        if not steps and on_completed:on_completed(result['PISTON'])
+        for step in steps:
+            self._check_motion_cancelled(stop_requested)
+            result=drive.piston_step('up' if step>0 else 'down',abs(step))
+            if on_completed:on_completed(result['PISTON'])
+        return result
 
     def read_injectomate_calibrate_scale_nl(self, **kwargs):
         with self.lock:
@@ -254,11 +275,54 @@ class StereoDriveController:
             finally:self.drive=None
         if self.worker:self.worker.join(timeout=3)
 
-    def empty_syringe(self):
-        raise StereoDriveError("Empty/fill is not validated in the direct API; use bounded piston steps.")
+    def syringe_to_limit(self, *, fill=False, stop_requested=None, asynchronous=False, on_completed=None):
+        with self.lock:
+            if self.busy:raise StereoDriveError('Controller busy')
+            drive=self._require()
+            endpoint=drive.travel_limits['PISTON'][1 if fill else 0]
+            steps=drive.plan_piston_to(endpoint)
+        return self._run(lambda d:self._execute_piston_steps(d,steps,stop_requested,on_completed),
+                         stop_requested=stop_requested,asynchronous=asynchronous)
 
-    def benchmark_axis_moves(self, *args, **kwargs):
-        raise StereoDriveError("Automatic benchmarking is disabled for direct USB; use supervised small moves.")
+    def empty_syringe(self, **kwargs):
+        return self.syringe_to_limit(fill=False,**kwargs)
+
+    def fill_syringe(self, **kwargs):
+        return self.syringe_to_limit(fill=True,**kwargs)
+
+    def benchmark_axis_moves(self, axes=None, distances_mm=None, repeats=3, tolerance=.003,
+                             stop_requested=None, progress_callback=None):
+        axes=['AP','ML'] if axes is None else axes
+        distances_mm=[.01,.02,.05] if distances_mm is None else distances_mm
+        if (not axes or len(set(axes))!=len(axes) or any(a not in ('AP','ML','DV') for a in axes)
+                or type(repeats) is not int or not 1<=repeats<=10 or not distances_mm or len(distances_mm)>20
+                or any(isinstance(d,bool) or not isinstance(d,(int,float)) or not math.isfinite(d) or not 0<d<=1 for d in distances_mm)
+                or isinstance(tolerance,bool) or not math.isfinite(tolerance) or tolerance<=0):
+            raise StereoDriveError('Invalid benchmark: select axes, 1–10 repeats and distances >0, <=1 mm')
+        start=self.get_current_axis_position();legs=[]
+        for axis in axes:
+            index=('AP','ML','DV').index(axis)
+            for distance in distances_mm:
+                target=list(start);target[index]+=distance
+                for repeat in range(1,repeats+1):
+                    legs.extend([(axis,distance,repeat,'+',tuple(target)),(axis,distance,repeat,'-',start)])
+        self.validate_axis_path([leg[-1] for leg in legs])
+        def run(drive):
+            if drive.drill_state():raise ValueError('Turn the drill OFF before benchmarking')
+            drive.validate_axis_path([dict(zip(('AP','ML','DV'),leg[-1])) for leg in legs]);rows=[]
+            for i,(axis,distance,repeat,direction,target) in enumerate(legs):
+                self._check_motion_cancelled(stop_requested)
+                index=('AP','ML','DV').index(axis)
+                before=drive.position()['axes_mm'][axis];started=time.monotonic()
+                result=drive.move_axes_to(dict(zip(('AP','ML','DV'),target)))
+                elapsed=time.monotonic()-started;end=result[axis];achieved=abs(end-before)
+                if abs(end-target[index])>tolerance:raise RuntimeError('Benchmark endpoint verification failed')
+                rows.append(dict(axis=axis,distance_mm=distance,direction=direction,repeat=repeat,
+                    start=before,target=target[index],end=end,achieved_mm=achieved,elapsed_s=elapsed,
+                    mm_per_s=achieved/elapsed if elapsed else None,error_mm=end-target[index]))
+                if progress_callback:progress_callback(i+1,len(legs),axis,target[index])
+            return rows
+        return self._run(run,stop_requested=stop_requested)
 
     def scan_stereodrive_controls(self):
         return json.dumps(dict(backend="direct stereodrive_api",native_gui_control_ids="not used"),indent=2)

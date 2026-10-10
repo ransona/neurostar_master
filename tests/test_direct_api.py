@@ -80,8 +80,7 @@ class DirectTests(unittest.TestCase):
         self.assertAlmostEqual(c.get_current_axis('AP'),.03,delta=1/5225)
         c.prepare_motion();c.syringe_step('10 nl',up=True)
         self.assertAlmostEqual(c.read_injectomate_calibrate_scale_nl(),3010,delta=1/161.36)
-        for action in (c.empty_syringe,c.benchmark_axis_moves):
-            with self.assertRaises(StereoDriveError):action()
+        with self.assertRaises(StereoDriveError):c.benchmark_axis_moves(distances_mm=[2])
         c.stop()
         self.assertFalse(c.drive.drill_state())
 
@@ -179,6 +178,56 @@ class DirectTests(unittest.TestCase):
         with d._lock:
             with self.assertRaises(RuntimeError):d.configure_motion(speed_mm_s=1,travel_limits=DEFAULT_LIMITS)
         self.assertEqual(d.speed_mm_s,2)
+
+    def test_larger_syringe_volume_verified_serial_steps_and_full_preflight(self):
+        c=StereoDriveController();self.addCleanup(c.close)
+        c.connect(CAL,STATES,self.path,allow_piston=True)
+        updates=[];c.prepare_motion()
+        result=c.syringe_step('150 nl',on_completed=updates.append)
+        self.assertAlmostEqual(result['PISTON'],3150,delta=1/161.36)
+        self.assertEqual(len(updates),2)
+        self.assertEqual(sum(p[1]==0x0c for p in c.drive._session.transport.packets),2)
+        before=len(c.drive._session.transport.packets)
+        with self.assertRaises(ValueError):c.syringe_step('2000 nl')
+        self.assertFalse(any(p[1]==0x0c for p in c.drive._session.transport.packets[before:]))
+        self.assertIsNone(c.error)
+
+    def test_empty_fill_respect_custom_limits_and_do_not_invent_partial_steps(self):
+        c=StereoDriveController();self.addCleanup(c.close)
+        c.connect(CAL,STATES,self.path,allow_piston=True,travel_limits=dict(LIMITS,PISTON=(2985,3035)))
+        c.prepare_motion();result=c.empty_syringe()
+        self.assertAlmostEqual(result['PISTON'],2990,delta=1/161.36)
+        c.prepare_motion();result=c.fill_syringe()
+        self.assertAlmostEqual(result['PISTON'],3030,delta=1/161.36)
+        self.assertEqual(c.get_current_axis_position(),(0,0,0))
+        self.assertFalse(any(p[1]==0x0c and p[2]!=0x70 for p in c.drive._session.transport.packets))
+
+    def test_piston_plan_uses_commanded_fractional_counts_not_rounded_readout(self):
+        d=self.drive(allow_piston=True)
+        d.piston_step('up',20)
+        steps=d.plan_piston_to(0)
+        self.assertEqual(sum(steps),-3020)
+        d.validate_piston_steps(steps)
+        self.assertEqual(sum(d.plan_piston_to(5000)),1980)
+        with self.assertRaises(ValueError):d.plan_piston_to(5001)
+
+    def test_benchmark_preflights_all_axes_and_stops_without_reversal(self):
+        c=StereoDriveController();self.addCleanup(c.close)
+        c.connect(CAL,STATES,self.path)
+        with self.assertRaises(ValueError):c.benchmark_axis_moves(['AP','DV'],[.01],1)
+        self.assertFalse(any(p[1]==0x0c for p in c.drive._session.transport.packets))
+        c.prepare_motion();rows=c.benchmark_axis_moves(['AP'],[.01],1)
+        self.assertEqual([row['direction'] for row in rows],['+','-'])
+        self.assertAlmostEqual(c.get_current_axis('AP'),0,delta=1/5225)
+        stopped=threading.Event();c.prepare_motion()
+        before=len(c.drive._session.transport.packets)
+        with self.assertRaises(StereoDriveError):
+            c.benchmark_axis_moves(['AP'],[.01],1,stop_requested=stopped.is_set,
+                                   progress_callback=lambda *args:stopped.set())
+        self.assertEqual(sum(p[1]==0x0c for p in c.drive._session.transport.packets[before:]),1)
+        self.assertAlmostEqual(c.get_current_axis('AP'),.01,delta=1/5225)
+        self.assertIsNone(c.error)
+        self.assertTrue(c.drive._session.store.read()['valid'])
 
 
 if __name__=='__main__':unittest.main()

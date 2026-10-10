@@ -112,6 +112,7 @@ validation before changing the transport identity.
 | `validate_axis_path(waypoints)` | Validate complete absolute path/envelope before sending any target |
 | `validate_piston_steps(signed_steps)` | Preflight signed 10/20/50/100 nL doses, configured travel/capacity/raw limits; no target writes |
 | `configure_motion(speed_mm_s=1, travel_limits=...)` | Change future targets while verified idle; no movement sent |
+| `plan_piston_to(position_nl)` | Preflight signed captured steps toward an absolute calibrated piston target; no movement; stops short by <10 nL if needed |
 | `live_position()` | Motor-derived moving telemetry with `verified_idle`, not encoder feedback |
 | `piston_step("up"/"down", volume_nl)` | Blocking free-piston step; supported 10,20,50,100 nL; captured fixed profile |
 | `stop()` | Request cancellation from another thread, then send Stop to all four channels |

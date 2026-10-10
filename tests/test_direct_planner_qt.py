@@ -161,6 +161,143 @@ class PlannerTests(unittest.TestCase):
         self.wait_idle();self.app.processEvents()
         self.assertAlmostEqual(self.window.current_syringe_position(),3010,delta=1/161.36)
 
+    def test_large_manual_and_test_volumes_are_enabled_and_verified(self):
+        self.connect();self.window.set_syringe_position(3000)
+        self.window.manual_injection_volume_nl=200
+        self.window.manual_syringe_step(True);self.wait_idle();self.app.processEvents()
+        self.assertAlmostEqual(self.window.current_syringe_position(),3200,delta=1/161.36)
+        self.window.block_test_volume_nl.setText('200')
+        self.window.test_for_blockage();self.wait_idle();self.app.processEvents()
+        self.assertAlmostEqual(self.window.current_syringe_position(),3000,delta=1/161.36)
+        self.assertEqual(self.window._nearest_supported_injection_volume(2000),2000)
+        self.assertIn(5,planner.MOVE_SPEED_OPTIONS_MM)
+
+    def test_empty_fill_modal_uses_real_counter_not_assumed_zero(self):
+        self.connect(travel_limits=dict(AP=(0,40),ML=(0,40),DV=(0,40),PISTON=(2985,3035)))
+        self.dialogs.warning.return_value=planner.QMessageBox.Cancel
+        self.window.empty_syringe()
+        self.assertFalse(any(p[1]==0x0c for p in self.window.controller.drive._session.transport.packets))
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        self.window.empty_syringe()
+        self.assertAlmostEqual(self.window.current_syringe_position(),2990,delta=1/161.36)
+        self.window.fill_syringe()
+        self.assertAlmostEqual(self.window.current_syringe_position(),3030,delta=1/161.36)
+        self.assertIsNone(self.window.direct_operation_thread)
+        self.assertFalse(self.window.validation_move_active)
+
+    def test_direct_operation_can_cancel_before_any_motor_packet(self):
+        self.connect();timer=QTimer();timer.setInterval(30)
+        def cancel():
+            if self.window.validation_move_cancel_callback:
+                self.window.validation_move_cancel_callback();timer.stop()
+        timer.timeout.connect(cancel);timer.start()
+        def operation(cancel,progress):
+            for _ in range(20):
+                if cancel():return None
+                time.sleep(.01)
+            return self.window.controller.syringe_step('10 nl',stop_requested=cancel)
+        try:self.assertIsNone(self.window._run_direct_operation_with_progress('Cancel Test','Waiting',operation))
+        finally:timer.stop()
+        self.assertFalse(any(p[1]==0x0c for p in self.window.controller.drive._session.transport.packets))
+        self.assertIsNone(self.window.controller.error)
+
+    def test_options_dialog_navigation_does_not_issue_motor_shortcuts(self):
+        self.connect();timer=QTimer();timer.setSingleShot(True)
+        def navigate():
+            from PySide6.QtGui import QKeyEvent
+            from PySide6.QtCore import QEvent,Qt
+            watched=self.window.options_dialog
+            event=QKeyEvent(QEvent.KeyPress,Qt.Key.Key_Up,Qt.NoModifier)
+            with patch.object(self.window,'keyboard_nudge') as nudge:
+                self.window.eventFilter(watched,event)
+                nudge.assert_not_called()
+            watched.accept()
+        timer.timeout.connect(navigate);timer.start(50)
+        self.window.options_dialog.exec()
+        self.assertFalse(any(p[1]==0x0c for p in self.window.controller.drive._session.transport.packets))
+
+    def test_validation_modal_retains_step_and_movement_not_syringe_shortcuts(self):
+        self.connect();self.window.controller.prepare_motion()
+        timer=QTimer();timer.setInterval(50);requested=[False]
+        def automate():
+            from PySide6.QtGui import QKeyEvent
+            from PySide6.QtCore import QEvent,Qt
+            dialog=next((d for d in self.window.findChildren(QDialog) if d.isVisible() and d.windowTitle()=='Validate Injection Site'),None)
+            if dialog is None:return
+            if not requested[0]:
+                requested[0]=True
+                for binding in ('speed_increase','ap_anterior'):
+                    key=self.window.movement_key_bindings[binding]
+                    self.window.eventFilter(dialog,QKeyEvent(QEvent.KeyPress,key,Qt.NoModifier))
+                self.window.eventFilter(dialog,QKeyEvent(QEvent.KeyPress,Qt.Key_F3,Qt.NoModifier))
+            elif not self.window.controller.has_active_motion():
+                next(b for b in dialog.findChildren(QPushButton) if b.text()=='Validate and Next').click();timer.stop()
+        initial_step=self.window.move_speed_step_mm;timer.timeout.connect(automate);timer.start()
+        try:action,dialog=self.window._validation_dialog(0,1,planner.InjectionSite(0,0,None))
+        finally:timer.stop()
+        self.assertEqual(action,'validate')
+        self.assertGreater(self.window.move_speed_step_mm,initial_step)
+        self.assertAlmostEqual(self.window.controller.get_current_axis('AP'),self.window.move_speed_step_mm,delta=1/5225)
+        self.assertAlmostEqual(self.window.controller.read_injectomate_calibrate_scale_nl(),3000,delta=1/161.36)
+
+    def test_update_disconnects_and_requires_restart_no_real_git_calls(self):
+        self.connect();self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        self.dialogs.question.return_value=planner.QMessageBox.No
+        def update(repo,**kwargs):
+            self.assertIsNone(self.window.controller.drive)
+            kwargs['progress'](100,'Done')
+            return dict(commit='a'*40,stash='b'*40)
+        with patch('direct_branch_update.update_checkout',side_effect=update) as updater:
+            self.window.update_from_github()
+        updater.assert_called_once()
+        self.assertTrue(self.window.restart_required)
+        self.assertFalse(self.window._require_idle('USB setup'))
+        self.assertIn('Git stash',self.window.current_action)
+
+    def test_restart_preserves_live_mode_and_releases_instance_lock(self):
+        from unittest.mock import Mock
+        lock=Mock();self.window.instance_lock=lock;self.window.controller.live=True
+        with patch.object(self.window,'close',return_value=True),patch.object(planner.subprocess,'Popen') as launch:
+            self.window._restart_direct_application()
+        lock.unlock.assert_called_once()
+        self.assertIn('--live',launch.call_args.args[0])
+        self.assertTrue(launch.call_args.args[0][1].endswith('craniotomy_qt.py'))
+        self.window.controller.live=False
+
+    def test_large_blockage_test_expands_volume_and_tracks_verified_pulses(self):
+        self.connect(allow_pulsed=True);self.window.controller.prepare_motion()
+        self.window.pulsed_clearance_mm=.02
+        sleeper=time.sleep
+        def confirm():self.window.block_prompt_event.set()
+        with patch.object(self.window,'block_prompt_signal') as prompt, \
+                patch.object(planner.time,'sleep',side_effect=lambda delay:None if delay==1 else sleeper(delay)):
+            prompt.emit.side_effect=confirm
+            self.window._run_block_test(planner.InjectionSite(0,0,0),self.pulse_settings(),200)
+        self.app.processEvents()
+        self.assertAlmostEqual(self.window.current_syringe_position(),2800,delta=1/161.36)
+
+    def test_benchmark_options_runs_and_displays_results(self):
+        self.connect();timer=QTimer();timer.setInterval(50);started=[False];outputs=[]
+        def automate():
+            for dialog in self.window.findChildren(QDialog):
+                if not dialog.isVisible():continue
+                if dialog.windowTitle()=='Supervised Axis Benchmark' and not started[0]:
+                    started[0]=True
+                    for check in dialog.findChildren(QCheckBox):check.setChecked(check.text()=='AP')
+                    from PySide6.QtWidgets import QLineEdit
+                    dialog.findChild(QLineEdit).setText('0.01')
+                    next(b for b in dialog.findChildren(QPushButton) if b.text()=='Run Benchmark').click()
+                elif dialog.windowTitle()=='Axis Movement Benchmark':
+                    from PySide6.QtWidgets import QPlainTextEdit
+                    outputs.append(dialog.findChild(QPlainTextEdit).toPlainText());dialog.accept();timer.stop()
+        timer.timeout.connect(automate);timer.start()
+        try:self.window.start_axis_benchmark()
+        finally:timer.stop()
+        self.assertEqual(len(outputs),1)
+        self.assertIn('elapsed_s',outputs[0])
+        self.assertEqual(len(outputs[0].strip().splitlines()),3)
+        self.assertAlmostEqual(self.window.controller.get_current_axis('AP'),0,delta=1/5225)
+
     def pulse_settings(self):
         return planner.InjectionProtocolSettings(main_volume_nl=10,insertion_rate_nl_min=60000,
             main_rate_nl_min=60000,injection_depth_mm=.005,insert_retract_speed_um_s=1000,

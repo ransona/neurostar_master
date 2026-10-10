@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QScrollArea,
+    QSpinBox,
     QProgressBar,
     QPushButton,
     QKeySequenceEdit,
@@ -148,9 +149,9 @@ if user32 is not None:
     gdi32.GetDIBits.restype = ctypes.c_int
 
 
-MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
+MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 DEFAULT_MOVE_SPEED_MM = 0.05
-INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100]
+INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100, 200, 500, 1000, 2000]
 DEFAULT_INJECTION_VOLUME_NL = 100
 SYRINGE_MIN_NL = 0.0
 SYRINGE_MAX_NL = 5000.0
@@ -761,6 +762,7 @@ class CraniotomyWindow(QMainWindow):
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
+    beep_signal = Signal()
     usb_probe_log_signal = Signal(str)
     usb_probe_finished_signal = Signal(str)
     validation_move_position_signal = Signal(object)
@@ -805,6 +807,7 @@ class CraniotomyWindow(QMainWindow):
         self.current_target_depth_mm = 0.0
         self.drilling_paused = False
         self.benchmark_thread: threading.Thread | None = None
+        self.direct_operation_thread: threading.Thread | None = None
         self.usb_probe_thread: threading.Thread | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
@@ -852,6 +855,7 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
+        self.beep_signal.connect(self._beep)
         self.usb_probe_log_signal.connect(self._append_usb_probe_log)
         self.usb_probe_finished_signal.connect(self._finish_usb_probe)
         self.validation_move_position_signal.connect(self._set_validation_move_position)
@@ -895,7 +899,8 @@ class CraniotomyWindow(QMainWindow):
                 event.ignore()
                 return
             # Keep the process alive until cancelled workers have unwound.
-            workers = (self.drill_thread, self.injection_thread, self.benchmark_thread, self.usb_probe_thread)
+            workers = (self.drill_thread, self.injection_thread, self.benchmark_thread, self.usb_probe_thread,
+                       getattr(self,"direct_operation_thread",None))
             for worker in workers:
                 if worker is not None:
                     worker.join(timeout=0.5)
@@ -1331,6 +1336,8 @@ class CraniotomyWindow(QMainWindow):
         self.manual_stop_btn.clicked.connect(self.stop_injection)
         self.empty_syringe_btn = QPushButton("Empty Syringe")
         self.empty_syringe_btn.clicked.connect(self.empty_syringe)
+        self.fill_syringe_btn = QPushButton("Fill Syringe")
+        self.fill_syringe_btn.clicked.connect(self.fill_syringe)
         update_syringe_position_btn = QPushButton("Update Syringe Position")
         update_syringe_position_btn.clicked.connect(self.update_syringe_position_from_scale)
         test_blockage_btn = QPushButton("Test for Blockage")
@@ -1347,6 +1354,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.empty_syringe_btn, 4, 3)
         status_layout.addWidget(update_syringe_position_btn, 5, 0, 1, 2)
         status_layout.addWidget(test_blockage_btn, 5, 2, 1, 2)
+        status_layout.addWidget(self.fill_syringe_btn, 6, 3)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -1861,6 +1869,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Direct control settings", str(exc))
 
     def _require_idle(self, title: str = "Movement") -> bool:
+        if getattr(self,"restart_required",False):
+            QMessageBox.information(self,title,"Restart the app after updating before reconnecting or starting another operation.")
+            return False
         if self._motion_is_active():
             QMessageBox.information(self, title, "Finish or stop the current operation first.")
             return False
@@ -1953,6 +1964,10 @@ class CraniotomyWindow(QMainWindow):
         tolerance_mm = max(0.003, step_mm * 0.25)
         try:
             start = self.controller.get_current_axis(axis)
+            if getattr(self.controller,"direct_api",False):
+                origin=self.controller.get_current_axis_position();target=list(origin)
+                target[("AP","ML","DV").index(axis)]+=step_mm
+                self.controller.validate_axis_path([tuple(target),origin])
             self.usb_probe_log_signal.emit(
                 f"{self._usb_probe_timestamp()} START axis={axis} step_mm={step_mm:g} start_axis_mm={start:.4f}"
             )
@@ -1987,8 +2002,7 @@ class CraniotomyWindow(QMainWindow):
 
     def update_from_github(self) -> None:
         if getattr(self.controller,"direct_api",False):
-            QMessageBox.information(self,"Direct USB branch update",
-                "Close the app and run git pull --ff-only on codex/direct-api-control. The main-branch reset updater is disabled to preserve this backend and your local work.")
+            self._update_direct_branch()
             return
         if not self._require_idle("Update"):
             return
@@ -2019,6 +2033,39 @@ class CraniotomyWindow(QMainWindow):
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or str(exc)).strip()
             QMessageBox.critical(self, "Update Failed", detail)
+
+    def _update_direct_branch(self):
+        if not self._require_idle("Update"):return
+        if QMessageBox.warning(self,"Update direct-control branch",
+                "Stop/disconnect USB and update codex/direct-api-control from origin? Local tracked and non-ignored untracked changes will be put in a recoverable Git stash, then the checkout will match the remote commit. Ignored files and settings outside the repository are preserved. Restart is required before reconnecting USB.",
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        try:
+            self._save_last_used_configs();self._save_general_settings();self._autosave_project_session()
+            self.controller.close();self.refresh_live_position()
+            from direct_branch_update import update_checkout
+            try:
+                result=self._run_direct_operation_with_progress("Update direct-control branch","Checking repository…",
+                    lambda cancel,progress:update_checkout(Path(__file__).resolve().parents[1],cancelled=cancel,progress=progress),
+                    motor_operation=False)
+            finally:self.restart_required=True
+            if result is None:
+                self.set_status("Update cancelled. USB disconnected; restart before reconnecting. Any backup remains in Git stash.")
+                return
+            backup=f" Local changes saved in Git stash {result['stash'][:12]}." if result['stash'] else ''
+            if QMessageBox.question(self,"Update complete",
+                    f"Updated to {result['commit'][:12]}.{backup} Restart now? USB remains disconnected until restart.",
+                    QMessageBox.Yes|QMessageBox.No,QMessageBox.Yes)==QMessageBox.Yes:
+                self._restart_direct_application()
+            else:self.set_status("Update complete. Restart the app before reconnecting USB."+backup)
+        except Exception as exc:QMessageBox.warning(self,"Update failed",str(exc)+" USB is disconnected; any saved local changes remain in Git stash.")
+
+    def _restart_direct_application(self):
+        if not self.close():return
+        lock=getattr(self,"instance_lock",None)
+        if lock is not None:lock.unlock()
+        arguments=[sys.executable,str(Path(__file__).resolve())]
+        if self.controller.live:arguments.append("--live")
+        subprocess.Popen(arguments,cwd=Path(__file__).resolve().parents[1])
 
     def _movement_key_sequence_changed(self, name: str, sequence: QKeySequence) -> None:
         if not sequence.isEmpty():
@@ -2717,6 +2764,11 @@ class CraniotomyWindow(QMainWindow):
             if self.validation_move_cancel_callback is not None:
                 self.validation_move_cancel_callback()
             return True
+        # Ordinary options/confirmation dialogs must not turn navigation keys
+        # into physical motion. Only the dedicated site-validation modal opts in.
+        modal=QApplication.activeModalWidget()
+        if modal is not None and not (self.validation_modal_active and modal.property("allow_motor_shortcuts")):
+            return super().eventFilter(watched,event)
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
             focus_widget = QApplication.focusWidget()
             if focus_widget is not None:
@@ -2771,7 +2823,10 @@ class CraniotomyWindow(QMainWindow):
 
     def _focus_is_editable(self) -> bool:
         focus_widget = QApplication.focusWidget()
-        return isinstance(focus_widget, (QLineEdit, QComboBox, QPlainTextEdit, QKeySequenceEdit))
+        return isinstance(focus_widget, (QLineEdit, QComboBox, QPlainTextEdit, QKeySequenceEdit, QDoubleSpinBox, QSpinBox))
+
+    def _beep(self):
+        QApplication.beep()
 
     def adjust_move_speed(self, direction: int) -> None:
         current_index = min(
@@ -2784,6 +2839,7 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Move speed set to {self.move_speed_step_mm:g} mm")
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str, *, auto_repeat: bool = False) -> None:
+        if getattr(self,"restart_required",False):return
         if self._focus_is_editable():
             return
         try:
@@ -2970,7 +3026,7 @@ class CraniotomyWindow(QMainWindow):
 
     def ensure_syringe_move_allowed(self, requested_nl: float, up: bool) -> None:
         if getattr(self.controller,"pulsed_protocol",False):
-            self.controller.validate_piston_steps([requested_nl if up else -requested_nl])
+            self.controller.validate_piston_steps(self.controller.syringe_volume_steps(requested_nl,up))
             return
         position_nl = self.current_syringe_position()
         if position_nl is None:
@@ -2989,11 +3045,12 @@ class CraniotomyWindow(QMainWindow):
             position_nl = self.current_syringe_position()
         if position_nl is None:
             raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
-        remaining_capacity_nl = position_nl - SYRINGE_MIN_NL
+        minimum = self.controller._require().travel_limits['PISTON'][0] if getattr(self.controller,"direct_api",False) else SYRINGE_MIN_NL
+        remaining_capacity_nl = position_nl - minimum
         if requested_total_nl > remaining_capacity_nl + 1e-6:
             raise StereoDriveError(
                 f"Requested injection sequence volume is {requested_total_nl:.0f} nl, "
-                f"but current syringe position is {position_nl:.1f} nl and the 0 nl limit leaves "
+                f"but current syringe position is {position_nl:.1f} nl and the {minimum:g} nl limit leaves "
                 f"only {max(0.0, remaining_capacity_nl):.1f} nl available.\n\n"
                 f"Maximum sequence volume possible: {max(0.0, remaining_capacity_nl):.1f} nl."
             )
@@ -3062,6 +3119,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Injectomate", str(exc))
 
     def empty_syringe(self) -> None:
+        if getattr(self.controller,"direct_api",False):
+            self._direct_syringe_limit(False)
+            return
         if not self._require_idle("Empty Syringe"):
             return
         try:
@@ -3070,6 +3130,91 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Emptying syringe to 0")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
+
+    def fill_syringe(self) -> None:
+        self._direct_syringe_limit(True)
+
+    def _direct_syringe_limit(self, fill):
+        title = "Fill Syringe" if fill else "Empty Syringe"
+        if not self._require_idle(title): return
+        try:
+            drive=self.controller._require()
+            endpoint=drive.travel_limits['PISTON'][1 if fill else 0]
+            with self.controller.lock:
+                if self.controller.busy: raise StereoDriveError('Controller busy')
+                drive.plan_piston_to(endpoint)
+            start=self.controller.read_injectomate_calibrate_scale_nl()
+            if QMessageBox.warning(self,title,
+                    f"Move the calibrated piston toward {endpoint:g} nL using captured free steps? "
+                    "Remove the pipette from any specimen; verify safe fluid collection / aspiration and physical Stop. "
+                    "This is not controlled-rate delivery. A non-reachable endpoint leaves less than 10 nL remaining.",
+                    QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
+            def operation(cancel,progress):
+                def completed(value):
+                    self.syringe_position_signal.emit(value)
+                    progress(min(100,int(abs(value-start)/max(abs(endpoint-start),1)*100)),
+                             f"Verified piston {value:.3f} nL; requested endpoint {endpoint:g} nL")
+                return self.controller.syringe_to_limit(fill=fill,stop_requested=cancel,on_completed=completed)
+            result=self._run_direct_operation_with_progress(title,"Moving piston with verified free steps…",operation)
+            if result is not None:
+                self.set_syringe_position(result['PISTON'])
+                self.set_status(f"{title} complete: verified piston {result['PISTON']:.3f} nL (not measured fluid volume).")
+        except Exception as exc:QMessageBox.warning(self,title,str(exc))
+
+    def _run_direct_operation_with_progress(self,title,message,operation, *, motor_operation=True):
+        """Own a cancellable serial operation, keeping all widget access on the GUI thread."""
+        if not self._require_idle(title):return None
+        if motor_operation:self.controller.prepare_motion()
+        cancelled=threading.Event();result={};state=dict(percent=0,message=message)
+        class OperationDialog(QDialog):
+            def reject(self):request_cancel()
+            def closeEvent(self,event):
+                if thread.is_alive():request_cancel();event.ignore()
+                else:super().closeEvent(event)
+        dialog=OperationDialog(self);dialog.setWindowTitle(title)
+        dialog.setWindowFlag(Qt.WindowCloseButtonHint,False)
+        layout=QVBoxLayout(dialog);label=QLabel(message);label.setWordWrap(True);layout.addWidget(label)
+        bar=QProgressBar();bar.setRange(0,100);layout.addWidget(bar)
+        cancel=QPushButton("Cancel (Esc)");layout.addWidget(cancel)
+        def request_cancel():
+            cancelled.set();cancel.setEnabled(False)
+            label.setText("Stopping; waiting for verified idle…" if motor_operation else "Cancelling update; waiting for the current Git command to finish…")
+        cancel.clicked.connect(request_cancel)
+        def progress(percent,text):state.update(percent=percent,message=text)
+        def worker():
+            try:result['value']=operation(cancelled.is_set,progress)
+            except Exception as exc:
+                result['error']=exc
+                if motor_operation:
+                    try:self.controller.stop()
+                    except Exception as stop_exc:result['error']=stop_exc
+        thread=threading.Thread(target=worker,daemon=True)
+        self.direct_operation_thread=thread
+        self.validation_move_active=True;self.validation_move_cancel_callback=request_cancel
+        timer=QTimer(dialog)
+        def poll():
+            bar.setValue(state['percent'])
+            if not cancelled.is_set():label.setText(state['message'])
+            if motor_operation:
+                try:self._set_validation_move_position(self.controller.get_current_axis_position())
+                except Exception:
+                    for view in (self.top_view,self.injection_sites_view):view.current_point=None;view.update()
+            if not thread.is_alive():timer.stop();dialog.accept()
+        timer.timeout.connect(poll);thread.start();timer.start(50)
+        try:dialog.exec()
+        finally:
+            timer.stop();self.validation_move_active=False;self.validation_move_cancel_callback=None
+            self.direct_operation_thread=None
+        if cancelled.is_set():
+            if motor_operation:
+                self.controller.wait_until_stopped()
+                if self.controller.error:raise StereoDriveError(self.controller.error)
+            elif 'value' in result:return result['value']
+            elif 'error' in result and not isinstance(result['error'],InterruptedError):raise result['error']
+            self.set_status(f"{title} cancelled; no automatic reversal.")
+            return None
+        if 'error' in result:raise result['error']
+        return result.get('value')
 
     def update_coordinate_mode_buttons(self) -> None:
         active = "background: #108a54; color: white; font-weight: 700;"
@@ -3433,6 +3578,9 @@ class CraniotomyWindow(QMainWindow):
         return NumericLineEdit(value=value, minimum=-100.0, maximum=100.0)
 
     def start_axis_benchmark(self) -> None:
+        if getattr(self.controller,"direct_api",False):
+            self._start_direct_axis_benchmark()
+            return
         if not self._require_idle("Benchmark"):
             return
         if self.benchmark_thread is not None and self.benchmark_thread.is_alive():
@@ -3451,6 +3599,39 @@ class CraniotomyWindow(QMainWindow):
         self.controller.prepare_motion()
         self.benchmark_thread = threading.Thread(target=self._run_axis_benchmark, daemon=True)
         self.benchmark_thread.start()
+
+    def _start_direct_axis_benchmark(self):
+        if not self._require_idle("Benchmark"):return
+        dialog=QDialog(self);dialog.setWindowTitle("Supervised Axis Benchmark")
+        layout=QVBoxLayout(dialog)
+        warning=QLabel("Bench only: drill OFF, pipette clear of specimen, complete out-and-back path clear, physical Stop accessible. DV is opt-in. Fault/Cancel stops without automatic return. Results measure motor counts and command time, not physical displacement.")
+        warning.setWordWrap(True);layout.addWidget(warning)
+        checks={}
+        for axis in ('AP','ML','DV'):
+            check=QCheckBox(axis);check.setChecked(axis!='DV');checks[axis]=check;layout.addWidget(check)
+        layout.addWidget(QLabel("Distances in mm, comma-separated (each >0, <=1)"))
+        distances=QLineEdit('0.01, 0.02, 0.05');layout.addWidget(distances)
+        layout.addWidget(QLabel("Repeats"));repeats=QSpinBox();repeats.setRange(1,10);repeats.setValue(1);layout.addWidget(repeats)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Run Benchmark")
+        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
+        if dialog.exec()!=QDialog.Accepted:return
+        try:
+            axes=[axis for axis,check in checks.items() if check.isChecked()]
+            values=[float(v.strip()) for v in distances.text().split(',')]
+            count=repeats.value()
+            def operation(cancel,progress):
+                return self.controller.benchmark_axis_moves(axes,values,count,stop_requested=cancel,
+                    progress_callback=lambda i,total,axis,target:progress(int(i/total*100),f"{i}/{total}: verified {axis} {target:.4f} mm"))
+            rows=self._run_direct_operation_with_progress("Axis Benchmark","Preflighting complete out-and-back path…",operation)
+            if rows is not None:
+                import csv,io
+                output=io.StringIO();writer=csv.writer(output)
+                columns=('axis','distance_mm','direction','repeat','start','target','end','achieved_mm','elapsed_s','mm_per_s','error_mm')
+                writer.writerow(columns)
+                writer.writerows([row[column] for column in columns] for row in rows)
+                self.show_benchmark_results(output.getvalue())
+        except Exception as exc:QMessageBox.warning(self,"Benchmark",str(exc))
 
     def _run_axis_benchmark(self) -> None:
         try:
@@ -4239,6 +4420,7 @@ class CraniotomyWindow(QMainWindow):
     def _validation_dialog(self, index: int, total: int, site: InjectionSite, *, single_site: bool = False) -> tuple[str, QDialog]:
         dialog = QDialog(self)
         dialog.setWindowTitle("Validate Injection Site")
+        dialog.setProperty("allow_motor_shortcuts",True)
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
         state = "unvalidated" if site.dv is None else f"surface DV {site.dv:.2f} mm"
@@ -4937,9 +5119,9 @@ class CraniotomyWindow(QMainWindow):
             stop_requested=self.injection_stop_requested.is_set,
         )
         while not self.injection_stop_requested.is_set():
-            QApplication.beep()
+            self.beep_signal.emit()
             if getattr(self.controller,"pulsed_protocol",False):
-                self.controller.validate_piston_steps([-v for v in self._injection_step_plan(test_volume_nl)])
+                self.controller.validate_piston_steps(self.controller.syringe_volume_steps(test_volume_nl,False))
             for remaining in range(5, 0, -1):
                 if self.injection_stop_requested.is_set():
                     return
@@ -4950,10 +5132,12 @@ class CraniotomyWindow(QMainWindow):
                     return
                 self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
                 self.ensure_syringe_move_allowed(step_nl, False)
+                callbacks={"on_completed":self.syringe_position_signal.emit} if getattr(self.controller,"direct_api",False) else {}
                 self.controller.syringe_step(
                     f"{step_nl} nl",
                     up=False,
                     stop_requested=self.injection_stop_requested.is_set,
+                    **callbacks,
                 )
                 self.track_injection_delivery(step_nl)
             self.block_prompt_event = threading.Event()
@@ -6625,6 +6809,7 @@ def main() -> None:
             "Direct USB could not initialize. Check calibration and device setup. Keep StereoDrive closed for hardware control.",
         )
         return
+    window.instance_lock = instance_lock
     window.show()
     sys.exit(app.exec())
 

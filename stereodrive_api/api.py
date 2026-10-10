@@ -213,16 +213,54 @@ class StereoDrive:
             s=self._require();self._require_zero_calibration(s)
             if not self.allow_piston:raise ValueError('Piston disabled')
             if s.fault:raise RuntimeError('Session fault: '+s.fault)
-            s.refresh();normal=s.command_normal['PISTON']
-            for step in steps:
-                if isinstance(step,bool) or step not in (-100,-50,-20,-10,10,20,50,100):
-                    raise ValueError('Use signed 10/20/50/100 nL free steps')
-                normal+=step*s.scales['PISTON']
-                estimate=(normal-s.reference['PISTON'])/s.scales['PISTON']
-                if not -1e-7<=estimate<=5000+1e-7:raise ValueError('Piston capacity exceeded')
-                check_target(s.travel_limits, 'PISTON', estimate)
-                raw=round(normal+(BACKLASH['PISTON'] if step>0 else 0))
-                if not -(2**31)<=raw<2**31:raise ValueError('Piston raw target overflow')
+            s.refresh();self._piston_plan(s, steps)
+        except ValueError:raise
+        except Exception as exc:
+            if self._session is not None:
+                try:self._session.invalidate(exc)
+                finally:self._session.emergency_stop()
+            raise
+        finally:self._lock.release()
+
+    def _piston_plan(self, session, steps):
+        normal=session.command_normal['PISTON']
+        for step in steps:
+            if isinstance(step,bool) or step not in (-100,-50,-20,-10,10,20,50,100):
+                raise ValueError('Use signed 10/20/50/100 nL free steps')
+            normal+=step*session.scales['PISTON']
+            estimate=(normal-session.reference['PISTON'])/session.scales['PISTON']
+            if not -1e-7<=estimate<=5000+1e-7:raise ValueError('Piston capacity exceeded')
+            check_target(session.travel_limits, 'PISTON', estimate)
+            raw=round(normal+(BACKLASH['PISTON'] if step>0 else 0))
+            if not -(2**31)<=raw<2**31:raise ValueError('Piston raw target overflow')
+
+    def plan_piston_to(self, position_nl):
+        """Preflight captured steps toward a calibrated target, without motion.
+
+        Stop short by <10 nL if the target is not reachable with captured units.
+        Uses fractional commanded counts, not rounded display telemetry.
+        """
+        import math
+        if isinstance(position_nl,bool) or not isinstance(position_nl,(int,float)) or not math.isfinite(position_nl):
+            raise ValueError('Finite piston target required')
+        if not self._lock.acquire(blocking=False):raise RuntimeError('Controller busy')
+        try:
+            s=self._require();self._require_zero_calibration(s)
+            if not self.allow_piston:raise ValueError('Piston disabled')
+            if s.fault:raise RuntimeError('Session fault: '+s.fault)
+            check_target(s.travel_limits,'PISTON',position_nl)
+            s.refresh()
+            current=(s.command_normal['PISTON']-s.reference['PISTON'])/s.scales['PISTON']
+            if not -1e-7<=current<=5000+1e-7:
+                raise ValueError('Current piston estimate is outside syringe capacity; verify calibration')
+            remaining=10*math.floor(abs(position_nl-current)/10+1e-9)
+            sign=1 if position_nl>=current else -1
+            steps=[]
+            for size in (100,50,20,10):
+                count,remaining=divmod(remaining,size)
+                steps.extend([sign*size]*count)
+            self._piston_plan(s,steps)
+            return steps
         except ValueError:raise
         except Exception as exc:
             if self._session is not None:
