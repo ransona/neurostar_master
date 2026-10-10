@@ -297,6 +297,19 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window._nearest_supported_injection_volume(2000),2000)
         self.assertIn(5,planner.MOVE_SPEED_OPTIONS_MM)
 
+    def test_manual_blockage_test_offers_a_second_test_when_reported_blocked(self):
+        self.window.controller.direct_api=False
+        self.window.set_syringe_position(3000)
+        self.dialogs.question.side_effect=[self.dialogs.Yes,self.dialogs.Yes,self.dialogs.No]
+        with patch.object(self.window,'_require_idle',return_value=True), \
+             patch.object(self.window,'ensure_syringe_move_allowed'), \
+             patch.object(self.window.controller,'syringe_step') as syringe_step, \
+             patch.object(self.window,'track_injection_delivery'):
+            self.window.test_for_blockage()
+        self.assertEqual(syringe_step.call_count,2)
+        self.assertEqual(syringe_step.call_args_list[0].args,('20 nl',))
+        self.assertEqual(syringe_step.call_args_list[1].kwargs['up'],False)
+
     def test_empty_fill_modal_uses_real_counter_not_assumed_zero(self):
         self.connect(travel_limits=dict(AP=(0,40),ML=(0,40),DV=(0,40),PISTON=(2985,3035)))
         self.dialogs.warning.return_value=planner.QMessageBox.Cancel

@@ -3453,16 +3453,50 @@ class CraniotomyWindow(QMainWindow):
         try:
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 20, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
-            self.ensure_syringe_move_allowed(volume_nl, False)
-            if getattr(self.controller,"direct_api",False):
-                self.controller.prepare_motion()
-                self.controller.syringe_step(f"{volume_nl} nl",up=False,asynchronous=True,
-                    on_completed=self.syringe_position_signal.emit)
-                self.set_status("Direct free-piston test requested; motor counts are not measured fluid delivery.")
-                return
-            self.controller.syringe_step(f"{volume_nl} nl", up=False)
-            self.track_injection_delivery(volume_nl)
-            self.set_status(f"Verifying no blockage (test volume = {volume_nl} nl)")
+            while True:
+                self.ensure_syringe_move_allowed(volume_nl, False)
+                if getattr(self.controller,"direct_api",False):
+                    def operation(cancel, progress):
+                        def completed(value):
+                            self.syringe_position_signal.emit(value)
+                            progress(100, f"Test pulse complete; piston estimate {value:.1f} nL")
+                        return self.controller.syringe_step(
+                            f"{volume_nl} nl", up=False, stop_requested=cancel,
+                            on_completed=completed,
+                        )
+
+                    result = self._run_direct_operation_with_progress(
+                        "Blockage Test", f"Delivering {volume_nl} nL test pulse…", operation
+                    )
+                    if result is None:
+                        return
+                    self.set_syringe_position(result["PISTON"])
+                    self.set_status(
+                        f"Test pulse complete at {result['PISTON']:.1f} nL; confirm fluid flow visually."
+                    )
+                else:
+                    self.controller.syringe_step(f"{volume_nl} nl", up=False)
+                    self.track_injection_delivery(volume_nl)
+                    self.set_status(f"Test pulse complete ({volume_nl} nL); confirm fluid flow visually.")
+
+                blocked = QMessageBox.question(
+                    self,
+                    "Blockage Test",
+                    "Did the test injection appear blocked?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                ) == QMessageBox.Yes
+                if not blocked:
+                    return
+                repeat = QMessageBox.question(
+                    self,
+                    "Repeat Blockage Test",
+                    f"The test appeared blocked. Run another {volume_nl} nL test?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if repeat != QMessageBox.Yes:
+                    return
         except Exception as exc:
             QMessageBox.warning(self, "Injectomate", str(exc))
 
