@@ -400,6 +400,24 @@ class GuiCoordinateTests(unittest.TestCase):
         self.assertTrue(handled)
         self.w._run_injection_site_validation.assert_called_once_with(1, validate_all_sites=False)
 
+    def test_validation_completion_allows_injection_to_continue(self):
+        self.w.injection_sites = [Site(0.0, 0.0, 0.25), Site(1.0, 1.0, None)]
+        dialog = Mock()
+        validate_button = object()
+        dialog.addButton.side_effect = [validate_button, object()]
+        dialog.clickedButton.return_value = validate_button
+        message_box = Mock(return_value=dialog)
+
+        def validate_selected(index, validate_all_sites):
+            self.w.injection_sites[index] = Site(1.0, 1.0, 0.25)
+
+        self.w._run_injection_site_validation = Mock(side_effect=validate_selected)
+        with patch.dict(GUI, {"QMessageBox": message_box}):
+            should_stop = Window._offer_validation_before_injection(self.w, 1)
+
+        self.assertFalse(should_stop)
+        self.w._run_injection_site_validation.assert_called_once_with(1, validate_all_sites=False)
+
     def test_bregma_button_targets_origin_in_axis_display(self):
         self.w.coordinate_mode = "axis"
         self.w._move_to_axis_position_with_progress = Mock(return_value=True)

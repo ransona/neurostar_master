@@ -5109,6 +5109,12 @@ class CraniotomyWindow(QMainWindow):
                 self._run_injection_site_validation(start_index, validate_all_sites=False)
             else:
                 self.start_injection_site_validation()
+            # Validation runs its guided dialogs synchronously. Continue into
+            # injection only when every site in this run is now surface-set.
+            if not self.injection_sites or start_index >= len(self.injection_sites):
+                return True
+            return any(self.injection_sites[index].dv is None
+                       for index in range(max(0, start_index), len(self.injection_sites)))
         return True
 
     def start_single_injection(self) -> None:
@@ -5173,10 +5179,14 @@ class CraniotomyWindow(QMainWindow):
         if not (0 <= row < len(self.injection_sites)):
             QMessageBox.information(self, "Injection", "Select the site to resume from in the injection site list.")
             return
+        selected_site = self.injection_sites[row]
         unvalidated = [index + 1 for index, site in enumerate(self.injection_sites[row:], start=row) if site.dv is None]
         if unvalidated:
-            self._offer_validation_before_injection(row)
-            return
+            if self._offer_validation_before_injection(row):
+                return
+            if selected_site not in self.injection_sites:
+                return
+            row = self.injection_sites.index(selected_site)
         try:
             self._require_project_coordinates("injection_sites")
             settings = self._injection_protocol_settings()
