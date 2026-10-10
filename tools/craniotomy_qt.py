@@ -4807,6 +4807,10 @@ class CraniotomyWindow(QMainWindow):
         next_button = buttons.addButton("Skip" if single_site else "Next Without Validating", QDialogButtonBox.ActionRole)
         delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
         cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
+        action_buttons = (next_button, delete_button, cancel_button, validate_button)
+        button_width = max(button.sizeHint().width() for button in action_buttons)
+        for button in action_buttons:
+            button.setFixedWidth(button_width)
         layout.addWidget(buttons)
         result = {"action": "cancel"}
 
