@@ -55,6 +55,8 @@ class PlannerTests(unittest.TestCase):
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.window.resize(1440,900)
         self.window.show();self.app.processEvents()
+        self.assertEqual(self.window.craniotomy_load_btn.text(),'Load')
+        self.assertEqual(self.window.craniotomy_save_btn.text(),'Save')
         for index in (0,1):
             tab=self.window.tabs.widget(index)
             layout=tab.layout()
