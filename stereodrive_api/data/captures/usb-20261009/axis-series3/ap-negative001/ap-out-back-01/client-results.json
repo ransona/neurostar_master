@@ -1,0 +1,151 @@
+[
+  {
+    "event": "initial",
+    "value": {
+      "ready": true,
+      "fault": null,
+      "simulated": false,
+      "coordinates": "mechanical Axis mm; never native Bregma",
+      "position": [
+        42.75,
+        39.47,
+        32.01
+      ],
+      "origin": [
+        42.76,
+        39.47,
+        32.01
+      ],
+      "bounds": {
+        "AP": [
+          42.66,
+          42.86
+        ],
+        "ML": [
+          39.37,
+          39.57
+        ],
+        "DV": [
+          31.909999999999997,
+          32.11
+        ]
+      },
+      "max_move_mm": 0.05,
+      "allow_dv": true,
+      "stop_error": null,
+      "operation": {
+        "id": "local-usb-53e3b2d43597400eb05e5198b1c00ade",
+        "state": "completed",
+        "start": [
+          42.76,
+          39.47,
+          32.01
+        ],
+        "target": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "method": "single_nudge",
+        "error": null,
+        "position": [
+          42.75,
+          39.47,
+          32.01
+        ]
+      }
+    }
+  },
+  {
+    "event": "accepted",
+    "value": {
+      "body": {
+        "command_id": "local-usb-0d75155ca45e41e4b774f1c03e1f9839",
+        "kind": "out_and_back",
+        "axis": "AP",
+        "direction": -1,
+        "step_mm": 0.01
+      },
+      "result": {
+        "id": "local-usb-0d75155ca45e41e4b774f1c03e1f9839",
+        "state": "running",
+        "start": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "target": [
+          42.74,
+          39.47,
+          32.01
+        ],
+        "method": "single_nudge",
+        "error": null
+      }
+    }
+  },
+  {
+    "event": "final",
+    "value": {
+      "ready": true,
+      "fault": null,
+      "simulated": false,
+      "coordinates": "mechanical Axis mm; never native Bregma",
+      "position": [
+        42.75,
+        39.47,
+        32.01
+      ],
+      "origin": [
+        42.76,
+        39.47,
+        32.01
+      ],
+      "bounds": {
+        "AP": [
+          42.66,
+          42.86
+        ],
+        "ML": [
+          39.37,
+          39.57
+        ],
+        "DV": [
+          31.909999999999997,
+          32.11
+        ]
+      },
+      "max_move_mm": 0.05,
+      "allow_dv": true,
+      "stop_error": null,
+      "operation": {
+        "id": "local-usb-0d75155ca45e41e4b774f1c03e1f9839",
+        "state": "completed",
+        "start": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "target": [
+          42.74,
+          39.47,
+          32.01
+        ],
+        "method": "single_nudge",
+        "error": null,
+        "position": [
+          42.75,
+          39.47,
+          32.01
+        ]
+      }
+    }
+  },
+  {
+    "event": "stop",
+    "value": {
+      "ok": true,
+      "stop_error": null
+    }
+  }
+]

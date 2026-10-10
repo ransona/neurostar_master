@@ -1,0 +1,611 @@
+[
+  {
+    "capture": "captures/usb-20261009/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/ap-out-back-01.pcap",
+    "sha256": "319ba78b27d956b15044a49968dfda8307ad3e909adc53ff2c24fbc6e0c5abb9",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series/ap-negative001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series/ap-negative001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series/ap-negative001/ap-out-back-01.pcap",
+    "sha256": "b01379a5e2fa3917dd9b0a41028822a86d98ad4366baffad1d491fa45ab12949",
+    "motor_targets": 3
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series2/recovery-ap001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series2/recovery-ap001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series2/recovery-ap001/ap-out-back-01.pcap",
+    "sha256": "93e7ffeaa4a428a87cd6215660a2319aca7db57a9d9f243ec498307c34693e4a",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/ap-negative001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/ap-negative001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/ap-negative001/ap-out-back-01.pcap",
+    "sha256": "d32b24a32be1b4be1dcc3be2684f1022ffd79ebcb6500d41050a5f4a4b76bee9",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/dv-negative001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/dv-negative001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/dv-negative001/ap-out-back-01.pcap",
+    "sha256": "fdfabe3a78be4179272cced0fcb4e692ed41566e94be3e4d82262730daffe633",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/dv-positive001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/dv-positive001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/dv-positive001/ap-out-back-01.pcap",
+    "sha256": "d25fc666742e7d74f159be5358f2798b834cd58e491250199b726cbc2f39892a",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/dv-positive002/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/dv-positive002/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/dv-positive002/ap-out-back-01.pcap",
+    "sha256": "3196af44b0a71aeee0b05eac103bf2e59d2381bc27f8d0547f0d7d17a378b8dd",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/dv-positive005/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/dv-positive005/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/dv-positive005/ap-out-back-01.pcap",
+    "sha256": "e976eadda4e0df4ec789948fc0f81beec92b361b3a399f66f7edc96fae0fa07b",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/ml-negative001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/ml-negative001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/ml-negative001/ap-out-back-01.pcap",
+    "sha256": "388357b3eeac7dc33805e02900149a1bfc8855454f9441968ee419ea279e706b",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/ml-positive005/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/ml-positive005/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/ml-positive005/ap-out-back-01.pcap",
+    "sha256": "cbba3e55b20e406af5176b123c200229d5bb8c9e0f006f0b1181e944ec8a3d2e",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261009/axis-series3/recovery-ap001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/axis-series3/recovery-ap001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/axis-series3/recovery-ap001/ap-out-back-01.pcap",
+    "sha256": "9c578d637277d8f95705e160db4cd2136f50c1ddf8a51362ec9141b7c5f94d20",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261009/gui04-ap001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui04-ap001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui04-ap001/ap-out-back-01.pcap",
+    "sha256": "7474442c11d8223d352e25675b1da516ff9dfbb19a1e4c974aac74654cf67b13",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/gui05-ap002/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui05-ap002/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui05-ap002/ap-out-back-01.pcap",
+    "sha256": "2b2898bed9f9f1987f8348d9f3ddaccab619545eda87fb973caae757c4bde3b6",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/gui06-ap005/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui06-ap005/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui06-ap005/ap-out-back-01.pcap",
+    "sha256": "e2d5d499d4038c0cf9576212b9599edea1a45ffd8f9dd0da068471ce369ef43e",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/gui07-ml001/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui07-ml001/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui07-ml001/ap-out-back-01.pcap",
+    "sha256": "e606d1d8a116961449c549f3cc21875aee0449c10a4a88300492dde985ee5af0",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/gui08-ml002/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui08-ml002/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui08-ml002/ap-out-back-01.pcap",
+    "sha256": "1e1eccef3d210a19c380e710cc2b3104f9fcadcbaeee65d5360e9ca65cd836fa",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/gui09-ml002/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/gui09-ml002/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/gui09-ml002/ap-out-back-01.pcap",
+    "sha256": "7b414aaa721bfc714898ef46e151ad0b5f2d6a26d2cfa787d185eb582722a958",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/idle-baseline/capture.pcapng",
+    "metadata": "captures/usb-20261009/idle-baseline/metadata.json",
+    "source": "usb-20261009/idle-baseline.pcap",
+    "sha256": "19d808105d20d16ef15b68280772325f350987ab2d58f020cb8fd85834506b4b",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/probe02/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/probe02/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/probe02/ap-out-back-01.pcap",
+    "sha256": "68f658e5038c56a73e7775fcc1569f9a657b815db361e129fd44d582ccd15ede",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/probe03-ap002/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/probe03-ap002/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/probe03-ap002/ap-out-back-01.pcap",
+    "sha256": "dc3386283e86f7170ebd7b08c6062039d3a25b3262301b146e4aa309f82b9739",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-goto-001-50e3f3ac/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-goto-001-50e3f3ac/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-goto-001-50e3f3ac/ap-out-back-01.pcap",
+    "sha256": "119dbec80642c564054ebec94cf22af8d6425804c30aa59a8246d8e85339305a",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-goto-001-dd8b68d8/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-goto-001-dd8b68d8/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-goto-001-dd8b68d8/ap-out-back-01.pcap",
+    "sha256": "f412a1d4ddc8e61ab9de361608707687756b8dd2fabcfb68afeeef79c88de56b",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-001-499db669/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-001-499db669/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-001-499db669/ap-out-back-01.pcap",
+    "sha256": "1297cb235176c36c33c76427acd54a491bfd3dd01563995de88c5e33f5860954",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-010-11801b40/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-010-11801b40/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-010-11801b40/ap-out-back-01.pcap",
+    "sha256": "2ebc3469f8982e032fcbafbdf12562d747942262d5095b5af060b0a4d8e0e2ec",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-010-cbc6ce9b/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-010-cbc6ce9b/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-010-cbc6ce9b/ap-out-back-01.pcap",
+    "sha256": "8353d62aa36d4021f27029ffc56ebf94139c3c6fdb6c8a820b5db7d368d52cab",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-020-db132baf/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-020-db132baf/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-020-db132baf/ap-out-back-01.pcap",
+    "sha256": "787d2eb4be011dea83fa742239a2dd0f4f8abd641cc016e82a69113ef2e35bbf",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-050-3b8a80b8/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-050-3b8a80b8/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-050-3b8a80b8/ap-out-back-01.pcap",
+    "sha256": "176f2df41d05f1e85bee142895817d6e9e34ef52557964bdef5d1193420dcd7d",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-100-2eb263ff/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-100-2eb263ff/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-100-2eb263ff/ap-out-back-01.pcap",
+    "sha256": "ef727e93ca2c7dc795aaf905e10c44e3ad3d7a7008b85db536629965fc780df6",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/AP-nudge-100-a4297748/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/AP-nudge-100-a4297748/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/AP-nudge-100-a4297748/ap-out-back-01.pcap",
+    "sha256": "4ccbe52c85650b174475472d076f7aa2ec0bc41347a5718cf248631e61df107e",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-010-2dc06eb3/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-010-2dc06eb3/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-010-2dc06eb3/ap-out-back-01.pcap",
+    "sha256": "de6dc0453a06090e2faa2e238eb84132be1e8f2ec63e824165a04a6484b7cba1",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-010-d7394f04/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-010-d7394f04/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-010-d7394f04/ap-out-back-01.pcap",
+    "sha256": "5d81550f741d1cbff0068e501db2cf0e034109bd1aa6c0f0e48845d6ff24cadf",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-020-969108ba/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-020-969108ba/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-020-969108ba/ap-out-back-01.pcap",
+    "sha256": "103972e006cabdeb72298530d23e9127b448fd9239bb897e9490ddb6449edc8b",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-050-c3bffb35/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-050-c3bffb35/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-050-c3bffb35/ap-out-back-01.pcap",
+    "sha256": "fe0ae57cd4d444d33fd5dc86c7fb77b5b49c87094d504a2cce270e6a63d07f3e",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-100-0affb63a/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-100-0affb63a/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-100-0affb63a/ap-out-back-01.pcap",
+    "sha256": "57581d53ca029fc86d7f0e539bfa2f7eca8fd74ab028aecf1aa17a0b5e9a1149",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/DV-nudge-100-7511f98b/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/DV-nudge-100-7511f98b/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/DV-nudge-100-7511f98b/ap-out-back-01.pcap",
+    "sha256": "1541d3e34a2e76c133f376676b2c1d8c624588ee989a5b52b3813a1da29c502f",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-010-56a2077d/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-010-56a2077d/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-010-56a2077d/ap-out-back-01.pcap",
+    "sha256": "5e7fa65ad4669b03213f92236ad9716fea80eb90ecd9135dae7600a86f721d40",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-010-8dae0d71/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-010-8dae0d71/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-010-8dae0d71/ap-out-back-01.pcap",
+    "sha256": "713b2f883457aecd61a42cc3a98bbccab076a0e9bd0d871f9319a11e70efeb01",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-020-f3ca9f60/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-020-f3ca9f60/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-020-f3ca9f60/ap-out-back-01.pcap",
+    "sha256": "ce06760c1c3e8f66dee1f04c56f83483c296e37cda06d3474360a8bd867392f2",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-050-cc07d276/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-050-cc07d276/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-050-cc07d276/ap-out-back-01.pcap",
+    "sha256": "813dc8a7a73a24cf85bf885a2706b89416271db1ad4ccf1c3cb5f71705711f40",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-100-06f62d08/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-100-06f62d08/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-100-06f62d08/ap-out-back-01.pcap",
+    "sha256": "e8587856a577f217723332ed717cb760a0769faa69da159acd262a6474819ccf",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261009/wide-series/ML-nudge-100-f34bfc39/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261009/wide-series/ML-nudge-100-f34bfc39/ap-out-back-01/metadata.json",
+    "source": "usb-20261009/wide-series/ML-nudge-100-f34bfc39/ap-out-back-01.pcap",
+    "sha256": "ad6644e81cfc3d3e7f59c8a436b9376597a6bbe44dff78065cf7ab637ffbaabf",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261010/drill-manual-01/drill/capture.pcapng",
+    "metadata": "captures/usb-20261010/drill-manual-01/drill/metadata.json",
+    "source": "usb-20261010/drill-manual-01/drill.pcap",
+    "sha256": "56adb55377f534ef362f35f67ff9cb5a46aea53cc24ee59b519399753dabc129",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-direction-03/injector-down-020-2f12351f/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-direction-03/injector-down-020-2f12351f/traffic/metadata.json",
+    "source": "usb-20261010/injector-direction-03/injector-down-020-2f12351f/traffic.pcap",
+    "sha256": "11f224dee5709cfca759058e7b382a423fd4bb0adf1ea5f51cc63cea7c6ac974",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-direction-03/injector-down-020-6c21d241/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-direction-03/injector-down-020-6c21d241/traffic/metadata.json",
+    "source": "usb-20261010/injector-direction-03/injector-down-020-6c21d241/traffic.pcap",
+    "sha256": "b7ac23c2cb945c52946e8270e37f1d7b80dea50cf9edb1c3961135a63b9713cc",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-direction-03/injector-up-010-3fb0a29e/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-direction-03/injector-up-010-3fb0a29e/traffic/metadata.json",
+    "source": "usb-20261010/injector-direction-03/injector-up-010-3fb0a29e/traffic.pcap",
+    "sha256": "b034329b67339111cdea951e6ee58636a0b641f700175a456d5e9aa0076e95e6",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-direction-03/injector-up-020-96fc9568/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-direction-03/injector-up-020-96fc9568/traffic/metadata.json",
+    "source": "usb-20261010/injector-direction-03/injector-up-020-96fc9568/traffic.pcap",
+    "sha256": "96b87e12d3bedcbe58cc456259c922c164e50c74705132c2bd4883c0e0aad774",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-direction-03/injector-up-020-b7370930/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-direction-03/injector-up-020-b7370930/traffic/metadata.json",
+    "source": "usb-20261010/injector-direction-03/injector-up-020-b7370930/traffic.pcap",
+    "sha256": "8c4aa2a3ee45f594b6bc9130df16383047ff75533415102a7d0893bb562f97cf",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-down-020-a45552c2/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-down-020-a45552c2/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-down-020-a45552c2/traffic.pcap",
+    "sha256": "f7714fe47cdc4af872a77755a9cf0bbb7c20b5050092ef78f0e0848cf3a90d2d",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-down-050-7ac17521/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-down-050-7ac17521/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-down-050-7ac17521/traffic.pcap",
+    "sha256": "3539b94f929c39eebe4f824e21dcbb48db8eab74612160e48269e23b6abb566c",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-down-100-6dee1f27/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-down-100-6dee1f27/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-down-100-6dee1f27/traffic.pcap",
+    "sha256": "c06e4108b6e515ef56c03efa0fb1ff2ac95e3d8f828f3b9365075d1ae2ed552e",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-up-010-e61e84af/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-up-010-e61e84af/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-up-010-e61e84af/traffic.pcap",
+    "sha256": "6f78bce75b520352c3d286436df35a4d7af17673a46351b5b2395cf2e3a9264e",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-up-020-0c62d934/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-up-020-0c62d934/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-up-020-0c62d934/traffic.pcap",
+    "sha256": "28e82fa8f3e984b995352ea60b40767c2af3cda6a71db845dfe0dbf31fc984a5",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-up-050-dc08c802/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-up-050-dc08c802/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-up-050-dc08c802/traffic.pcap",
+    "sha256": "8eb54b562b6404b1d44524796435ac01c85dec3df870c9270781081d4939f732",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-range-02/injector-up-100-ba1507d8/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-range-02/injector-up-100-ba1507d8/traffic/metadata.json",
+    "source": "usb-20261010/injector-range-02/injector-up-100-ba1507d8/traffic.pcap",
+    "sha256": "6a09603f0a01fd3abf48e5b9ed5b7390c5703debf0195ccbadc7a4968aad8931",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-study-01/injector-down-010-360616e1/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-study-01/injector-down-010-360616e1/traffic/metadata.json",
+    "source": "usb-20261010/injector-study-01/injector-down-010-360616e1/traffic.pcap",
+    "sha256": "f5e4ac9fe250b74ca52a3f1a58fb0ba774d571eb8248309b4efb3fbe56d8d139",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-study-01/injector-down-010-4e4a44cd/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-study-01/injector-down-010-4e4a44cd/traffic/metadata.json",
+    "source": "usb-20261010/injector-study-01/injector-down-010-4e4a44cd/traffic.pcap",
+    "sha256": "63790a1670a2f6ce85a997f5ea0708901e445d2a4b2261bc444b14a85f322385",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-study-01/injector-up-010-2889d472/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-study-01/injector-up-010-2889d472/traffic/metadata.json",
+    "source": "usb-20261010/injector-study-01/injector-up-010-2889d472/traffic.pcap",
+    "sha256": "bef6b0d0dd72b61f2eff8d37420bf80976561e6d24bad4bf91467d8ff7443171",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-050-022728f4/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-050-022728f4/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-050-022728f4/traffic.pcap",
+    "sha256": "c1a794b675b50f0085f6b1eeb51341e4a686e957196e1120a238af9dc799d751",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-050-3399fedf/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-050-3399fedf/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-050-3399fedf/traffic.pcap",
+    "sha256": "1083154d77c6b596cde56fb7976cd763044fb312fde86b6f994762bf3c0777b0",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-050-49dbd4d3/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-050-49dbd4d3/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-050-49dbd4d3/traffic.pcap",
+    "sha256": "21dda89d46de037b9bcb8cb18642172237006dd69e93274579e51436c4a3e9f4",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-100-193aafaa/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-100-193aafaa/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-100-193aafaa/traffic.pcap",
+    "sha256": "385c83de252030b1f8e3b82e3d2937b16d2dd2de4c0e573b70e62ab43feccf68",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-100-67d13b54/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-100-67d13b54/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-100-67d13b54/traffic.pcap",
+    "sha256": "502fc74ca5fb46402c96bc34fdfe4b2b9b16882f7c8540ff0e465f77d9841aea",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-down-100-b13cccc0/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-down-100-b13cccc0/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-down-100-b13cccc0/traffic.pcap",
+    "sha256": "bdb2b923002bd3c43910c1ec91000402af0cc3f707b0739b0abeb28f85bd1cec",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-010-1f8ceff5/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-010-1f8ceff5/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-010-1f8ceff5/traffic.pcap",
+    "sha256": "d266fdcb98dde93cda1f192aa7f21827e34aa8ae8e2b752a083438c35d3ea83d",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-050-05bf7b45/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-050-05bf7b45/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-050-05bf7b45/traffic.pcap",
+    "sha256": "6248b47cd45d396d2c962bc869275afa61b8d763c2912fc9b8dd80639c6d8f25",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-050-bf3c51c9/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-050-bf3c51c9/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-050-bf3c51c9/traffic.pcap",
+    "sha256": "5ab354b0c169b5db5bdbc2bedcb0860875bed131fd08a32330cfdf8d48488fbf",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-050-db9dcc1e/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-050-db9dcc1e/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-050-db9dcc1e/traffic.pcap",
+    "sha256": "fca940552bce6422d9a43cd63eda11c502b699a232ce94229e355f8f08feeaff",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-100-03445f71/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-100-03445f71/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-100-03445f71/traffic.pcap",
+    "sha256": "729383688d7e7c1eeb95d1afadc4de142b3b0cca46e185f4c2c94bd7c486321b",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-100-10fec71b/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-100-10fec71b/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-100-10fec71b/traffic.pcap",
+    "sha256": "a94d0f420ff3d36e7fb884f54982b832625c11228e078a72d696775268e749da",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-triples-05/injector-up-100-fcec6ab5/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-triples-05/injector-up-100-fcec6ab5/traffic/metadata.json",
+    "source": "usb-20261010/injector-triples-05/injector-up-100-fcec6ab5/traffic.pcap",
+    "sha256": "09784cb53fc5057bd4966ccdcf4c7b6430b77d77f8e294619ebff07ee1116e97",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-010-812eb393/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-010-812eb393/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-010-812eb393/traffic.pcap",
+    "sha256": "6f59a09b02125cc59b34b8cf388aa4de0319353934952fa3033f22d5bdb9ae1c",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-010-fd8a1f71/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-010-fd8a1f71/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-010-fd8a1f71/traffic.pcap",
+    "sha256": "d34d742d5115169727551ee042fa4315bb6b6ce9d94471ff7cd259fde7f4c45d",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-050-2ee83d92/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-050-2ee83d92/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-050-2ee83d92/traffic.pcap",
+    "sha256": "a9164243a33232cd68bdd37b7967223530a26cf4ebf60e089ce9c5869f601e0e",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-050-e688b7fd/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-050-e688b7fd/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-050-e688b7fd/traffic.pcap",
+    "sha256": "18d712b3107a1e9c31ba98c625606fb84c848f5ec9378d9fdd438df8098a1315",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-100-298e5f56/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-100-298e5f56/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-100-298e5f56/traffic.pcap",
+    "sha256": "c3ed5b36712a76540f73007b0c704d60e1c72d2d562380734a565a8774ae3bcc",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-down-100-c48f1636/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-down-100-c48f1636/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-down-100-c48f1636/traffic.pcap",
+    "sha256": "c1ccb2a1d6ab1c5f8bb71c1c6becfa624964191f752cb1ae9da9fbccc267bc7e",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-010-0041e567/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-010-0041e567/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-010-0041e567/traffic.pcap",
+    "sha256": "68c20b60f2d7098d7453cccdbd4e52903818a2d2b92016c8af585a5eaef5a9a0",
+    "motor_targets": 0
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-010-37bb4d15/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-010-37bb4d15/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-010-37bb4d15/traffic.pcap",
+    "sha256": "644fb266137d8778727d102713047c365e12e70f52c1b27e70d9fdbb31271417",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-010-7b3d325e/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-010-7b3d325e/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-010-7b3d325e/traffic.pcap",
+    "sha256": "32f044534aaab5c87cb9e52e2a97602b418b299afb3c3d5ec83c99af617f610b",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-050-4946dede/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-050-4946dede/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-050-4946dede/traffic.pcap",
+    "sha256": "4ec853f770e6c94dc3b9302f91e23728d62315216b8d21e2cab88c70bbb6344d",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-050-6e1fcb0a/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-050-6e1fcb0a/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-050-6e1fcb0a/traffic.pcap",
+    "sha256": "e39dd002b8d6396efcbaca5e44854548f31ebaf37cf3883117f80423c7f89f74",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-100-8cb3dde5/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-100-8cb3dde5/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-100-8cb3dde5/traffic.pcap",
+    "sha256": "2158509bfc42a21053ded7aca4e61d7683fa004169bf701b39a8fad39926f8bb",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/injector-validation-04/injector-up-100-ea2735a0/traffic/capture.pcapng",
+    "metadata": "captures/usb-20261010/injector-validation-04/injector-up-100-ea2735a0/traffic/metadata.json",
+    "source": "usb-20261010/injector-validation-04/injector-up-100-ea2735a0/traffic.pcap",
+    "sha256": "3c9e4ee1a7994dbbd97265a6226ec8696c444ebc0f91f88349eed7bfdd6218b3",
+    "motor_targets": 1
+  },
+  {
+    "capture": "captures/usb-20261010/speed-2mms-01/AP-nudge-050-91a9ddb5/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261010/speed-2mms-01/AP-nudge-050-91a9ddb5/ap-out-back-01/metadata.json",
+    "source": "usb-20261010/speed-2mms-01/AP-nudge-050-91a9ddb5/ap-out-back-01.pcap",
+    "sha256": "f31e47f0d65bb9555a76ac5a616f865f9c5064488e5b3c20e384e6cc3eea9229",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261010/speed-unknown-01/AP-nudge-050-16e67bd9/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261010/speed-unknown-01/AP-nudge-050-16e67bd9/ap-out-back-01/metadata.json",
+    "source": "usb-20261010/speed-unknown-01/AP-nudge-050-16e67bd9/ap-out-back-01.pcap",
+    "sha256": "f53949ad9f856c6a074b17fb5299c40973c9b6720b2474fc148f07a45f112d23",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261010/speed-unknown-01/DV-nudge-050-bff31560/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261010/speed-unknown-01/DV-nudge-050-bff31560/ap-out-back-01/metadata.json",
+    "source": "usb-20261010/speed-unknown-01/DV-nudge-050-bff31560/ap-out-back-01.pcap",
+    "sha256": "0c75d9169e608490092592c732125b69ea5e8a2373cd38a67ea5ed2be544fd4c",
+    "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261010/speed-unknown-01/ML-nudge-050-16b9b02b/ap-out-back-01/capture.pcapng",
+    "metadata": "captures/usb-20261010/speed-unknown-01/ML-nudge-050-16b9b02b/ap-out-back-01/metadata.json",
+    "source": "usb-20261010/speed-unknown-01/ML-nudge-050-16b9b02b/ap-out-back-01.pcap",
+    "sha256": "4e3df392e652c806fad3b50acd3942b7d70130c5bea477be109b3de4df3c9551",
+    "motor_targets": 2
+  }
+]

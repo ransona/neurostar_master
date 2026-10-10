@@ -1,0 +1,50 @@
+{
+  "ready": true,
+  "fault": null,
+  "simulated": false,
+  "coordinates": "mechanical Axis mm; never native Bregma",
+  "position": [
+    43.27,
+    39.99,
+    31.52
+  ],
+  "origin": [
+    43.27,
+    39.99,
+    31.52
+  ],
+  "bounds": {
+    "AP": [
+      42.27,
+      44.27
+    ],
+    "ML": [
+      38.99,
+      40.99
+    ],
+    "DV": [
+      30.52,
+      32.519999999999996
+    ]
+  },
+  "max_move_mm": 1.0,
+  "allow_dv": false,
+  "max_injector_volume_nl": 100.0,
+  "stop_error": null,
+  "operation": {
+    "id": "piston-range-54e4e549a5a54190b96556ccec5024ac",
+    "state": "completed",
+    "start": [
+      43.27,
+      39.99,
+      31.52
+    ],
+    "target": {
+      "action": "down",
+      "volume_nl": 50.0
+    },
+    "method": "injector",
+    "error": null,
+    "axes": []
+  }
+}

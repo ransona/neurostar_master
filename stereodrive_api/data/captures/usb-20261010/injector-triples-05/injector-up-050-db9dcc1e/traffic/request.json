@@ -1,0 +1,6 @@
+{
+  "command_id": "piston-range-b96d2152755740a185b052a0ee0d817d",
+  "kind": "injector_step",
+  "direction": "up",
+  "volume_nl": 50
+}

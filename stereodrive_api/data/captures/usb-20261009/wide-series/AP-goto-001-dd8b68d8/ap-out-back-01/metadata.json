@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261009/wide-series/AP-goto-001-dd8b68d8/ap-out-back-01.pcap",
+  "source_sha256": "b9f6eb49f325189caa63075054257764d3d498c17eab71ea56e83c6a573b21f0",
+  "archive_sha256": "f412a1d4ddc8e61ab9de361608707687756b8dd2fabcfb68afeeef79c88de56b",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T22:30:54.758045000Z",
+  "utc_end": "2026-10-09T22:31:11.078899000Z",
+  "native_commands": [
+    {
+      "command_id": "absolute-usb-5e9fa9bf89464248992485d54cfdd30d",
+      "kind": "axis",
+      "axis": "AP",
+      "target_mm": 42.76,
+      "method": "goto"
+    }
+  ],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 105280,
+      "last_raw": 105280,
+      "last_moving": 0,
+      "samples": 21,
+      "last_utc": "2026-10-09T22:31:10.897770000Z"
+    },
+    "0x50": {
+      "first_raw": 75603,
+      "last_raw": 75603,
+      "last_moving": 0,
+      "samples": 21,
+      "last_utc": "2026-10-09T22:31:10.958230000Z"
+    },
+    "0x60": {
+      "first_raw": 41767,
+      "last_raw": 41767,
+      "last_moving": 0,
+      "samples": 21,
+      "last_utc": "2026-10-09T22:31:11.018931000Z"
+    },
+    "0x70": {
+      "first_raw": 322729,
+      "last_raw": 322729,
+      "last_moving": 0,
+      "samples": 21,
+      "last_utc": "2026-10-09T22:31:11.078899000Z"
+    }
+  },
+  "syringe_result": null,
+  "discoveries": [
+    "No motor target packet recorded; not evidence of a completed requested move."
+  ],
+  "historical_notes": [
+    "Historical GoTo investigation; no target packets is not arrival evidence. Inspect retained client result."
+  ],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

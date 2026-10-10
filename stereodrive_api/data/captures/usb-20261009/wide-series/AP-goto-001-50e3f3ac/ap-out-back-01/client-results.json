@@ -1,0 +1,148 @@
+[
+  {
+    "event": "start",
+    "value": {
+      "root": "C:\\Users\\Widefield\\StereoDriveProbeLogs\\usb-20261009\\wide-series\\AP-goto-001-50e3f3ac",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "origin": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "bounds": {
+          "AP": [
+            41.75,
+            43.75
+          ],
+          "ML": [
+            38.47,
+            40.47
+          ],
+          "DV": [
+            31.009999999999998,
+            33.01
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": true,
+        "stop_error": null,
+        "operation": null
+      }
+    }
+  },
+  {
+    "event": "accepted",
+    "value": {
+      "leg": "outward",
+      "body": {
+        "command_id": "absolute-usb-16aee5e2fe314b3dbc026b61a704549c",
+        "kind": "axis",
+        "axis": "AP",
+        "target_mm": 42.76,
+        "method": "goto"
+      },
+      "result": {
+        "id": "absolute-usb-16aee5e2fe314b3dbc026b61a704549c",
+        "state": "running",
+        "start": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "target": [
+          42.76,
+          39.47,
+          32.01
+        ],
+        "method": "goto",
+        "error": null,
+        "axes": [
+          "AP"
+        ]
+      }
+    }
+  },
+  {
+    "event": "final",
+    "value": {
+      "leg": "outward",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "origin": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "bounds": {
+          "AP": [
+            41.75,
+            43.75
+          ],
+          "ML": [
+            38.47,
+            40.47
+          ],
+          "DV": [
+            31.009999999999998,
+            33.01
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": true,
+        "stop_error": null,
+        "operation": {
+          "id": "absolute-usb-16aee5e2fe314b3dbc026b61a704549c",
+          "state": "stopped",
+          "start": [
+            42.75,
+            39.47,
+            32.01
+          ],
+          "target": [
+            42.76,
+            39.47,
+            32.01
+          ],
+          "method": "goto",
+          "error": "Movement cancelled or timed out.",
+          "axes": [
+            "AP"
+          ],
+          "position": [
+            42.75,
+            39.47,
+            32.01
+          ]
+        }
+      }
+    }
+  },
+  {
+    "event": "failure",
+    "value": "Movement did not complete"
+  },
+  {
+    "event": "stop",
+    "value": {
+      "ok": true,
+      "stop_error": null
+    }
+  }
+]

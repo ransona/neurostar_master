@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261010/injector-validation-04/injector-down-010-fd8a1f71/traffic.pcap",
+  "source_sha256": "6e294c05d4a2bae8d063f1fee2445c0424720c72b4c746ae100622f73c84d7f1",
+  "archive_sha256": "d34d742d5115169727551ee042fa4315bb6b6ce9d94471ff7cd259fde7f4c45d",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T23:42:13.177863000Z",
+  "utc_end": "2026-10-09T23:42:20.167270000Z",
+  "native_commands": [
+    {
+      "command_id": "piston-range-e9aec7d65e2148529f00990cd2acd55d",
+      "kind": "injector_step",
+      "direction": "down",
+      "volume_nl": 10
+    }
+  ],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [
+    {
+      "capture": "traffic",
+      "frame": 61,
+      "utc": "2026-10-09T23:42:14.859849000Z",
+      "bus": 2,
+      "device": 3,
+      "endpoint": "0x01",
+      "usb_status": "0x00000000",
+      "direction": "OUT",
+      "kind": "target",
+      "length": 17,
+      "hex": "af0c7084deffff1c07401f401f00010004",
+      "opcode": 12,
+      "selector": 112,
+      "axis": "PISTON",
+      "target_raw": -8572,
+      "tail_hex": "1c07401f401f00010004"
+    }
+  ],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 103085,
+      "last_raw": 103085,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:42:19.564137000Z"
+    },
+    "0x50": {
+      "first_raw": 78320,
+      "last_raw": 78320,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:42:19.594175000Z"
+    },
+    "0x60": {
+      "first_raw": 44379,
+      "last_raw": 44379,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:42:19.624262000Z"
+    },
+    "0x70": {
+      "first_raw": -6958,
+      "last_raw": -8572,
+      "last_moving": 0,
+      "samples": 12,
+      "last_utc": "2026-10-09T23:42:20.167270000Z"
+    }
+  },
+  "syringe_result": {
+    "folder": "C:\\Users\\Widefield\\StereoDriveProbeLogs\\usb-20261010\\injector-validation-04\\injector-down-010-fd8a1f71",
+    "direction": "down",
+    "volume_nl": 10,
+    "passive": false,
+    "start_raw": -6958,
+    "end_raw": -8572,
+    "delta_raw": -1614,
+    "target_hex": "af0c7084deffff1c07401f401f00010004"
+  },
+  "discoveries": [
+    "Selector 0x70 absolute raw target -8572; profile words [1820, 8000, 8000]; tail 00010004.",
+    "Piston down 10 nL: delta -1614 counts; last two samples independently idle at endpoint before next leg."
+  ],
+  "historical_notes": [],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

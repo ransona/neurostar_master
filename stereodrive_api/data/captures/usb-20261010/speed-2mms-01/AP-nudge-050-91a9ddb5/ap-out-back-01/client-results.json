@@ -1,0 +1,299 @@
+[
+  {
+    "event": "start",
+    "value": {
+      "root": "C:\\Users\\Widefield\\StereoDriveProbeLogs\\usb-20261010\\speed-2mms-01\\AP-nudge-050-91a9ddb5",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "origin": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "bounds": {
+          "AP": [
+            42.27,
+            44.27
+          ],
+          "ML": [
+            38.99,
+            40.99
+          ],
+          "DV": [
+            30.52,
+            32.519999999999996
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": false,
+        "stop_error": null,
+        "operation": null
+      }
+    }
+  },
+  {
+    "event": "accepted",
+    "value": {
+      "leg": "outward",
+      "body": {
+        "command_id": "nudge-usb-82de8007fa9e44b79bd1cdc2a04d842a",
+        "kind": "nudge",
+        "axis": "AP",
+        "direction": 1,
+        "step_mm": 0.5
+      },
+      "result": {
+        "id": "nudge-usb-82de8007fa9e44b79bd1cdc2a04d842a",
+        "state": "running",
+        "start": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "target": [
+          43.77,
+          39.99,
+          31.52
+        ],
+        "method": "single_nudge",
+        "error": null,
+        "axes": [
+          "AP"
+        ]
+      }
+    }
+  },
+  {
+    "event": "final",
+    "value": {
+      "leg": "outward",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          43.77,
+          39.99,
+          31.52
+        ],
+        "origin": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "bounds": {
+          "AP": [
+            42.27,
+            44.27
+          ],
+          "ML": [
+            38.99,
+            40.99
+          ],
+          "DV": [
+            30.52,
+            32.519999999999996
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": false,
+        "stop_error": null,
+        "operation": {
+          "id": "nudge-usb-82de8007fa9e44b79bd1cdc2a04d842a",
+          "state": "completed",
+          "start": [
+            43.27,
+            39.99,
+            31.52
+          ],
+          "target": [
+            43.77,
+            39.99,
+            31.52
+          ],
+          "method": "single_nudge",
+          "error": null,
+          "axes": [
+            "AP"
+          ],
+          "position": [
+            43.77,
+            39.99,
+            31.52
+          ]
+        }
+      }
+    }
+  },
+  {
+    "event": "accepted",
+    "value": {
+      "leg": "return",
+      "body": {
+        "command_id": "nudge-usb-39716a7fd21a4fc0974fe4fe0361f148",
+        "kind": "nudge",
+        "axis": "AP",
+        "direction": -1,
+        "step_mm": 0.5
+      },
+      "result": {
+        "id": "nudge-usb-39716a7fd21a4fc0974fe4fe0361f148",
+        "state": "running",
+        "start": [
+          43.77,
+          39.99,
+          31.52
+        ],
+        "target": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "method": "single_nudge",
+        "error": null,
+        "axes": [
+          "AP"
+        ]
+      }
+    }
+  },
+  {
+    "event": "final",
+    "value": {
+      "leg": "return",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "origin": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "bounds": {
+          "AP": [
+            42.27,
+            44.27
+          ],
+          "ML": [
+            38.99,
+            40.99
+          ],
+          "DV": [
+            30.52,
+            32.519999999999996
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": false,
+        "stop_error": null,
+        "operation": {
+          "id": "nudge-usb-39716a7fd21a4fc0974fe4fe0361f148",
+          "state": "completed",
+          "start": [
+            43.77,
+            39.99,
+            31.52
+          ],
+          "target": [
+            43.27,
+            39.99,
+            31.52
+          ],
+          "method": "single_nudge",
+          "error": null,
+          "axes": [
+            "AP"
+          ],
+          "position": [
+            43.27,
+            39.99,
+            31.52
+          ]
+        }
+      }
+    }
+  },
+  {
+    "event": "completed",
+    "value": {
+      "ready": true,
+      "fault": null,
+      "simulated": false,
+      "coordinates": "mechanical Axis mm; never native Bregma",
+      "position": [
+        43.27,
+        39.99,
+        31.52
+      ],
+      "origin": [
+        43.27,
+        39.99,
+        31.52
+      ],
+      "bounds": {
+        "AP": [
+          42.27,
+          44.27
+        ],
+        "ML": [
+          38.99,
+          40.99
+        ],
+        "DV": [
+          30.52,
+          32.519999999999996
+        ]
+      },
+      "max_move_mm": 1.0,
+      "allow_dv": false,
+      "stop_error": null,
+      "operation": {
+        "id": "nudge-usb-39716a7fd21a4fc0974fe4fe0361f148",
+        "state": "completed",
+        "start": [
+          43.77,
+          39.99,
+          31.52
+        ],
+        "target": [
+          43.27,
+          39.99,
+          31.52
+        ],
+        "method": "single_nudge",
+        "error": null,
+        "axes": [
+          "AP"
+        ],
+        "position": [
+          43.27,
+          39.99,
+          31.52
+        ]
+      }
+    }
+  },
+  {
+    "event": "stop",
+    "value": {
+      "ok": true,
+      "stop_error": null
+    }
+  }
+]

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261009/wide-series/ML-nudge-100-f34bfc39/ap-out-back-01.pcap",
+  "source_sha256": "52bfb154ed0376d63c4e49079a15610ea9bf99cc863a39884cb9a163e3ad5a0f",
+  "archive_sha256": "ad6644e81cfc3d3e7f59c8a436b9376597a6bbe44dff78065cf7ab637ffbaabf",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T22:40:59.514934000Z",
+  "utc_end": "2026-10-09T22:41:05.625437000Z",
+  "native_commands": [
+    {
+      "command_id": "nudge-usb-65a82bbc8a7b4c4b8087b49a51bd258d",
+      "kind": "nudge",
+      "axis": "ML",
+      "direction": -1,
+      "step_mm": 1.0
+    },
+    {
+      "command_id": "nudge-usb-7e6cc80266704bd4bfcc30090f1db5e6",
+      "kind": "nudge",
+      "axis": "ML",
+      "direction": 1,
+      "step_mm": 1.0
+    }
+  ],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [
+    {
+      "capture": "ap-out-back-01",
+      "frame": 33,
+      "utc": "2026-10-09T22:41:00.628928000Z",
+      "bus": 2,
+      "device": 3,
+      "endpoint": "0x01",
+      "usb_status": "0x00000000",
+      "direction": "OUT",
+      "kind": "target",
+      "length": 17,
+      "hex": "af0c50ea120100a707401f401f00010104",
+      "opcode": 12,
+      "selector": 80,
+      "axis": "ML",
+      "target_raw": 70378,
+      "tail_hex": "a707401f401f00010104"
+    },
+    {
+      "capture": "ap-out-back-01",
+      "frame": 113,
+      "utc": "2026-10-09T22:41:03.001520000Z",
+      "bus": 2,
+      "device": 3,
+      "endpoint": "0x01",
+      "usb_status": "0x00000000",
+      "direction": "OUT",
+      "kind": "target",
+      "length": 17,
+      "hex": "af0c5058280100a707401f401f00010104",
+      "opcode": 12,
+      "selector": 80,
+      "axis": "ML",
+      "target_raw": 75864,
+      "tail_hex": "a707401f401f00010104"
+    }
+  ],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 105280,
+      "last_raw": 105280,
+      "last_moving": 0,
+      "samples": 7,
+      "last_utc": "2026-10-09T22:41:05.382588000Z"
+    },
+    "0x50": {
+      "first_raw": 75864,
+      "last_raw": 75864,
+      "last_moving": 0,
+      "samples": 21,
+      "last_utc": "2026-10-09T22:41:05.443595000Z"
+    },
+    "0x60": {
+      "first_raw": 41767,
+      "last_raw": 41767,
+      "last_moving": 0,
+      "samples": 7,
+      "last_utc": "2026-10-09T22:41:05.504020000Z"
+    },
+    "0x70": {
+      "first_raw": 322729,
+      "last_raw": 322729,
+      "last_moving": 0,
+      "samples": 7,
+      "last_utc": "2026-10-09T22:41:05.565586000Z"
+    }
+  },
+  "syringe_result": null,
+  "discoveries": [
+    "Selector 0x50 absolute raw target 70378; profile words [1959, 8000, 8000]; tail 00010104.",
+    "Selector 0x50 absolute raw target 75864; profile words [1959, 8000, 8000]; tail 00010104."
+  ],
+  "historical_notes": [],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261010/injector-study-01/injector-down-010-4e4a44cd/traffic.pcap",
+  "source_sha256": "046b74e53a984058be99c40e5ae76166a8f76c0533df62f28c8f491ae0bab0e8",
+  "archive_sha256": "63790a1670a2f6ce85a997f5ea0708901e445d2a4b2261bc444b14a85f322385",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T23:30:16.499597000Z",
+  "utc_end": "2026-10-09T23:30:18.548162000Z",
+  "native_commands": [
+    {
+      "command_id": "injector-usb-7fd2eaa93ca54a4cb7fef4e86887062f",
+      "kind": "injector_step",
+      "direction": "down",
+      "volume_nl": 10
+    }
+  ],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [
+    {
+      "capture": "traffic",
+      "frame": 45,
+      "utc": "2026-10-09T23:30:17.791374000Z",
+      "bus": 2,
+      "device": 3,
+      "endpoint": "0x01",
+      "usb_status": "0x00000000",
+      "direction": "OUT",
+      "kind": "target",
+      "length": 17,
+      "hex": "af0c7084deffff1c07401f401f00010004",
+      "opcode": 12,
+      "selector": 112,
+      "axis": "PISTON",
+      "target_raw": -8572,
+      "tail_hex": "1c07401f401f00010004"
+    }
+  ],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 103085,
+      "last_raw": 103085,
+      "last_moving": 0,
+      "samples": 4,
+      "last_utc": "2026-10-09T23:30:18.329256000Z"
+    },
+    "0x50": {
+      "first_raw": 78320,
+      "last_raw": 78320,
+      "last_moving": 0,
+      "samples": 4,
+      "last_utc": "2026-10-09T23:30:18.388828000Z"
+    },
+    "0x60": {
+      "first_raw": 44379,
+      "last_raw": 44379,
+      "last_moving": 0,
+      "samples": 4,
+      "last_utc": "2026-10-09T23:30:18.449437000Z"
+    },
+    "0x70": {
+      "first_raw": -1133,
+      "last_raw": -8324,
+      "last_moving": 1,
+      "samples": 9,
+      "last_utc": "2026-10-09T23:30:18.548162000Z"
+    }
+  },
+  "syringe_result": null,
+  "discoveries": [
+    "Selector 0x70 absolute raw target -8572; profile words [1820, 8000, 8000]; tail 00010004."
+  ],
+  "historical_notes": [
+    "Native completion preceded final USB idle; capture ends moving. Later separate passive capture verified original count -8572 idle. Do not claim final offset."
+  ],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

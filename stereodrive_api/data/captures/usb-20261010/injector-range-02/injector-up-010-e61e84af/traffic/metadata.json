@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261010/injector-range-02/injector-up-010-e61e84af/traffic.pcap",
+  "source_sha256": "d4b6e14f43cefcf426dae1ec7ec14d1c3c85a0b216fdf439d082ad172470e779",
+  "archive_sha256": "6f78bce75b520352c3d286436df35a4d7af17673a46351b5b2395cf2e3a9264e",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T23:38:02.622372000Z",
+  "utc_end": "2026-10-09T23:38:08.806489000Z",
+  "native_commands": [],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 103085,
+      "last_raw": 103085,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:38:08.715406000Z"
+    },
+    "0x50": {
+      "first_raw": 78320,
+      "last_raw": 78320,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:38:08.745854000Z"
+    },
+    "0x60": {
+      "first_raw": 44379,
+      "last_raw": 44379,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:38:08.776405000Z"
+    },
+    "0x70": {
+      "first_raw": -8572,
+      "last_raw": -8572,
+      "last_moving": 0,
+      "samples": 6,
+      "last_utc": "2026-10-09T23:38:08.806489000Z"
+    }
+  },
+  "syringe_result": {
+    "folder": "C:\\Users\\Widefield\\StereoDriveProbeLogs\\usb-20261010\\injector-range-02\\injector-up-010-e61e84af",
+    "direction": "up",
+    "volume_nl": 10,
+    "passive": true,
+    "start_raw": -8572,
+    "end_raw": -8572,
+    "delta_raw": 0,
+    "target_hex": null
+  },
+  "discoveries": [
+    "No motor target packet recorded; not evidence of a completed requested move.",
+    "Passive idle observation only; no piston movement requested."
+  ],
+  "historical_notes": [],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261009/gui08-ml002/ap-out-back-01.pcap",
+  "source_sha256": "33c0a1fe08d4faa29d04dbba2f8dcabb941f1f6ffbe567a4a97849df76ca5e4a",
+  "archive_sha256": "1e1eccef3d210a19c380e710cc2b3104f9fcadcbaeee65d5360e9ca65cd836fa",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T21:43:47.641490000Z",
+  "utc_end": "2026-10-09T21:44:47.218242000Z",
+  "native_commands": [],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 105802,
+      "last_raw": 105802,
+      "last_moving": 0,
+      "samples": 53,
+      "last_utc": "2026-10-09T21:44:47.036715000Z"
+    },
+    "0x50": {
+      "first_raw": 75603,
+      "last_raw": 75603,
+      "last_moving": 0,
+      "samples": 53,
+      "last_utc": "2026-10-09T21:44:47.096637000Z"
+    },
+    "0x60": {
+      "first_raw": 41819,
+      "last_raw": 41819,
+      "last_moving": 0,
+      "samples": 53,
+      "last_utc": "2026-10-09T21:44:47.158060000Z"
+    },
+    "0x70": {
+      "first_raw": 322729,
+      "last_raw": 322729,
+      "last_moving": 0,
+      "samples": 53,
+      "last_utc": "2026-10-09T21:44:47.218242000Z"
+    }
+  },
+  "syringe_result": null,
+  "discoveries": [
+    "No motor target packet recorded; not evidence of a completed requested move."
+  ],
+  "historical_notes": [
+    "Historical incomplete ML attempt; do not combine with later successful gui09 trial."
+  ],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "command_id": "piston-range-6a6e1718b08042d8992f09c676b5e27f",
+  "kind": "injector_step",
+  "direction": "down",
+  "volume_nl": 10
+}

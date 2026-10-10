@@ -1,0 +1,82 @@
+[
+  {
+    "event": "start",
+    "value": {
+      "root": "C:\\Users\\Widefield\\StereoDriveProbeLogs\\usb-20261009\\wide-series\\AP-goto-001-dd8b68d8",
+      "status": {
+        "ready": true,
+        "fault": null,
+        "simulated": false,
+        "coordinates": "mechanical Axis mm; never native Bregma",
+        "position": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "origin": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "bounds": {
+          "AP": [
+            41.75,
+            43.75
+          ],
+          "ML": [
+            38.47,
+            40.47
+          ],
+          "DV": [
+            31.009999999999998,
+            33.01
+          ]
+        },
+        "max_move_mm": 1.0,
+        "allow_dv": true,
+        "stop_error": null,
+        "operation": null
+      }
+    }
+  },
+  {
+    "event": "accepted",
+    "value": {
+      "leg": "outward",
+      "body": {
+        "command_id": "absolute-usb-5e9fa9bf89464248992485d54cfdd30d",
+        "kind": "axis",
+        "axis": "AP",
+        "target_mm": 42.76,
+        "method": "goto"
+      },
+      "result": {
+        "id": "absolute-usb-5e9fa9bf89464248992485d54cfdd30d",
+        "state": "running",
+        "start": [
+          42.75,
+          39.47,
+          32.01
+        ],
+        "target": [
+          42.76,
+          39.47,
+          32.01
+        ],
+        "method": "goto",
+        "error": null
+      }
+    }
+  },
+  {
+    "event": "failure",
+    "value": "Real ready session required"
+  },
+  {
+    "event": "stop",
+    "value": {
+      "ok": true,
+      "stop_error": null
+    }
+  }
+]

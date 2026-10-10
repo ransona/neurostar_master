@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "source_relative_path": "usb-20261009/ap-out-back-01.pcap",
+  "source_sha256": "d135bf8339b23f006534b4634027629abc989c0dd19973269e43e003d3c72095",
+  "archive_sha256": "319ba78b27d956b15044a49968dfda8307ad3e909adc53ff2c24fbc6e0c5abb9",
+  "scope": "Filtered bus 2, device addresses 3 and 7 only; originals remain outside repo",
+  "utc_start": "2026-10-09T21:27:53.190124000Z",
+  "utc_end": "2026-10-09T21:28:36.559591000Z",
+  "native_commands": [],
+  "command_recovery": "Native request bodies retained where available; otherwise raw targets are the observed commands; intended mm/nL cannot be inferred solely from filenames.",
+  "target_packets": [],
+  "drill_writes": [],
+  "endpoints": {
+    "0x40": {
+      "first_raw": 105802,
+      "last_raw": 105802,
+      "last_moving": 0,
+      "samples": 36,
+      "last_utc": "2026-10-09T21:28:35.894924000Z"
+    },
+    "0x50": {
+      "first_raw": 75603,
+      "last_raw": 75603,
+      "last_moving": 0,
+      "samples": 36,
+      "last_utc": "2026-10-09T21:28:35.925409000Z"
+    },
+    "0x60": {
+      "first_raw": 41819,
+      "last_raw": 41819,
+      "last_moving": 0,
+      "samples": 36,
+      "last_utc": "2026-10-09T21:28:35.955327000Z"
+    },
+    "0x70": {
+      "first_raw": 322729,
+      "last_raw": 322729,
+      "last_moving": 0,
+      "samples": 36,
+      "last_utc": "2026-10-09T21:28:35.985765000Z"
+    }
+  },
+  "syringe_result": null,
+  "discoveries": [
+    "No motor target packet recorded; not evidence of a completed requested move."
+  ],
+  "historical_notes": [],
+  "operator_notes": [],
+  "limitations": [
+    "Counts are controller-reported, not independent physical displacement or fluid-volume measurements.",
+    "Filtered archive frame numbers may differ from source reports; match UTC and payload.",
+    "Native completed state alone is not proof of motor idle."
+  ]
+}
