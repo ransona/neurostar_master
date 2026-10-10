@@ -112,6 +112,8 @@ limit with a confirmation and cancellable progress dialog. Remove the pipette fr
 the specimen and verify safe collection/aspiration first. If the endpoint is not
 reachable in 10 nL units, they stop short by less than 10 nL and show the real
 verified piston estimate; they never pretend the syringe is exactly empty/full.
+**Go To** in Manual Control moves to a chosen 500–4500 nL position in 10 nL
+increments, using the calibrated piston API and cancellable progress when in direct mode.
 **Options → Benchmark Axis Moves** selects axes, distances (<=1 mm) and repeats;
 AP/ML are selected by default, DV is off. The entire out-and-back path is preflighted,
 drill power must be OFF, and Cancel/Esc stops without automatic return. Copyable CSV

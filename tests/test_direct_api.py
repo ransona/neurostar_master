@@ -211,7 +211,7 @@ class DirectTests(unittest.TestCase):
         self.assertEqual(sum(steps),-2520)
         d.validate_piston_steps(steps)
         self.assertEqual(sum(d.plan_piston_to(4500)),1480)
-        for target in (499,4501):
+        for target in (490,4510):
             with self.assertRaises(ValueError):d.plan_piston_to(target)
 
     def test_syringe_cannot_move_outside_safe_operating_band(self):
@@ -222,6 +222,15 @@ class DirectTests(unittest.TestCase):
             self.assertEqual(c.drive.plan_piston_to(start),[])
             with self.assertRaises(ValueError):c.validate_piston_steps([forbidden_step])
             self.assertFalse(any(packet[1]==0x0c for packet in c.drive._session.transport.packets))
+
+    def test_syringe_goto_rejects_unsafe_or_unreachable_targets(self):
+        c=StereoDriveController();self.addCleanup(c.close);c.connect_simulation()
+        initial=c.read_injectomate_calibrate_scale_nl()
+        for target in (490,4510):
+            with self.subTest(target=target),self.assertRaises(ValueError):
+                c.goto_syringe_position(target)
+        with self.assertRaises(StereoDriveError):c.goto_syringe_position(2515)
+        self.assertEqual(c.read_injectomate_calibrate_scale_nl(),initial)
 
     def test_benchmark_preflights_all_axes_and_stops_without_reversal(self):
         c=StereoDriveController();self.addCleanup(c.close)

@@ -315,6 +315,16 @@ class StereoDriveController:
         return self._run(lambda d:self._execute_piston_steps(d,steps,stop_requested,on_completed),
                          stop_requested=stop_requested,asynchronous=asynchronous)
 
+    def goto_syringe_position(self, position_nl, *, stop_requested=None, asynchronous=False, on_completed=None):
+        if isinstance(position_nl, bool) or not isinstance(position_nl, (int, float)) or not math.isfinite(position_nl) or position_nl % 10:
+            raise StereoDriveError('Syringe target must be a finite 10 nL increment.')
+        with self.lock:
+            if self.busy:raise StereoDriveError('Controller busy')
+            drive=self._require()
+            steps=drive.plan_piston_to(position_nl)
+        return self._run(lambda d:self._execute_piston_steps(d,steps,stop_requested,on_completed),
+                         stop_requested=stop_requested,asynchronous=asynchronous)
+
     def empty_syringe(self, **kwargs):
         return self.syringe_to_limit(fill=False,**kwargs)
 

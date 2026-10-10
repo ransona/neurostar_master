@@ -799,6 +799,18 @@ class StereoDriveController:
         self._click(INJECTION_GOTO_BUTTON_ID)
         self.wait_for_injectomate_motion_complete(INJECTION_GOTO_BUTTON_ID, timeout_seconds=180.0)
 
+    def goto_syringe_position(self, position_nl: float, stop_requested=None) -> None:
+        if not math.isfinite(position_nl) or not 500 <= position_nl <= 4500 or position_nl % 10:
+            raise StereoDriveError("Syringe target must be a 10 nL increment from 500 to 4500 nL.")
+        self.show_injectomate()
+        hwnd = self._control_handle(INJECTION_GOTO_TEXT_ID)
+        self._set_text(hwnd, f"{position_nl:g}")
+        time.sleep(0.1)
+        self._click(INJECTION_GOTO_BUTTON_ID)
+        self.wait_for_injectomate_motion_complete(
+            INJECTION_GOTO_BUTTON_ID, stop_requested=stop_requested, timeout_seconds=180.0
+        )
+
     def _injectomate_motion_status_text(self) -> str:
         parts = []
         controls = self._control_map()

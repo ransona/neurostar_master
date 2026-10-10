@@ -1530,6 +1530,12 @@ class CraniotomyWindow(QMainWindow):
         self.empty_syringe_btn.clicked.connect(self.empty_syringe)
         self.fill_syringe_btn = QPushButton("Fill Syringe")
         self.fill_syringe_btn.clicked.connect(self.fill_syringe)
+        self.syringe_goto_target_nl = QSpinBox()
+        self.syringe_goto_target_nl.setRange(int(SYRINGE_MIN_NL), int(SYRINGE_MAX_NL))
+        self.syringe_goto_target_nl.setSingleStep(10)
+        self.syringe_goto_target_nl.setValue(2500)
+        self.syringe_goto_btn = QPushButton("Go To")
+        self.syringe_goto_btn.clicked.connect(self.goto_syringe_position)
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
 
@@ -1544,7 +1550,10 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.empty_syringe_btn, 4, 3)
         status_layout.addWidget(test_blockage_btn, 5, 0, 1, 4)
         status_layout.addWidget(self.fill_syringe_btn, 6, 3)
-        status_layout.addWidget(self.plunger_gauge, 0, 4, 7, 1)
+        status_layout.addWidget(QLabel("Go to syringe position (nL)"), 7, 0, 1, 2)
+        status_layout.addWidget(self.syringe_goto_target_nl, 7, 2)
+        status_layout.addWidget(self.syringe_goto_btn, 7, 3)
+        status_layout.addWidget(self.plunger_gauge, 0, 4, 8, 1)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -3489,6 +3498,52 @@ class CraniotomyWindow(QMainWindow):
 
     def fill_syringe(self) -> None:
         self._direct_syringe_limit(True)
+
+    def goto_syringe_position(self) -> None:
+        if not self._require_idle("Syringe Go To"):
+            return
+        target_nl = int(self.syringe_goto_target_nl.value())
+        if target_nl % 10:
+            QMessageBox.warning(self, "Syringe Go To", "Choose a 10 nL increment between 500 and 4500 nL.")
+            return
+        try:
+            if getattr(self.controller, "direct_api", False):
+                drive = self.controller._require()
+                with self.controller.lock:
+                    if self.controller.busy:
+                        raise StereoDriveError("Controller busy")
+                    drive.plan_piston_to(target_nl)
+                start_nl = self.controller.read_injectomate_calibrate_scale_nl()
+
+                def operation(cancel, progress):
+                    def completed(value):
+                        self.syringe_position_signal.emit(value)
+                        progress(
+                            min(100, int(abs(value - start_nl) / max(abs(target_nl - start_nl), 1) * 100)),
+                            f"Verified piston {value:.1f} nL; requested {target_nl} nL",
+                        )
+                    return self.controller.goto_syringe_position(
+                        target_nl, stop_requested=cancel, on_completed=completed
+                    )
+
+                result = self._run_direct_operation_with_progress(
+                    "Syringe Go To", f"Moving syringe to {target_nl} nL…", operation
+                )
+                if result is not None:
+                    actual_nl = float(result["PISTON"])
+                    self.set_syringe_position(actual_nl)
+                    self.set_status(f"Syringe at {actual_nl:.1f} nL")
+            else:
+                start_nl = self.controller.read_injectomate_calibrate_scale_nl()
+                if not SYRINGE_MIN_NL <= start_nl <= SYRINGE_MAX_NL:
+                    raise StereoDriveError("Current syringe position is outside the 500–4500 nL safe range.")
+                if not SYRINGE_MIN_NL <= target_nl <= SYRINGE_MAX_NL or target_nl % 10:
+                    raise StereoDriveError("Syringe target must be a 10 nL increment from 500 to 4500 nL.")
+                self.controller.goto_syringe_position(target_nl)
+                self.set_syringe_position(target_nl)
+                self.set_status(f"Syringe moved to {target_nl} nL")
+        except Exception as exc:
+            QMessageBox.warning(self, "Syringe Go To", str(exc))
 
     def _direct_syringe_limit(self, fill):
         title = "Fill Syringe" if fill else "Empty Syringe"
