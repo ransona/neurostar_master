@@ -5342,7 +5342,12 @@ class CraniotomyWindow(QMainWindow):
                 if not repeat_site:
                     break
                 self._ensure_repeat_site_capacity(settings,test_volume_nl,check_blocked)
+                self.active_injection_site_signal.emit(site_index)
                 self.injection_site_progress_signal.emit(0)
+                self.injection_progress_signal.emit(
+                    int((site_index + 1) / max(1,total_count) * 100),
+                    f"Repeating injection at site {site_index+1}/{total_count}",
+                )
         self.sequence_step_signal.emit(-1);self.active_injection_site_signal.emit(-1)
         self.injection_progress_signal.emit(100, "Injection sequence complete")
         self.injection_finished_signal.emit("Pulsed injection workflow complete (estimated piston displacement, not measured delivery)")
@@ -5491,7 +5496,12 @@ class CraniotomyWindow(QMainWindow):
                     if not repeat_site:
                         break
                     self._ensure_repeat_site_capacity(settings,test_volume_nl,check_blocked)
+                    self.active_injection_site_signal.emit(site_index-1)
                     self.injection_site_progress_signal.emit(0)
+                    self.injection_progress_signal.emit(
+                        int(site_index / max(1,total_units) * 100),
+                        f"Repeating injection at site {site_index}/{total_units}",
+                    )
             if self.injection_stop_requested.is_set():
                 self.controller.stop()
                 self.controller.wait_until_stopped()
@@ -5978,6 +5988,8 @@ class CraniotomyWindow(QMainWindow):
     def _injection_operation_label(message: str) -> str:
         """Translate implementation details into a brief user-facing phase."""
         phase = str(message).lower().replace("_", " ")
+        if "repeating injection at site" in phase:
+            return "Repeating site"
         if "block" in phase or "verifying no blockage" in phase:
             return "Checking blockage"
         if "insertion" in phase:

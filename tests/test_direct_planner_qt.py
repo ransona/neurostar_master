@@ -487,19 +487,21 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(progress_signal.emit.call_args_list)
         self.assertTrue(all(call.args[0] == 50 for call in progress_signal.emit.call_args_list))
 
-    def test_successful_retest_can_repeat_the_last_pulsed_site(self):
+    def test_successful_retest_repeats_current_site_before_advancing(self):
         self.window.injection_stop_requested.clear()
-        site=planner.InjectionSite(0,0,0)
-        plan=object()
+        first=planner.InjectionSite(0,0,0)
+        second=planner.InjectionSite(.1,.1,0)
+        first_plan,second_plan=object(),object()
         with (
-            patch.object(self.window,'_preflight_pulsed_injections',return_value=[[plan]]),
+            patch.object(self.window,'_preflight_pulsed_injections',return_value=[[first_plan],[second_plan]]),
             patch.object(planner.pulsed_protocol,'execute') as execute,
-            patch.object(self.window,'_run_block_test',side_effect=[True,False]) as blockage,
+            patch.object(self.window,'_run_block_test',side_effect=[True,False,False]) as blockage,
             patch.object(self.window,'_ensure_repeat_site_capacity') as capacity,
         ):
-            self.window._run_pulsed_injections([site],self.pulse_settings(),True,20,0,1)
-        self.assertEqual(execute.call_count,2)
-        self.assertEqual(blockage.call_count,2)
+            self.window._run_pulsed_injections([first,second],self.pulse_settings(),True,20,0,2)
+        self.assertEqual([call.args[1] for call in execute.call_args_list],
+                         [[first_plan],[first_plan],[second_plan]])
+        self.assertEqual(blockage.call_count,3)
         capacity.assert_called_once_with(self.pulse_settings(),20,True)
 
     def test_block_test_offers_repeat_only_after_a_reported_blockage(self):
@@ -541,6 +543,16 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(self.window.repeat_injection_site_result)
         self.assertTrue(self.window.repeat_injection_site_event.is_set())
         self.assertEqual(box.setDefaultButton.call_args.args,(continue_button,))
+
+    def test_repeat_site_prompt_records_repeat_selection(self):
+        repeat_button,continue_button=object(),object()
+        box=self.dialogs.return_value
+        box.addButton.side_effect=[repeat_button,continue_button]
+        box.clickedButton.return_value=repeat_button
+        self.window.repeat_injection_site_event=threading.Event()
+        self.window.show_repeat_injection_site_prompt(1)
+        self.assertTrue(self.window.repeat_injection_site_result)
+        self.assertTrue(self.window.repeat_injection_site_event.is_set())
 
     def test_benchmark_options_runs_and_displays_results(self):
         self.connect();timer=QTimer();timer.setInterval(50);started=[False];outputs=[]
