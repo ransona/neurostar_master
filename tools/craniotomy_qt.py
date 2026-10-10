@@ -236,6 +236,7 @@ class ProjectionWidget(QWidget):
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
         self.unfreeze_mode = False
+        self.mode_label = ""
         self._freeze_cursor = self._circle_cursor(QColor("#2563eb"))
         self._unfreeze_cursor = self._circle_cursor(QColor("#f97316"))
         self._trajectory_screen_points: list[QPointF] = []
@@ -737,12 +738,16 @@ class ProjectionWidget(QWidget):
                 "Switch to Bregma reference mode to display overlay.",
             )
 
-        if self.freeze_mode:
-            painter.setPen(QColor("#b23a48"))
-            painter.drawText(self.rect().adjusted(0, 0, -10, -10), Qt.AlignRight | Qt.AlignTop, "Draw Freeze")
-        elif self.unfreeze_mode:
-            painter.setPen(QColor("#1d4ed8"))
-            painter.drawText(self.rect().adjusted(0, 0, -10, -10), Qt.AlignRight | Qt.AlignTop, "Draw Unfreeze")
+        if self.mode_label:
+            painter.save()
+            mode_font = painter.font()
+            mode_font.setPixelSize(66)  # 3x the 22 px status-information font.
+            mode_font.setBold(True)
+            painter.setFont(mode_font)
+            painter.setPen(QColor("#b23a48" if self.freeze_mode else "#1d4ed8"))
+            banner_rect = self.rect().adjusted(8, 6, -8, 0)
+            painter.drawText(banner_rect, Qt.AlignHCenter | Qt.AlignTop, self.mode_label)
+            painter.restore()
 
 
 class DepthLegendWidget(QWidget):
@@ -1254,6 +1259,7 @@ class CraniotomyWindow(QMainWindow):
         self._build_options_dialog()
 
         setup_box = QGroupBox("Setup")
+        self.craniotomy_setup_box = setup_box
         setup_layout = QGridLayout(setup_box)
         setup_layout.setContentsMargins(7, 6, 7, 7)
         setup_layout.setHorizontalSpacing(8)
@@ -1316,6 +1322,7 @@ class CraniotomyWindow(QMainWindow):
         self.craniotomy_load_btn.clicked.connect(self.load_craniotomy_config)
         self.set_center_btn = QPushButton("Set Center")
         self.set_center_btn.clicked.connect(self.set_craniotomy_center)
+        self._freeze_mode_saved_enabled: dict[QWidget, bool] | None = None
 
         setup_layout.addWidget(QLabel("Mid AP"), 0, 0)
         setup_layout.addWidget(self.mid_ap, 0, 1)
@@ -1375,19 +1382,19 @@ class CraniotomyWindow(QMainWindow):
         self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
         self.capture_surface_btn.style().polish(self.capture_surface_btn)
         self.capture_surface_btn.clicked.connect(self.capture_surface)
-        clear_btn = QPushButton("Clear Surface Measurements")
-        clear_btn.clicked.connect(self.clear_surface_measurements)
-        clear_craniotomy_btn = QPushButton("Clear Craniotomy")
-        clear_craniotomy_btn.clicked.connect(self.clear_craniotomy)
+        self.clear_surfaces_btn = QPushButton("Clear Surface Measurements")
+        self.clear_surfaces_btn.clicked.connect(self.clear_surface_measurements)
+        self.clear_craniotomy_btn = QPushButton("Clear Craniotomy")
+        self.clear_craniotomy_btn.clicked.connect(self.clear_craniotomy)
         self.start_round_btn = QPushButton("Start")
         self.start_round_btn.setProperty("variant", "primary")
         self.start_round_btn.style().unpolish(self.start_round_btn)
         self.start_round_btn.style().polish(self.start_round_btn)
         self.start_round_btn.clicked.connect(self.start_drilling_round)
-        self.freeze_draw_btn = QPushButton("Draw Freeze")
+        self.freeze_draw_btn = QPushButton("Freeze Holes")
         self.freeze_draw_btn.setCheckable(True)
         self.freeze_draw_btn.toggled.connect(self.toggle_freeze_mode)
-        self.unfreeze_draw_btn = QPushButton("Draw Unfreeze")
+        self.unfreeze_draw_btn = QPushButton("Unfreeze Holes")
         self.unfreeze_draw_btn.setCheckable(True)
         self.unfreeze_draw_btn.toggled.connect(self.toggle_unfreeze_mode)
         self.clear_freeze_btn = QPushButton("Clear Freeze")
@@ -1398,8 +1405,8 @@ class CraniotomyWindow(QMainWindow):
         button_layout.setHorizontalSpacing(6)
         button_layout.setVerticalSpacing(3)
         button_layout.addWidget(self.generate_seeds_btn, 0, 0)
-        button_layout.addWidget(clear_btn, 0, 1)
-        button_layout.addWidget(clear_craniotomy_btn, 0, 2)
+        button_layout.addWidget(self.clear_surfaces_btn, 0, 1)
+        button_layout.addWidget(self.clear_craniotomy_btn, 0, 2)
         button_layout.addWidget(self.move_seed_btn, 1, 0)
         button_layout.addWidget(self.capture_surface_btn, 1, 1, 1, 2)
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
@@ -6378,8 +6385,7 @@ class CraniotomyWindow(QMainWindow):
         self.round_time_label.setVisible(not is_borehole)
         self.round_time_seconds.setVisible(not is_borehole)
         if hasattr(self, "freeze_draw_btn"):
-            self.freeze_draw_btn.setText("Freeze Holes" if is_borehole else "Draw Freeze")
-            self.unfreeze_draw_btn.setText("Unfreeze Holes" if is_borehole else "Draw Unfreeze")
+            self._update_freeze_mode_button_labels(is_borehole)
             self.clear_freeze_btn.setText("Clear Freezes")
             self.freeze_draw_btn.setToolTip(
                 "Draw across individual borehole markers to freeze them."
@@ -6638,36 +6644,75 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "Craniotomy Surface", str(exc))
 
     def toggle_freeze_mode(self, enabled: bool) -> None:
-        if enabled and self.unfreeze_draw_btn.isChecked():
-            self.unfreeze_draw_btn.setChecked(False)
-        self.top_view.set_freeze_mode(enabled)
         if enabled:
-            if self.drilling_mode_combo.currentData() == "boreholes":
-                self.set_status("Draw across individual borehole markers to freeze those holes from deeper drilling.")
-            else:
-                self.set_status("Draw on the circle to freeze points from deeper drilling.")
+            self.unfreeze_draw_btn.blockSignals(True)
+            self.unfreeze_draw_btn.setChecked(False)
+            self.unfreeze_draw_btn.blockSignals(False)
+        self.top_view.set_freeze_mode(enabled)
+        self._set_craniotomy_edit_mode("freeze" if enabled else ("unfreeze" if self.unfreeze_draw_btn.isChecked() else None))
+        if enabled:
+            self.set_status("Freeze mode on")
         elif self.trajectory:
-            self.set_status("Freeze drawing off.")
+            self.set_status("Freeze mode off")
 
     def toggle_unfreeze_mode(self, enabled: bool) -> None:
-        if enabled and self.freeze_draw_btn.isChecked():
-            self.freeze_draw_btn.setChecked(False)
-        self.top_view.set_unfreeze_mode(enabled)
         if enabled:
-            if self.drilling_mode_combo.currentData() == "boreholes":
-                self.set_status("Draw across frozen borehole markers to allow those holes to deepen again.")
-            else:
-                self.set_status("Draw on the circle to remove frozen points.")
+            self.freeze_draw_btn.blockSignals(True)
+            self.freeze_draw_btn.setChecked(False)
+            self.freeze_draw_btn.blockSignals(False)
+        self.top_view.set_unfreeze_mode(enabled)
+        self._set_craniotomy_edit_mode("unfreeze" if enabled else ("freeze" if self.freeze_draw_btn.isChecked() else None))
+        if enabled:
+            self.set_status("Unfreeze mode on")
         elif self.trajectory:
-            self.set_status("Unfreeze drawing off.")
+            self.set_status("Unfreeze mode off")
+
+    def _freeze_mode_controls(self) -> tuple[QWidget, ...]:
+        controls = list(self.craniotomy_setup_box.findChildren(QWidget))
+        controls.extend((
+            self.mid_ap, self.mid_ml, self.diameter, self.seed_count,
+            self.trajectory_points, self.cut_offset, self.drill_depth,
+            self.depth_per_round, self.skull_thickness_mm, self.round_time_seconds,
+            self.drill_rate_mm_per_s, self.drilling_mode_combo, self.hole_spacing_mm,
+            self.auto_start_rounds, self.current_seed_spin, self.craniotomy_load_btn,
+            self.craniotomy_save_btn, self.set_center_btn, self.generate_seeds_btn,
+            self.clear_surfaces_btn, self.clear_craniotomy_btn, self.move_seed_btn,
+            self.capture_surface_btn, self.start_round_btn, self.change_target_depth_btn,
+            self.craniotomy_points_list, self.set_craniotomy_surface_btn,
+        ))
+        return tuple(dict.fromkeys(controls))
+
+    def _update_freeze_mode_button_labels(self, is_borehole: bool | None = None) -> None:
+        if is_borehole is None:
+            is_borehole = self.drilling_mode_combo.currentData() == "boreholes"
+        freeze_label = "Freeze Holes" if is_borehole else "Draw Freeze"
+        unfreeze_label = "Unfreeze Holes" if is_borehole else "Draw Unfreeze"
+        self.freeze_draw_btn.setText("Inactivate freeze mode" if self.freeze_draw_btn.isChecked() else freeze_label)
+        self.unfreeze_draw_btn.setText("Inactivate unfreeze mode" if self.unfreeze_draw_btn.isChecked() else unfreeze_label)
+
+    def _set_craniotomy_edit_mode(self, mode: str | None) -> None:
+        controls = self._freeze_mode_controls()
+        if mode is None:
+            if self._freeze_mode_saved_enabled is not None:
+                for control, was_enabled in self._freeze_mode_saved_enabled.items():
+                    control.setEnabled(was_enabled)
+            self._freeze_mode_saved_enabled = None
+        else:
+            if self._freeze_mode_saved_enabled is None:
+                self._freeze_mode_saved_enabled = {control: control.isEnabled() for control in controls}
+            for control in controls:
+                control.setEnabled(False)
+            for control in (self.freeze_draw_btn, self.unfreeze_draw_btn, self.clear_freeze_btn):
+                control.setEnabled(True)
+        self.top_view.mode_label = {"freeze": "Freeze mode on", "unfreeze": "Unfreeze mode on"}.get(mode or "", "")
+        self._update_freeze_mode_button_labels()
+        self.top_view.update()
 
     def clear_frozen_points(self) -> None:
         if not self.frozen_points and not self.frozen_boreholes:
             return
         self.frozen_points = [False] * len(self.frozen_points)
         self.frozen_boreholes = [None] * len(self.frozen_boreholes)
-        if self.freeze_draw_btn.isChecked():
-            self.freeze_draw_btn.setChecked(False)
         self.redraw_views()
         self.set_status("Cleared all frozen perimeter points and boreholes.")
 

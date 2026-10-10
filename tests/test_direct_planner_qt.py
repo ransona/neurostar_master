@@ -68,6 +68,34 @@ class PlannerTests(unittest.TestCase):
             self.assertLess(abs(left.width()-right.width()),max(left.width(),right.width())*.35)
         self.assertEqual(self.window.injection_sites_view.parentWidget().title(),'Map')
 
+    def test_freeze_modes_lock_craniotomy_edits_and_can_switch_or_exit(self):
+        self.window.freeze_draw_btn.click()
+        self.assertTrue(self.window.freeze_draw_btn.isChecked())
+        self.assertEqual(self.window.freeze_draw_btn.text(),'Inactivate freeze mode')
+        self.assertFalse(self.window.mid_ap.isEnabled())
+        self.assertFalse(self.window.start_round_btn.isEnabled())
+        self.assertTrue(self.window.unfreeze_draw_btn.isEnabled())
+        self.assertTrue(self.window.clear_freeze_btn.isEnabled())
+        self.assertEqual(self.window.top_view.mode_label,'Freeze mode on')
+
+        self.window.clear_frozen_points()
+        self.assertTrue(self.window.freeze_draw_btn.isChecked())
+        self.window.unfreeze_draw_btn.click()
+        self.assertFalse(self.window.freeze_draw_btn.isChecked())
+        self.assertTrue(self.window.unfreeze_draw_btn.isChecked())
+        self.assertEqual(self.window.unfreeze_draw_btn.text(),'Inactivate unfreeze mode')
+        self.assertTrue(self.window.freeze_draw_btn.isEnabled())
+        self.assertTrue(self.window.clear_freeze_btn.isEnabled())
+        self.assertEqual(self.window.top_view.mode_label,'Unfreeze mode on')
+
+        self.window.unfreeze_draw_btn.click()
+        self.assertFalse(self.window.unfreeze_draw_btn.isChecked())
+        self.assertTrue(self.window.mid_ap.isEnabled())
+        self.assertTrue(self.window.start_round_btn.isEnabled())
+        self.assertEqual(self.window.top_view.mode_label,'')
+        self.assertEqual(self.window.freeze_draw_btn.text(),'Freeze Holes')
+        self.assertEqual(self.window.unfreeze_draw_btn.text(),'Unfreeze Holes')
+
     def test_disconnected_keyboard_does_not_move(self):
         with patch.object(self.window,'_focus_is_editable',return_value=False):
             self.window.keyboard_nudge('AP',True,'AP')
