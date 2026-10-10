@@ -5290,7 +5290,7 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Injection resumed")
         else:
             self.injection_pause_requested.set()
-            self.start_injection_btn.setText("Go")
+            self.start_injection_btn.setText("Resume")
             self.set_status("Injection paused")
 
     def stop_injection(self) -> None:

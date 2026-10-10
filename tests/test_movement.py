@@ -360,6 +360,17 @@ class GuiCoordinateTests(unittest.TestCase):
             "Status: Injection 2/5: Moving to site"
         )
 
+    def test_injection_run_button_says_resume_while_paused(self):
+        self.w.injection_thread = Mock(is_alive=lambda: True)
+        self.w.start_injection_btn = Mock()
+        Window.pause_resume_injection(self.w)
+        self.w.start_injection_btn.setText.assert_called_with("Resume")
+        self.assertTrue(self.w.injection_pause_requested.is_set())
+
+        Window.pause_resume_injection(self.w)
+        self.w.start_injection_btn.setText.assert_called_with("Pause")
+        self.assertFalse(self.w.injection_pause_requested.is_set())
+
     def test_bregma_button_targets_origin_in_axis_display(self):
         self.w.coordinate_mode = "axis"
         self.w._move_to_axis_position_with_progress = Mock(return_value=True)
