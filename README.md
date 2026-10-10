@@ -23,8 +23,11 @@ py -3 -m pip install PySide6
 py -3 tools\craniotomy_qt.py
 ```
 
-This opens simulation, disconnected. In **USB setup / zero calibration**, the
-simulation fixture allows testing without hardware; it is not live calibration.
+Without `--live`, the planner auto-connects its in-memory simulator at AP/ML/DV
+30 mm and piston 2500 nL. All simulator commands are enabled for UI practice;
+positions and simulated API logs are discarded when the app closes and reset to
+those starting values next launch. No hardware is opened. This is not a live
+calibration or a prediction of physical position.
 
 For hardware mode (also initially disconnected):
 
@@ -123,10 +126,11 @@ under `Documents\Neurostar_Master\Configs\DirectUSB`, outside the repository.
 Each mode has a dedicated `direct-control.json` for measured calibration, captured
 speed profile, travel ranges, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
 The `allow_pulsed` preference is saved there too; it is off by default.
-These are separate from general `settings.json` and the API motion journal
+These are separate from general `settings.json` and the live API motion journal
 `api-state.json`. Setup preferences save immediately; existing Home/Work metadata
-migrates automatically. Startup stays disconnected, with safety confirmation and
-current direction history requiring fresh verification each connection.
+migrates automatically. Simulation startup auto-connects only the volatile
+in-memory controller; its current AP/ML/DV and piston positions are never saved.
+Live hardware startup remains disconnected and requires fresh setup verification.
 
 Stop/Esc/close cancel movement, stop all four channels and attempt drill OFF even
 without ON permission. Software Stop depends on the connection/process; use physical

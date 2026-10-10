@@ -33,16 +33,19 @@ class StereoDriveController:
         self.directions = {}
         self.last_rejection = None
 
-    def connect(self, calibration, states, state_path, *, new_reference=False,
-                allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False,travel_limits=None):
+    def connect(self, calibration, states, state_path=None, *, new_reference=False,
+                allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False,
+                travel_limits=None, persist_simulation=None, simulation_start_position=None):
         if type(allow_pulsed) is not bool:raise StereoDriveError('Pulsed workflow opt-in must be an explicit boolean')
         if self.drive is not None:
             raise StereoDriveError("Disconnect first; calibration cannot change while connected.")
-        if not isinstance(calibration, Calibration):
+        if self.live and not isinstance(calibration, Calibration):
             raise StereoDriveError("Load measured zero calibration before connecting.")
         drive = StereoDrive(simulate=not self.live, calibration=calibration,
             state_path=state_path, allow_dv=allow_dv, allow_piston=allow_piston,
-            allow_drill=allow_drill, speed_mm_s=speed, travel_limits=travel_limits)
+            allow_drill=allow_drill, speed_mm_s=speed, travel_limits=travel_limits,
+            require_calibration=self.live, persist_simulation=persist_simulation,
+            simulation_start_position=simulation_start_position)
         try:
             drive.connect(verified_backlash=states, new_reference=new_reference)
             position = drive.position()["axes_mm"]
@@ -55,6 +58,23 @@ class StereoDriveController:
         self.error = None
         self.last_rejection = None
         self.cancelled.clear()
+
+    def connect_simulation(self, *, speed=1, travel_limits=None):
+        """Connect a fresh, fully enabled simulator; its positions are never persisted."""
+        if self.live:
+            raise StereoDriveError("A live hardware controller cannot use simulated mode.")
+        self.connect(
+            calibration=None,
+            states=None,
+            state_path=None,
+            allow_dv=True,
+            allow_piston=True,
+            allow_drill=True,
+            speed=speed,
+            allow_pulsed=True,
+            travel_limits=travel_limits,
+            persist_simulation=False,
+        )
 
     def _require(self):
         if self.drive is None:

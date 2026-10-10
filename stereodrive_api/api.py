@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 import time
 from datetime import datetime, timezone
-from .controller import Session, StateStore
+from .controller import Session, StateStore, MemoryStateStore
 from .protocol import AXES, BACKLASH, SIGNS, drill_power, drill_query, decode_drill
 from .calibration import Calibration
 from .transport import Simulator, WindowsSerial
@@ -19,7 +19,8 @@ class StereoDrive:
     """
     def __init__(self, *, simulate=True, state_path=None, allow_dv=False,
                  allow_piston=False, allow_drill=False, speed_mm_s=2, calibration=None,
-                 counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True, travel_limits=None):
+                 counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True, travel_limits=None,
+                 simulation_start_position=None, persist_simulation=None):
         if not require_calibration and not simulate:
             raise ValueError('Live movement always requires measured zero calibration.')
         self.require_calibration = bool(require_calibration)
@@ -29,9 +30,33 @@ class StereoDrive:
         self.calibration = calibration
         self.speed_mm_s = int(speed_mm_s)
         self.travel_limits = validate_limits(travel_limits)
-        self.allow_drill = bool(allow_drill)
+        self.simulation_log = []
         self.simulate = bool(simulate)
-        self.allow_dv, self.allow_piston = bool(allow_dv), bool(allow_piston)
+        self.persist_simulation = (
+            (bool(state_path is not None) if self.simulate else True)
+            if persist_simulation is None else bool(persist_simulation)
+        )
+        if not self.simulate and not self.persist_simulation:
+            raise ValueError('Live API state must remain persistent and recoverable.')
+        if simulation_start_position is None:
+            # Keep explicitly state-pathed legacy protocol fixtures at zero, while
+            # the normal throwaway simulator starts at useful nonzero coordinates.
+            simulation_start_position = (
+                dict(AP=0.0, ML=0.0, DV=0.0, PISTON=0.0) if self.persist_simulation
+                else dict(AP=30.0, ML=30.0, DV=30.0, PISTON=2500.0)
+            )
+        if not isinstance(simulation_start_position, dict) or set(simulation_start_position) != set(AXES):
+            raise ValueError('Simulation start position must specify AP, ML, DV in mm and PISTON in nL.')
+        import math
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+               for value in simulation_start_position.values()):
+            raise ValueError('Simulation start coordinates must be finite numbers.')
+        self.simulation_start_position = {axis: float(value) for axis, value in simulation_start_position.items()}
+        for axis in ('AP', 'ML', 'DV', 'PISTON'):
+            check_target(self.travel_limits, axis, self.simulation_start_position[axis])
+        self.allow_drill = bool(allow_drill) or (self.simulate and not self.persist_simulation)
+        self.allow_dv = bool(allow_dv) or (self.simulate and not self.persist_simulation)
+        self.allow_piston = bool(allow_piston) or (self.simulate and not self.persist_simulation)
         base = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'StereoDrivePythonAPI'
         self.path = Path(state_path) if state_path else base / ('simulation.json' if simulate else 'live.json')
         self.scales = {a: float(counts_per_mm[a]) for a in ('AP','ML','DV')} if isinstance(counts_per_mm, dict) else dict.fromkeys(('AP','ML','DV'), float(counts_per_mm))
@@ -41,10 +66,26 @@ class StereoDrive:
         self._session = None
 
     def _log(self, event, **values):
+        record = dict(utc=datetime.now(timezone.utc).isoformat(), event=event, **values)
+        if self.simulate and not self.persist_simulation:
+            self.simulation_log.append(record)
+            if len(self.simulation_log) > 10000:
+                del self.simulation_log[:len(self.simulation_log) - 10000]
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.with_suffix('.jsonl').open('a', encoding='utf-8') as f:
-            f.write(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(),
-                                   event=event, **values), allow_nan=False) + '\n')
+            f.write(json.dumps(record, allow_nan=False) + '\n')
+
+    def _simulation_raw(self, backlash_state):
+        # Start from realistic synthetic counts. Absolute calibration, if supplied,
+        # is honored; otherwise Session establishes an in-memory relative origin.
+        baseline = dict(AP=105280, ML=75864, DV=41767, PISTON=-8572)
+        reference = self.calibration.reference(self.scales) if self.calibration else baseline
+        return {
+            axis: round(reference[axis] + SIGNS[axis] * self.scales[axis] * self.simulation_start_position[axis]
+                        + backlash_state[axis])
+            for axis in AXES
+        }
 
     def connect(self, *, verified_backlash=None, new_reference=False):
         """Restore valid matching state, or explicitly establish a verified reference.
@@ -55,7 +96,10 @@ class StereoDrive:
         """
         with self._lock:
             if self._session is not None: raise RuntimeError('Already connected')
-            saved = StateStore(self.path).read()
+            store = StateStore(self.path) if (not self.simulate or self.persist_simulation) else MemoryStateStore()
+            if self.simulate and not self.persist_simulation and verified_backlash is None:
+                verified_backlash = dict.fromkeys(AXES, 0)
+            saved = store.read()
             if verified_backlash is not None:
                 if not isinstance(verified_backlash, dict) or set(verified_backlash) != set(AXES):
                     raise ValueError('Supply verified AP/ML/DV/PISTON backlash states')
@@ -63,16 +107,22 @@ class StereoDrive:
                     raise ValueError('Invalid verified backlash states')
                 if saved and not new_reference and verified_backlash != saved.get('backlash_state'):
                     raise ValueError('Current verified direction history differs from saved state; investigate before reconnecting')
-            if new_reference or saved is None:
+            if (new_reference or saved is None) and not self.simulate:
                 if verified_backlash is None or set(verified_backlash) != set(AXES):
                     raise ValueError('New reference requires verified AP/ML/DV/PISTON backlash states')
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            transport = Simulator(self._log, device_file=self.path.with_suffix('.sim-device.json')) if self.simulate else WindowsSerial(self._log)
+            if not (self.simulate and not self.persist_simulation):
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            transport = (
+                Simulator(self._log, raw=self._simulation_raw(verified_backlash or dict.fromkeys(AXES, 0)),
+                          device_file=self.path.with_suffix('.sim-device.json') if self.persist_simulation else None)
+                if self.simulate else WindowsSerial(self._log)
+            )
             try:
-                self._session = Session(transport, StateStore(self.path), self.scales,
+                self._session = Session(transport, store, self.scales,
                                         verified_backlash or {}, self._log, new_reference,
                                         self.calibration.reference(self.scales) if self.calibration else None,
-                                        self.speed_mm_s, True, self.travel_limits)
+                                        self.speed_mm_s, True, self.travel_limits,
+                                        self.simulation_start_position if self.simulate else None)
             except Exception:
                 transport.close()
                 raise
@@ -101,7 +151,7 @@ class StereoDrive:
         finally: self._lock.release()
 
     def _require_zero_calibration(self, session):
-        if self.require_calibration and not session.absolute_calibration:
+        if self.require_calibration and not self.simulate and not session.absolute_calibration:
             raise ValueError('Movement disabled: load and verify measured AP/ML/DV zero and piston anchors before connecting for motion.')
 
     def position(self):

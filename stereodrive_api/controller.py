@@ -26,9 +26,17 @@ class StateStore:
             handle.flush(); os.fsync(handle.fileno())
         tmp.replace(self.path)
 
+class MemoryStateStore:
+    """Session state store for throwaway simulation sessions."""
+    def read(self):
+        return None
+    def write(self, _data):
+        return None
+
 class Session:
-    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False, travel_limits=None):
+    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False, travel_limits=None, simulated_initial_position=None):
         self.transport, self.store, self.log = transport, store, log
+        self.simulated = transport.identity.startswith('SIMULATOR:')
         self.io_lock = threading.RLock()
         self.speed_mm_s = speed_mm_s
         self.travel_limits = validate_limits(travel_limits)
@@ -61,7 +69,11 @@ class Session:
         else:
             if any(type(initial_states[a]) is not int or initial_states[a] not in (0, BACKLASH[a]) for a in AXES): raise ValueError('Invalid initial backlash state.')
             self.states = dict(initial_states)
-            self.reference = calibrated if calibrated is not None else {a: self.raw[a] - self.states[a] for a in AXES}
+            self.reference = calibrated if calibrated is not None else {
+                a: self.raw[a] - self.states[a] - SIGNS[a] * self.scales[a] *
+                (simulated_initial_position[a] if simulated_initial_position is not None else 0.0)
+                for a in AXES
+            }
             self.log('NEW_REFERENCE', raw=self.raw, backlash=self.states)
         actual_normal = {a: self.raw[a] - self.states[a] for a in AXES}
         self.command_normal = dict(saved.get('command_normal', actual_normal)) if saved and not new_reference else actual_normal
@@ -112,13 +124,13 @@ class Session:
         self.refresh()
         old = dict(self.raw); normal = self.command_normal[axis]
         next_normal = normal + SIGNS[axis] * direction * step * self.scales[axis]
-        if axis=='PISTON' and self.absolute_calibration:
+        if axis=='PISTON':
             estimate=(next_normal-self.reference[axis])/self.scales[axis]
             if not -1e-7 <= estimate <= 5000+1e-7:
-                raise ValueError('Calibrated Nano 5 µL piston target exceeds 0–5000 nL travel range.')
+                raise ValueError('Nano 5 µL piston target exceeds 0–5000 nL travel range.')
         estimate = (next_normal-self.reference[axis])/(SIGNS[axis]*self.scales[axis])
         # Relative-only simulation is a protocol test mode, not calibrated travel.
-        if axis != 'PISTON' or self.absolute_calibration:
+        if axis != 'PISTON' or self.absolute_calibration or self.simulated:
             check_target(self.travel_limits, axis, estimate)
         new_state = BACKLASH[axis] if SIGNS[axis]*direction > 0 else 0
         requested = round(next_normal + new_state)

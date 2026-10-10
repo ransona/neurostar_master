@@ -886,6 +886,18 @@ class CraniotomyWindow(QMainWindow):
         self._load_last_used_configs()
         self._load_general_settings()
         self._load_direct_control_settings()
+        if not self.controller.live:
+            try:
+                self.controller.connect_simulation(
+                    speed=int(self.direct_control_settings.get("speed_mm_s", 1)),
+                    travel_limits=self.direct_control_settings.get("travel_limits"),
+                )
+                self.set_status(
+                    "In-memory simulation connected at AP/ML/DV 30 mm and piston 2500 nL; "
+                    "all simulated commands are enabled and positions reset when the app closes."
+                )
+            except Exception as exc:
+                self.set_status(f"Could not start the in-memory simulator: {exc}")
         self._offer_project_session_restore()
         self.restore_saved_window_geometry()
         QApplication.instance().installEventFilter(self)
@@ -1828,7 +1840,11 @@ class CraniotomyWindow(QMainWindow):
             connecting[0]=True;connect.setEnabled(False);disconnect.setEnabled(False)
             status.setText("Connecting exclusively and verifying idle motor counts…")
             def worker():
-                try:self.controller.connect(value,states,self._config_root_dir()/"api-state.json",**cfg)
+                try:self.controller.connect(
+                    value, states, self._config_root_dir()/"api-state.json",
+                    persist_simulation=False if not self.controller.live else None,
+                    **cfg,
+                )
                 except Exception as exc:result["error"]=str(exc)
                 finished.set()
             threading.Thread(target=worker,daemon=True).start()

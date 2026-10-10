@@ -4,9 +4,14 @@ Importable, standard-library-only Python 3.10+ package for the tested Windows
 StereoDrive / Nano 5 µL bench configuration. It talks directly to the identified
 USB virtual serial controller; it does not need the movement-probe server.
 Importing the package does not connect or move anything. Simulation is the default.
+The default simulator is volatile, starts at AP/ML/DV 30 mm and piston 2500 nL,
+and enables the full simulated command set. Its positions and command state are
+discarded at close. Supply `simulation_start_position={"AP": ..., "ML": ...,
+"DV": ..., "PISTON": ...}` to choose another initial state. Supplying `state_path`
+opts a simulator into persistent fixture state unless `persist_simulation=False`.
 On `codex/direct-api-control`, the planner and movement server use this API too.
 See the [branch instructions](../README.md) and [integration review](../docs/DIRECT_API_CONTROL.md).
-Movement and drill ON require measured absolute zero calibration by default.
+Live movement and drill ON require measured absolute zero calibration by default.
 Read-only diagnostics and Stop remain available without it; bypass is forbidden live.
 
 ## Safety and what position means
@@ -28,7 +33,7 @@ adding counts. Power loss, stalls, manual repositioning and movement by other
 software also invalidate physical position assumptions even when raw counts match.
 
 Keep the bench clear, drill off and physical Stop accessible. Verify clearance
-throughout the entire allowed envelope. DV and piston movement require explicit
+throughout the entire allowed envelope. Live DV and piston movement require explicit
 constructor opt-in. No collision planning, homing, skull zones,
 controlled injection-rate programming, calibration or automatic reversal is provided.
 Software Stop is best effort and requires a functioning connection and Python process.
@@ -44,17 +49,13 @@ Nano 5 µL configuration and is approximate; validate volume independently.
 Run from the repository root, or put that root on your program's Python import path:
 
 ```python
-from stereodrive_api import StereoDrive, Calibration
+from stereodrive_api import StereoDrive
 
-# These initial states are for the simulator only; never assume them for hardware.
-initial = {"AP": 0, "ML": 261, "DV": 0, "PISTON": 0}
-# Synthetic simulator counts only, never a live calibration:
-calibration = Calibration({"AP": 105280, "ML": 75864, "DV": 41767}, -8572, initial)
-drive = StereoDrive(simulate=True, calibration=calibration,
-                    allow_dv=True, allow_piston=True)
-drive.connect(verified_backlash=initial, new_reference=True)
+# Simulation only: no calibration file, USB device, or backlash history required.
+drive = StereoDrive(simulate=True)
+drive.connect()
 with drive:
-    print(drive.position())
+    print(drive.position())  # AP/ML/DV = 30 mm; piston = 2500 nL
     drive.move_mm("AP", +0.01)  # blocks until independently reported idle at raw target
     drive.move_mm("AP", -0.01)  # explicit, after successful completion only
     drive.piston_step("up", 10)
@@ -149,11 +150,13 @@ a specified injection flow rate.
 
 ## Persistence, faults and logs
 
-By default files are stored in `%LOCALAPPDATA%\StereoDrivePythonAPI`:
-`live.json` or `simulation.json`, with a corresponding UTC `.jsonl` traffic/event log.
-Simulation also stores its mock motor counts separately. A custom `state_path` is
-supported. Use a separate path for simulation and hardware and only one process per
-state path. Never edit state manually to recover motion or delete it to evade a fault.
+Live files are stored in `%LOCALAPPDATA%\StereoDrivePythonAPI` as `live.json` and
+a corresponding UTC `.jsonl` traffic/event log. The default in-memory simulator
+does not write state, mock counts, or logs to disk. Supplying `state_path` opts a
+simulator into persistent fixture state unless `persist_simulation=False` is also
+passed. Keep simulation and hardware paths separate and use only one process per
+persistent state path. Never edit hardware state manually to recover motion or
+delete it to evade a fault.
 
 State is atomically saved and flushed **invalid before sending a target**, then
 saved valid only after matching raw target and idle readings settle for 200 ms.
