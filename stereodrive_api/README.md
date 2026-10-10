@@ -4,7 +4,10 @@ Importable, standard-library-only Python 3.10+ package for the tested Windows
 StereoDrive / Nano 5 µL bench configuration. It talks directly to the identified
 USB virtual serial controller; it does not need the movement-probe server.
 Importing the package does not connect or move anything. Simulation is the default.
-Existing repository apps are unchanged.
+On `codex/direct-api-control`, the planner and movement server use this API too.
+See the [branch instructions](../README.md) and [integration review](../docs/DIRECT_API_CONTROL.md).
+Movement and drill ON require measured absolute zero calibration by default.
+Read-only diagnostics and Stop remain available without it; bypass is forbidden live.
 
 ## Safety and what position means
 
@@ -41,11 +44,14 @@ Nano 5 µL configuration and is approximate; validate volume independently.
 Run from the repository root, or put that root on your program's Python import path:
 
 ```python
-from stereodrive_api import StereoDrive
+from stereodrive_api import StereoDrive, Calibration
 
 # These initial states are for the simulator only; never assume them for hardware.
 initial = {"AP": 0, "ML": 261, "DV": 0, "PISTON": 0}
-drive = StereoDrive(simulate=True, allow_dv=True, allow_piston=True)
+# Synthetic simulator counts only, never a live calibration:
+calibration = Calibration({"AP": 105280, "ML": 75864, "DV": 41767}, -8572, initial)
+drive = StereoDrive(simulate=True, calibration=calibration,
+                    allow_dv=True, allow_piston=True)
 drive.connect(verified_backlash=initial, new_reference=True)
 with drive:
     print(drive.position())
@@ -71,11 +77,12 @@ py -3 -B -m unittest discover -s stereodrive_api/tests -v
    and piston before closing the native app. Raw counts do not reveal backlash
    state. If history is unknown, establish it through an independently observed,
    safe native procedure first; do not guess or toggle state to fit desired readings.
-3. Construct `StereoDrive(simulate=False, allow_dv=False, allow_piston=False)`.
+3. Load independently measured `Calibration` anchors (see below), then construct
+   `StereoDrive(simulate=False, calibration=calibration, allow_dv=False, allow_piston=False)`.
    DV/piston can be explicitly enabled only after checking their clearance/setup.
 4. On the first connection pass `verified_backlash` with all four entries from
-   the table below. The current idle position becomes zero for this API only;
-   it does not reset the device, Bregma or StereoDrive coordinates.
+   the table below. Coordinates are interpreted from the measured anchors;
+   connection does not reset the device, Bregma or StereoDrive coordinates.
 5. On subsequent connections call `connect()` with no reference reset. Restoration
    requires valid saved state, identical device identity/calibration and exactly
    matching idle raw counts. Verify the physical reference too. A mismatch refuses
@@ -97,18 +104,25 @@ validation before changing the transport identity.
 
 | Method | Behavior |
 |---|---|
-| `connect(verified_backlash=None, new_reference=False)` | Restore matching saved state, or establish explicitly verified relative reference |
+| `connect(verified_backlash=None, new_reference=False)` | Restore matching saved state, or establish verified calibrated reference; supplied current history must match saved state |
 | `position()` | Fresh idle verification; returns `axes_mm`, `piston_nl_estimate`, `raw_counts`, `backlash_counts`, `simulated` |
 | `move_mm("AP"/"ML"/"DV", signed_delta)` | Blocking single-axis relative move, max 1 mm, axes default captured 2 mm/s profile |
+| `move_axis_to(axis, position_mm)` | Blocking calibrated absolute Axis target |
+| `move_axes_to(targets)` | Preflight AP/ML/DV mapping, then sequential moves; omitted axes hold; combined distance <=1 mm |
+| `validate_axis_path(waypoints)` | Validate complete absolute path/envelope before sending any target |
+| `live_position()` | Motor-derived moving telemetry with `verified_idle`, not encoder feedback |
 | `piston_step("up"/"down", volume_nl)` | Blocking free-piston step; supported 10,20,50,100 nL; captured fixed profile |
 | `stop()` | Request cancellation from another thread, then send Stop to all four channels |
 | `close()` / context-manager exit | Stop, preserve valid idle state or retain invalid state, release port |
 
 All movements must remain within **±1 mm per axis and ±100 nL estimated piston
-position from the connection position**, including cumulative moves. The envelope
+position from the connection position**, including cumulative moves. Calibrated piston
+targets must also stay within the tested Nano 5 µL estimated 0–5000 nL capacity. The envelope
 is a software limit, not collision protection. A reconnect establishes a new
 connection envelope; do not reconnect to expand travel without reviewing clearance.
-There is no multi-axis/path or combined out-and-back command. A new move is rejected
+Absolute multi-axis moves are sequential: requested DV retraction first, then AP/ML;
+otherwise AP/ML/DV. Stop cancels remaining legs. There is no collision planning or
+combined out-and-back command. A new move is rejected
 while another call owns the controller. Movement methods are blocking: use a worker
 thread in GUIs and call `stop()` from another thread. Stop waits for the current
 bounded serial exchange to finish; it is not instantaneous. Poll/reply timeouts
@@ -197,7 +211,7 @@ polling. They do not prove physical motion or absence of missed steps.
 construct with `allow_drill=True` after checking the drill setup. `drill_off()` is
 available without enabling ON. Both verify the reported power transition for up
 to three seconds; state can lag the write by approximately half a second.
-Stop/close and motion faults also attempt drill OFF when `allow_drill=True`;
+Stop/close and motion faults always attempt drill OFF, even without ON permission;
 Stop/close verify the OFF state. Software OFF does not prove the spindle has stopped
 rotating. Do not touch the drill until physically stationary. This interface does
 not set drill RPM. Drill commands are rejected while a movement owns the controller;
@@ -218,7 +232,8 @@ metadata document for every scoped capture, including failed and passive trials.
 Launch `pyw -3 -m stereodrive_api.gui` from the repository root, or use the existing
 StereoDrive USB Controller desktop shortcut. The separate GUI folder now only
 launches this shared implementation. It starts disconnected in Simulation.
-It provides AP/ML/DV arrows, mm step sizes, default 2 mm/s (optional 1), bounded
+It requires loaded measured zero calibration before connection/movement. It provides
+AP/ML/DV arrows, mm step sizes, default 2 mm/s (optional 1), bounded
 10/20/50/100 nL piston up/down steps, drill ON/OFF and reported moving/power status.
 DV, injector and drill ON must be explicitly enabled after setup verification.
 

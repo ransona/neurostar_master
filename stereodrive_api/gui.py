@@ -116,7 +116,7 @@ class App:
         self.confirm = tk.BooleanVar(value=False)
         self.allow_dv=tk.BooleanVar(value=False);self.allow_piston=tk.BooleanVar(value=False);self.allow_drill=tk.BooleanVar(value=False)
         self.speed=tk.StringVar(value='2');self.calibration=None
-        self.calibration_label=tk.StringVar(value='Relative reference (no absolute calibration loaded)')
+        self.calibration_label=tk.StringVar(value='Zero calibration missing: movement disabled')
         self.piston_position=tk.StringVar(value='Piston: -- nL');self.piston_step=tk.StringVar(value='10')
         self.drill_status=tk.StringVar(value='Drill power: unknown');self.motion_status=tk.StringVar(value='Moving: unknown')
         self.status = tk.StringVar(value='Disconnected · choose a mode, then connect.')
@@ -218,10 +218,10 @@ class App:
             if setup.exists():
                 cfg=json.loads(setup.read_text(encoding='utf-8'))
                 self.calibration=Calibration(**cfg['calibration']) if cfg.get('calibration') else None
-                self.calibration_label.set('Saved absolute calibration' if self.calibration else 'Relative reference (no absolute calibration loaded)')
+                self.calibration_label.set('Saved absolute calibration' if self.calibration else 'Zero calibration missing: movement disabled')
                 self.speed.set(str(cfg.get('speed_mm_s',2)))
             else:
-                self.calibration=None;self.calibration_label.set('Relative reference (no absolute calibration loaded)')
+                self.calibration=None;self.calibration_label.set('Zero calibration missing: movement disabled')
             data = StateStore(path).read()
             if data:
                 for a in AXES:
@@ -239,7 +239,7 @@ class App:
         self.console.see('end'); self.console.configure(state='disabled')
 
     def controls(self):
-        moving = self.connected and not self.busy and not self.faulted
+        moving = self.connected and self.calibration is not None and not self.busy and not self.faulted
         for b in self.piston_buttons:b.configure(state='normal' if moving and self.allow_piston.get() else 'disabled')
         self.drill_on_button.configure(state='normal' if moving and self.allow_drill.get() else 'disabled')
         self.drill_off_button.configure(state='normal' if self.connected and not self.busy else 'disabled')
@@ -255,6 +255,8 @@ class App:
 
     def connect(self, new_reference=False):
         if self.worker: return
+        if self.calibration is None:
+            messagebox.showwarning('Measured zero required','Load measured AP/ML/DV zero counts and piston anchor calibration before connecting for movement. Do not use GUI Bregma as a substitute.');return
         live = self.mode.get() == 'Live USB'
         if live and not self.confirm.get():
             messagebox.showinfo('Connection setup', 'Verify calibration, last completed directions and clear supervised bench, then check the setup box.'); return

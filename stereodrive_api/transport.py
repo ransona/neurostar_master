@@ -84,7 +84,7 @@ class WindowsSerial:
     def write(self, data):
         try: self.log('OUT', hex=data.hex())
         except Exception:
-            if data[:2] != b'\xaf\x0f': raise
+            if data[:2] != b'\xaf\x0f' and data != b'\xaf\x11\x00': raise
         sent = wintypes.DWORD(); buf = ctypes.create_string_buffer(data)
         if not self.k.WriteFile(self.handle, buf, len(data), ctypes.byref(sent), None) or sent.value != len(data):
             raise RuntimeError('Serial write failed or was partial; no retransmission.')

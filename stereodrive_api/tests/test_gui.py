@@ -5,15 +5,28 @@ import sys
 import time
 import tkinter as tk
 import unittest
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from stereodrive_api import gui
 
 class GuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.shared_root=tk.Tk();cls.shared_root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.shared_root.destroy()
+
     def setUp(self):
+        dialogs=patch.object(gui,'messagebox')
+        self.dialogs=dialogs.start();self.addCleanup(dialogs.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.old_data = gui.DATA; gui.DATA = Path(self.directory.name)
-        self.root = tk.Tk(); self.root.withdraw()
+        self.root = self.shared_root
         self.app = gui.App(self.root)
+        # Measured anchors for this synthetic simulator only, yielding zero axes/piston.
+        self.app.calibration=gui.Calibration(dict(AP=105280,ML=75603,DV=41767),475508)
 
     def wait(self, predicate):
         deadline = time.monotonic() + 4
@@ -26,7 +39,10 @@ class GuiTests(unittest.TestCase):
     def tearDown(self):
         if self.app.worker:
             self.app.disconnect(); self.wait(lambda: self.app.worker is None)
-        self.root.destroy(); gui.DATA = self.old_data; self.directory.cleanup()
+        for callback in self.root.tk.call('after','info'):
+            self.root.after_cancel(callback)
+        for child in self.root.winfo_children():child.destroy()
+        gui.DATA = self.old_data; self.directory.cleanup()
 
     def test_buttons_reserve_single_move_and_restore_saved_position(self):
         self.app.connect(); self.wait(lambda: self.app.connected)
@@ -76,5 +92,11 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(str(self.app.drill_on_button['state']),'disabled')
         self.assertTrue(all(str(b['state'])=='disabled' for b in self.app.piston_buttons))
         self.assertEqual(self.app.worker.drive.speed_mm_s,2)
+
+    def test_missing_zero_calibration_refuses_connection(self):
+        self.app.calibration=None
+        self.app.connect()
+        self.assertIsNone(self.app.worker)
+        self.dialogs.showwarning.assert_called_once()
 
 if __name__ == '__main__': unittest.main()

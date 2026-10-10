@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-cd /d C:\code\repos\neurostar_master
+cd /d "%~dp0"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -22,7 +22,7 @@ if errorlevel 1 (
     )
 )
 
-python .\tools\craniotomy_qt.py
+python .\tools\craniotomy_qt.py %*
 if errorlevel 1 (
     echo.
     echo Craniotomy Planner exited with an error.

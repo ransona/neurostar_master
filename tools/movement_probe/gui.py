@@ -62,7 +62,7 @@ def run_gui(service, url, log_path):
     tk.Button(controls, text="STOP Movement (Esc)", command=stop,
               background="#b22222", foreground="white", padx=12).pack(side="left", padx=4)
     root.bind("<Escape>", lambda event: stop())
-    mode = "SIMULATION — no hardware" if service.controller.__class__.__name__ == "SimulatedController" else "REAL HARDWARE — supervised bench only"
+    mode = "SIMULATION — no hardware" if service.simulated else "REAL HARDWARE — supervised bench only"
     ttk.Label(controls, text=mode).pack(side="right")
 
     detail = tk.StringVar(value="Reading Axis position…")

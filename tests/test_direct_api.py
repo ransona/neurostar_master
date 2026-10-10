@@ -1,0 +1,120 @@
+"""Direct backend safety/integration tests, using API simulation only."""
+import tempfile
+from pathlib import Path
+import sys
+import threading
+import time
+import unittest
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"tools"))
+from direct_api_controller import StereoDriveController, StereoDriveError
+from stereodrive_api import StereoDrive, Calibration
+
+STATES=dict(AP=0,ML=261,DV=0,PISTON=0)
+CAL=Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,STATES)
+
+
+class DirectTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.path=Path(self.tmp.name)/"state.json"
+
+    def drive(self,**kwargs):
+        d=StereoDrive(state_path=self.path,calibration=CAL,**kwargs)
+        d.connect(verified_backlash=STATES);self.addCleanup(d.close)
+        return d
+
+    def test_zero_required_for_all_motion_and_drill_on(self):
+        d=StereoDrive(state_path=self.path,allow_dv=True,allow_piston=True,allow_drill=True)
+        d.connect(verified_backlash=STATES);self.addCleanup(d.close)
+        for action in (lambda:d.move_mm('AP',.01),lambda:d.piston_step('up',10),
+                       lambda:d.move_axis_to('AP',.01),lambda:d.drill_on()):
+            with self.assertRaises(ValueError):action()
+        self.assertFalse(any(p[1] in (0x0c,0x11) for p in d._session.transport.packets))
+        d.position();d.stop() # Read/Stop must remain available without calibration.
+        with self.assertRaises(ValueError):StereoDrive(simulate=False,require_calibration=False)
+
+    def test_absolute_targets_and_preflight_all_axes(self):
+        d=self.drive(allow_dv=True)
+        d.move_axes_to(dict(AP=.1,ML=.2,DV=-.1))
+        p=d.position()['axes_mm']
+        for a,t in dict(AP=.1,ML=.2,DV=-.1).items():self.assertAlmostEqual(p[a],t,delta=1/5225)
+        packets=len(d._session.transport.packets)
+        with self.assertRaises(ValueError):d.move_axes_to(dict(AP=.2,ML=1.1))
+        self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets[packets:]))
+        packets=len(d._session.transport.packets)
+        with self.assertRaises(ValueError):d.validate_axis_path([dict(DV=-.2),dict(AP=1.2)])
+        self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets[packets:]))
+
+    def test_absolute_dv_opt_in_nonfinite_and_combined_distance(self):
+        d=self.drive()
+        for target in (dict(DV=.01),dict(AP=float('nan')),dict(AP=True),dict(AP=.8,ML=.8),dict(PISTON=10)):
+            with self.assertRaises(ValueError):d.move_axes_to(target)
+        self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets))
+
+    def test_absolute_moves_preserve_fractional_targets(self):
+        d=self.drive()
+        for target in (.001,.002,.003,.004,.005):d.move_axis_to('AP',target)
+        self.assertAlmostEqual(d.position()['axes_mm']['AP'],.005,delta=1/5225)
+
+    def test_adapter_menu_keyboard_injector_and_stop_routes_api(self):
+        c=StereoDriveController();self.addCleanup(c.close)
+        with self.assertRaises(StereoDriveError):c.prepare_motion()
+        c.connect(CAL,STATES,self.path,allow_dv=True,allow_piston=True)
+        c.prepare_motion();c.goto_axis_position(.02,.01,-.01)
+        c.wait_for_axis_position(.02,.01,-.01)
+        c.prepare_motion();c.set_nudge_step('AP',.01);c.nudge_axis('AP',True)
+        c.wait_until_stopped()
+        self.assertAlmostEqual(c.get_current_axis('AP'),.03,delta=1/5225)
+        c.prepare_motion();c.syringe_step('10 nl',up=True)
+        self.assertAlmostEqual(c.read_injectomate_calibrate_scale_nl(),3010,delta=1/161.36)
+        for action in (c.empty_syringe,c.benchmark_axis_moves):
+            with self.assertRaises(StereoDriveError):action()
+        c.stop()
+        self.assertFalse(c.drive.drill_state())
+
+    def test_absolute_stop_cancels_remaining_legs(self):
+        d=self.drive(allow_dv=True);errors=[]
+        def move():
+            try:d.move_axes_to(dict(AP=.2,ML=.2,DV=-.2))
+            except Exception as exc:errors.append(exc)
+        thread=threading.Thread(target=move);thread.start()
+        deadline=time.monotonic()+2
+        while not d._session.busy and time.monotonic()<deadline:time.sleep(.005)
+        self.assertTrue(d._session.busy)
+        self.assertIsInstance(d.live_position()['raw_counts'],dict)
+        d.stop();thread.join(3)
+        self.assertFalse(thread.is_alive());self.assertTrue(errors)
+        self.assertEqual(sum(p[1]==0x0c for p in d._session.transport.packets),1)
+        self.assertFalse(d._session.store.read()['valid'])
+
+    def test_stop_always_requests_drill_off_without_on_optin(self):
+        d=self.drive()
+        d._session.transport.drill_on=True
+        d.stop()
+        self.assertFalse(d.drill_state())
+        self.assertIn(bytes.fromhex('af1100'),d._session.transport.packets)
+
+    def test_verified_history_must_match_restore_and_rejects_boolean(self):
+        d=self.drive()
+        d.move_mm('AP',-.01);d.close()
+        other=StereoDrive(state_path=self.path,calibration=CAL)
+        self.addCleanup(other.close)
+        with self.assertRaisesRegex(ValueError,'differs'):
+            other.connect(verified_backlash=STATES)
+        with self.assertRaisesRegex(ValueError,'Invalid verified'):
+            other.connect(verified_backlash=dict(STATES,AP=False),new_reference=True)
+        other.connect() # Restore saved history without overriding it.
+        self.assertEqual(other.position()['backlash_counts']['AP'],522)
+        with self.assertRaises(ValueError):StereoDrive(speed_mm_s=True)
+
+    def test_piston_capacity_guard_before_target(self):
+        cal=Calibration(CAL.axis_zero_counts,-8572-round(1995*161.36),STATES)
+        d=StereoDrive(state_path=self.path,calibration=cal,allow_piston=True)
+        d.connect(verified_backlash=STATES);self.addCleanup(d.close)
+        with self.assertRaisesRegex(ValueError,'travel range'):
+            d.piston_step('up',10)
+        self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets))
+
+
+if __name__=='__main__':unittest.main()

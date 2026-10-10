@@ -17,6 +17,7 @@ class APITests(unittest.TestCase):
         self.path = Path(self.tmp.name)/'state.json'
 
     def drive(self, **kwargs):
+        kwargs.setdefault('require_calibration',False) # Relative-reference tests are simulator-only.
         d = StereoDrive(state_path=self.path, **kwargs)
         d.connect(verified_backlash=INITIAL)
         self.addCleanup(d.close)
@@ -173,7 +174,7 @@ class APITests(unittest.TestCase):
         with self.assertRaises(ValueError):d.drill_on()
         self.assertFalse(d.drill_off())
         d.close()
-        e=StereoDrive(state_path=self.path,allow_drill=True).connect()
+        e=StereoDrive(state_path=self.path,allow_drill=True,require_calibration=False).connect()
         try:
             self.assertFalse(e.drill_state())
             self.assertTrue(e.drill_on());self.assertTrue(e.drill_state())

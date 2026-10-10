@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess, QTimer, Signal, QLockFile
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,11 +37,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from stereodrive_controller import StereoDriveController, StereoDriveError
+from direct_api_controller import StereoDriveController, StereoDriveError
 
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True) if sys.platform == "win32" else None
 
 SRCCOPY = 0x00CC0020
 BI_RGB = 0
@@ -121,37 +121,33 @@ class NumericLineEdit(QLineEdit):
         self.setValue(self.value())
 
 
-user32.GetDC.argtypes = [ctypes.c_void_p]
-user32.GetDC.restype = ctypes.c_void_p
-user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-user32.ReleaseDC.restype = ctypes.c_int
-user32.PrintWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
-user32.PrintWindow.restype = ctypes.c_bool
-gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
-gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
-gdi32.DeleteDC.restype = ctypes.c_bool
-gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
-gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
-gdi32.DeleteObject.restype = ctypes.c_bool
-gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-gdi32.SelectObject.restype = ctypes.c_void_p
-gdi32.GetDIBits.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_void_p,
-    ctypes.c_uint,
-    ctypes.c_uint,
-    ctypes.c_void_p,
-    ctypes.POINTER(BITMAPINFO),
-    ctypes.c_uint,
-]
-gdi32.GetDIBits.restype = ctypes.c_int
+# Native screenshot helpers are not used by the direct backend. Guard their
+# signatures so the direct API simulator can run on non-Windows systems.
+if user32 is not None:
+    user32.GetDC.argtypes = [ctypes.c_void_p]
+    user32.GetDC.restype = ctypes.c_void_p
+    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.ReleaseDC.restype = ctypes.c_int
+    user32.PrintWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    user32.PrintWindow.restype = ctypes.c_bool
+    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.restype = ctypes.c_bool
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteObject.restype = ctypes.c_bool
+    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+        ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(BITMAPINFO), ctypes.c_uint]
+    gdi32.GetDIBits.restype = ctypes.c_int
 
 
-MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
 DEFAULT_MOVE_SPEED_MM = 0.05
-INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100, 200, 500, 1000, 2000]
+INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100]
 DEFAULT_INJECTION_VOLUME_NL = 100
 SYRINGE_MIN_NL = 0.0
 SYRINGE_MAX_NL = 5000.0
@@ -766,9 +762,10 @@ class CraniotomyWindow(QMainWindow):
     usb_probe_finished_signal = Signal(str)
     validation_move_position_signal = Signal(object)
 
-    def __init__(self) -> None:
+    def __init__(self, controller=None) -> None:
         super().__init__()
-        self.controller = StereoDriveController()
+        self.controller = controller or StereoDriveController()
+        self.setWindowTitle("Neurostar — Direct USB API Planner · "+("LIVE (calibration required)" if self.controller.live else "SIMULATION"))
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
         self.drilled_depths: list[float] = []
@@ -815,6 +812,7 @@ class CraniotomyWindow(QMainWindow):
         self.validation_clearance_mm = 0.5
         self.home_axis: tuple[float, float, float] | None = None
         self.work_axis: tuple[float, float, float] | None = None
+        self.axis_zero_reference = None
         self._cancelled_nudge_direction: tuple[str, bool] | None = None
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
@@ -866,7 +864,8 @@ class CraniotomyWindow(QMainWindow):
         self.project_session_timer = QTimer(self)
         self.project_session_timer.timeout.connect(self._autosave_project_session)
         self.project_session_timer.start(1000)
-        self._start_warning_auto_confirm_watcher()
+        if not getattr(self.controller,"direct_api",False):
+            self._start_warning_auto_confirm_watcher()
 
     def _start_warning_auto_confirm_watcher(self) -> None:
         def worker() -> None:
@@ -909,6 +908,11 @@ class CraniotomyWindow(QMainWindow):
         except Exception:
             pass
         self.warning_auto_confirm_stop.set()
+        if getattr(self.controller,"direct_api",False):
+            try:self.controller.close()
+            except Exception as exc:
+                QMessageBox.warning(self,"USB shutdown",str(exc)+" Use physical Stop if needed.")
+                event.ignore(); return
         super().closeEvent(event)
 
     def _build_ui(self) -> None:
@@ -1089,6 +1093,9 @@ class CraniotomyWindow(QMainWindow):
         header_layout.addStretch(1)
         options_btn = QPushButton("Options")
         options_btn.clicked.connect(self.open_options_dialog)
+        usb_setup_btn = QPushButton("USB setup / zero calibration")
+        usb_setup_btn.clicked.connect(self.open_direct_usb_setup)
+        header_layout.addWidget(usb_setup_btn)
         header_layout.addWidget(options_btn)
         update_btn = QPushButton("Update")
         update_btn.clicked.connect(self.update_from_github)
@@ -1549,6 +1556,9 @@ class CraniotomyWindow(QMainWindow):
         self.options_dialog.setWindowTitle("Options")
         self.options_dialog.resize(760, 860)
         options_layout = QVBoxLayout(self.options_dialog)
+        direct_label=QLabel("Direct USB: zero calibration required; native StereoDrive must be closed. Automated drilling and rate-controlled injection are disabled.")
+        direct_label.setWordWrap(True)
+        options_layout.addWidget(direct_label)
         positions_box = QGroupBox("Home / Work — mechanical Axis coordinates")
         positions_layout = QGridLayout(positions_box)
         self.home_axis_label = QLabel()
@@ -1579,10 +1589,10 @@ class CraniotomyWindow(QMainWindow):
         reset_keys_btn.clicked.connect(self.reset_movement_key_bindings)
         options_grid.addWidget(reset_keys_btn, len(key_options) + 1, 0, 1, 2)
         options_layout.addWidget(options_box)
-        scan_box = QGroupBox("StereoDrive Control Scan")
+        scan_box = QGroupBox("Direct USB diagnostics")
         scan_layout = QVBoxLayout(scan_box)
-        scan_layout.addWidget(QLabel("Scan the current StereoDrive window to identify control IDs and labels."))
-        scan_btn = QPushButton("Scan StereoDrive")
+        scan_layout.addWidget(QLabel("Direct control uses the public API; native window control IDs are not used."))
+        scan_btn = QPushButton("Direct USB diagnostics")
         scan_btn.clicked.connect(self.scan_stereodrive)
         scan_layout.addWidget(scan_btn)
         benchmark_btn = QPushButton("Benchmark Axis Moves")
@@ -1647,6 +1657,117 @@ class CraniotomyWindow(QMainWindow):
     def _append_usb_probe_log(self, message: str) -> None:
         self.usb_probe_output.appendPlainText(message)
 
+    def open_direct_usb_setup(self) -> None:
+        if not self._require_idle("USB setup"):
+            return
+        from stereodrive_api import Calibration
+        from stereodrive_api.protocol import BACKLASH, SIGNS
+        dialog=QDialog(self)
+        dialog.setWindowTitle("Direct USB — measured zero calibration first")
+        layout=QVBoxLayout(dialog)
+        mode="LIVE HARDWARE" if self.controller.live else "SIMULATION (no hardware)"
+        intro=QLabel(mode+"\nClose StereoDrive and every other controller. Load measured AP/ML/DV zero counts and piston 3000 nL anchor before moving. GUI Bregma is a separate reference, not API zero. No automatic homing.")
+        intro.setWordWrap(True); layout.addWidget(intro)
+        calibration={"value":None}
+        filename_label=QLabel("No zero calibration loaded — movement unavailable")
+        load=QPushButton("Load measured zero calibration JSON")
+        def choose_calibration():
+            filename,_=QFileDialog.getOpenFileName(dialog,"Measured zero anchors","","JSON (*.json)")
+            if not filename:return
+            try:
+                value=Calibration(**json.loads(Path(filename).read_text(encoding="utf-8")))
+                value.reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
+                calibration["value"]=value; filename_label.setText(filename)
+            except Exception as exc:
+                calibration["value"]=None; filename_label.setText("Invalid calibration")
+                QMessageBox.warning(dialog,"Calibration",str(exc))
+        load.clicked.connect(choose_calibration); layout.addWidget(load); layout.addWidget(filename_label)
+        choices={}
+        for axis in ("AP","ML","DV","PISTON"):
+            row=QHBoxLayout(); row.addWidget(QLabel("Verified CURRENT last direction: "+axis))
+            combo=QComboBox(); combo.addItem("Select verified direction",None)
+            labels=("up","down") if axis=="PISTON" else ("increasing mm","decreasing mm")
+            for label,direction in zip(labels,(1,-1)):
+                combo.addItem(label,BACKLASH[axis] if SIGNS[axis]*direction>0 else 0)
+            choices[axis]=combo; row.addWidget(combo); layout.addLayout(row)
+        if not self.controller.live:
+            sample=QPushButton("Use SIMULATION-ONLY zero anchors and direction history")
+            def simulation_anchors():
+                calibration["value"]=Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,
+                                                  dict(AP=0,ML=261,DV=0,PISTON=0))
+                filename_label.setText("Synthetic simulator calibration — never use on hardware")
+                for axis,combo in choices.items():combo.setCurrentIndex(2 if axis=="PISTON" else 1)
+            sample.clicked.connect(simulation_anchors); layout.addWidget(sample)
+        allow_dv=QCheckBox("DV clearance independently verified")
+        allow_piston=QCheckBox("Nano 5 µL piston setup independently verified (10–100 nL free steps only)")
+        allow_drill=QCheckBox("Enable supervised drill ON (not an automated drilling protocol)")
+        verified=QCheckBox("Measured zero/anchor calibration and current direction history verified; workspace clear and physical Stop accessible")
+        verified.setChecked(False)
+        for widget in (allow_dv,allow_piston,allow_drill,verified):layout.addWidget(widget)
+        speed=QComboBox();speed.addItems(["1","2"]);layout.addWidget(QLabel("Captured Axis speed profile (mm/s)"));layout.addWidget(speed)
+        new_reference=QCheckBox("Establish independently verified new reference (not recovery from an unknown fault)");layout.addWidget(new_reference)
+        status=QLabel("Disconnected; loading calibration does not move or reset the controller.");status.setWordWrap(True);layout.addWidget(status)
+        row=QHBoxLayout(); connect=QPushButton("Connect / restore calibrated state");disconnect=QPushButton("Disconnect / Stop");row.addWidget(connect);row.addWidget(disconnect);layout.addLayout(row)
+        result={};finished=threading.Event();connecting=[False]
+        def do_connect():
+            if self.controller.drive is not None:
+                QMessageBox.information(dialog,"USB setup","Disconnect before changing calibration.");return
+            if calibration["value"] is None or any(c.currentData() is None for c in choices.values()) or not verified.isChecked():
+                QMessageBox.warning(dialog,"Calibration required","Load valid measured anchors, select every verified current direction and confirm the setup first.");return
+            if new_reference.isChecked() and QMessageBox.warning(dialog,"New reference",
+                    "Only proceed after independent physical reference and direction verification. This must not bypass an unresolved fault.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
+            states={a:c.currentData() for a,c in choices.items()}
+            cfg=dict(new_reference=new_reference.isChecked(),allow_dv=allow_dv.isChecked(),
+                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()))
+            value=calibration["value"]
+            finished.clear();result.clear();timer.start(100)
+            connecting[0]=True;connect.setEnabled(False);disconnect.setEnabled(False)
+            status.setText("Connecting exclusively and verifying idle motor counts…")
+            def worker():
+                try:self.controller.connect(value,states,self._config_root_dir()/"api-state.json",**cfg)
+                except Exception as exc:result["error"]=str(exc)
+                finished.set()
+            threading.Thread(target=worker,daemon=True).start()
+        def do_disconnect():
+            try:self.controller.close();status.setText("Disconnected — no movement permitted")
+            except Exception as exc:QMessageBox.warning(dialog,"USB Stop",str(exc))
+        connect.clicked.connect(do_connect);disconnect.clicked.connect(do_disconnect)
+        close_btn=QPushButton("Close setup");close_btn.clicked.connect(dialog.accept);layout.addWidget(close_btn)
+        timer=QTimer(dialog)
+        def poll_connection():
+            close_btn.setEnabled(not connecting[0])
+            if not finished.is_set():return
+            timer.stop();connecting[0]=False;connect.setEnabled(True);disconnect.setEnabled(True);close_btn.setEnabled(True)
+            if "error" in result:
+                status.setText("Connection refused: "+result["error"])
+                finished.clear();result.clear();timer.start(100);return
+            # A new USB session requires re-verifying tool-specific GUI references.
+            self.bregma_axis=self.anchor_axis=self.anchor_bregma=None
+            self.coordinate_mode="axis"
+            self.update_coordinate_mode_buttons()
+            self.top_view.set_coordinate_mode_bregma(False)
+            self.injection_sites_view.set_coordinate_mode_bregma(False)
+            axis_reference={a:self.controller.drive.calibration.reference(self.controller.drive.scales)[a]
+                            for a in ("AP", "ML", "DV")}
+            if self.axis_zero_reference != axis_reference:
+                self.home_axis=self.work_axis=None
+            self.axis_zero_reference=axis_reference
+            self._update_persistent_axis_location_labels()
+            self.quick_locations={}
+            for site in self.injection_sites:site.dv=None;site.generated=True
+            for seed in self.seeds:seed.dv=None
+            self.set_syringe_position(None)
+            self._save_general_settings();self.refresh_injection_sites_list();self.redraw_views()
+            self.refresh_live_position()
+            status.setText("Connected with verified zero calibration. Re-set GUI Bregma/Anchor and revalidate surfaces. Home/Work are retained only with identical Axis calibration; verify their clearance before use.")
+        timer.timeout.connect(poll_connection);timer.start(100)
+        def reject_while_connecting(event):
+            if connecting[0]:event.ignore()
+            else:QDialog.closeEvent(dialog,event)
+        dialog.closeEvent=reject_while_connecting
+        dialog.reject=lambda: None if connecting[0] else QDialog.reject(dialog)
+        dialog.resize(820,650);dialog.exec()
+
     def _motion_is_active(self) -> bool:
         return bool(
             (self.drill_thread is not None and self.drill_thread.is_alive())
@@ -1683,7 +1804,9 @@ class CraniotomyWindow(QMainWindow):
         return [(current[0], current[1], safe_dv), (target[0], target[1], safe_dv), target]
 
     def _approach_axis_position(self, target: tuple[float, float, float], clearance_dv: float, stop_requested) -> None:
-        for position in self._axis_clearance_path(target, clearance_dv):
+        path=self._axis_clearance_path(target,clearance_dv)
+        if getattr(self.controller,"direct_api",False):self.controller.validate_axis_path(path)
+        for position in path:
             self.controller.goto_axis_position(*position, delay_seconds=0.5, stop_requested=stop_requested)
             self.controller.wait_for_axis_position(*position, stop_requested=stop_requested)
 
@@ -1701,7 +1824,7 @@ class CraniotomyWindow(QMainWindow):
             self,
             "Run USB Controller Probe?",
             f"Start the USBPcap/Wireshark capture first. This will nudge {axis} by {step_mm:g} mm, "
-            "verify the change from StereoDrive's Axis display, then nudge it back. "
+            "verify idle arrival from the direct API motor counts, then nudge it back. "
             "If the forward move cannot be verified, the app will stop and will not guess a reversal. Continue?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1710,7 +1833,12 @@ class CraniotomyWindow(QMainWindow):
             return
         self.usb_probe_button.setEnabled(False)
         self.usb_probe_output.clear()
-        self.controller.prepare_motion()
+        try:
+            self.controller.prepare_motion()
+        except Exception as exc:
+            self.usb_probe_button.setEnabled(True)
+            QMessageBox.warning(self, "USB Controller Probe", str(exc))
+            return
         self.usb_probe_thread = threading.Thread(
             target=self._run_usb_controller_probe,
             args=(axis, step_mm),
@@ -1729,8 +1857,10 @@ class CraniotomyWindow(QMainWindow):
         while time.monotonic() < deadline:
             self.controller._check_motion_cancelled()
             current = self.controller.get_current_axis(axis)
-            if abs(current - expected) <= tolerance_mm:
-                return current
+            if abs(current - expected) <= tolerance_mm and not self.controller.has_active_motion():
+                # A transient moving count is not permission to reverse.
+                self.controller.wait_until_stopped()
+                return self.controller.get_current_axis(axis)
             time.sleep(0.05)
         current = self.controller.get_current_axis(axis)
         raise StereoDriveError(
@@ -1775,6 +1905,10 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(status)
 
     def update_from_github(self) -> None:
+        if getattr(self.controller,"direct_api",False):
+            QMessageBox.information(self,"Direct USB branch update",
+                "Close the app and run git pull --ff-only on codex/direct-api-control. The main-branch reset updater is disabled to preserve this backend and your local work.")
+            return
         if not self._require_idle("Update"):
             return
         answer = QMessageBox.warning(
@@ -1847,7 +1981,10 @@ class CraniotomyWindow(QMainWindow):
             widget.setText(f"{value:g}")
 
     def _config_root_dir(self) -> Path:
-        return Path.home() / "Documents" / "Neurostar_Master" / "Configs"
+        root=Path.home() / "Documents" / "Neurostar_Master" / "Configs"
+        if getattr(self.controller,"direct_api",False):
+            root=root/"DirectUSB"/("live" if self.controller.live else "simulation")
+        return root
 
     def _config_dir(self, kind: str) -> Path:
         mapping = {
@@ -2098,6 +2235,7 @@ class CraniotomyWindow(QMainWindow):
             "validation_clearance_mm": self.validation_clearance_mm,
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
+            "axis_zero_reference": getattr(self, "axis_zero_reference", None),
             "window_geometry": getattr(self, "window_geometry", None),
         }
         self._write_config_file(self._general_settings_path(), payload)
@@ -2128,6 +2266,7 @@ class CraniotomyWindow(QMainWindow):
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
             self.window_geometry = payload.get("window_geometry")
+            self.axis_zero_reference = payload.get("axis_zero_reference")
             self.home_axis = self._session_axis(payload.get("home_axis"))
             self.work_axis = self._session_axis(payload.get("work_axis"))
             self._update_persistent_axis_location_labels()
@@ -2630,6 +2769,12 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             self.ensure_syringe_move_allowed(self.manual_injection_volume_nl, up)
+            if getattr(self.controller,"direct_api",False):
+                self.controller.prepare_motion()
+                self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl",up=up,
+                    asynchronous=True,on_completed=self.syringe_position_signal.emit)
+                self.set_status("Direct piston move requested; wait for verified idle position.")
+                return
             self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl", up=up)
             self.adjust_tracked_syringe_position(self.manual_injection_volume_nl if up else -self.manual_injection_volume_nl)
             direction = "up" if up else "down"
@@ -2752,6 +2897,12 @@ class CraniotomyWindow(QMainWindow):
             volume_nl = self._nearest_supported_injection_volume(self._line_int(self.block_test_volume_nl, 50, 10, 2000))
             self._set_number_edit(self.block_test_volume_nl, volume_nl)
             self.ensure_syringe_move_allowed(volume_nl, False)
+            if getattr(self.controller,"direct_api",False):
+                self.controller.prepare_motion()
+                self.controller.syringe_step(f"{volume_nl} nl",up=False,asynchronous=True,
+                    on_completed=self.syringe_position_signal.emit)
+                self.set_status("Direct free-piston test requested; motor counts are not measured fluid delivery.")
+                return
             self.controller.syringe_step(f"{volume_nl} nl", up=False)
             self.track_injection_delivery(volume_nl)
             self.set_status(f"Verifying no blockage (test volume = {volume_nl} nl)")
@@ -2905,18 +3056,21 @@ class CraniotomyWindow(QMainWindow):
         self.set_local_bregma()
 
     def activate_stereodrive_drill(self) -> None:
+        if not self._require_idle("Drill"):
+            return
         answer = QMessageBox.warning(
             self,
             "Activate Drill",
-            "Open StereoDrive's Drill panel and toggle the drill control?",
+            "Request drill ON/OFF directly through USB? Keep the spindle clear and physical Stop accessible. ON requires verified setup opt-in. Software power state does not prove spindle rotation has stopped.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
             return
         try:
+            self.controller.prepare_motion()
             self.controller.activate_drill_toggle()
-            self.set_status("StereoDrive drill toggle clicked.")
+            self.set_status("Direct USB drill toggle requested; waiting for reported power state.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive Drill", str(exc))
 
@@ -3749,6 +3903,8 @@ class CraniotomyWindow(QMainWindow):
             return True
         if not self._require_idle(title):
             return False
+        if getattr(self.controller,"direct_api",False):
+            self.controller.validate_axis_path(target_axes)
         self.controller.prepare_motion()
         cancelled = threading.Event()
         result: dict[str, object] = {}
@@ -3810,6 +3966,14 @@ class CraniotomyWindow(QMainWindow):
         def check_worker() -> None:
             if message_label.text() != progress_state["message"]:
                 message_label.setText(progress_state["message"])
+            if worker.is_alive() and getattr(self.controller, "direct_api", False):
+                try:
+                    self._set_validation_move_position(self.controller.get_current_axis_position())
+                except Exception:
+                    # Do not present a stale marker as an actual position.
+                    for view in (self.top_view, self.injection_sites_view):
+                        view.current_point = None
+                        view.update()
             if not worker.is_alive():
                 timer.stop()
                 dialog.accept()
@@ -4040,6 +4204,9 @@ class CraniotomyWindow(QMainWindow):
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
 
     def start_single_injection(self) -> None:
+        if not getattr(self.controller,"supports_injection_protocol",True):
+            QMessageBox.warning(self,"Direct USB limits","Rate-controlled injection and slow insertion are not validated in this API. Use supervised bounded manual piston steps only.")
+            return
         if not self._require_idle("Injection"):
             return
         if self.injection_thread is not None and self.injection_thread.is_alive():
@@ -4081,6 +4248,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Injection", str(exc))
 
     def resume_injection_from_selected(self) -> None:
+        if not getattr(self.controller, "supports_injection_protocol", True):
+            QMessageBox.warning(self, "Injection", "Direct USB controlled injection and slow insertion profiles are not validated. Resume is disabled.")
+            return
         if not self._require_idle("Injection"):
             return
         if self.injection_thread is not None and self.injection_thread.is_alive():
@@ -4145,6 +4315,8 @@ class CraniotomyWindow(QMainWindow):
         total_site_count: int,
         initial_status: str,
     ) -> None:
+        if not getattr(self.controller, "supports_injection_protocol", True):
+            raise StereoDriveError("Direct USB automated injection is not validated; no movements were requested.")
         self._require_project_coordinates("injection_sites")
         # Saved sites stay GUI-Bregma-relative; workers receive frozen Axis targets.
         sites = [InjectionSite(*self._bregma_to_axis((site.ap, site.ml, site.dv)), generated=site.generated)
@@ -4216,6 +4388,8 @@ class CraniotomyWindow(QMainWindow):
         total_site_count: int | None = None,
     ) -> None:
         try:
+            if not getattr(self.controller, "supports_injection_protocol", True):
+                raise StereoDriveError("Direct USB automated injection profiles are not validated.")
             total_units = max(1, total_site_count if total_site_count is not None else len(sites))
             step_indexes = self._sequence_step_indexes(settings, check_blocked)
             for relative_site_index, site in enumerate(sites, start=1):
@@ -4972,6 +5146,13 @@ class CraniotomyWindow(QMainWindow):
             if self.seeds or self.top_view.overlay_image is not None:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
+            if getattr(self.controller, "direct_api", False):
+                self.set_syringe_position(None)
+                for label in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
+                    label.setText("—")
+                for view in (self.top_view, self.injection_sites_view):
+                    view.current_point = None
+                    view.update()
             self.set_status(str(exc))
 
     def _set_validation_move_position(self, axis_position: object) -> None:
@@ -5503,6 +5684,9 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def start_drilling_round(self, *, drill_confirmed: bool = False) -> None:
+        if not getattr(self.controller,"supports_drilling_protocol",True):
+            QMessageBox.warning(self,"Direct USB limits","The API supports only 1/2 mm/s profiles, not a validated slow drilling trajectory. Automated drilling is disabled on this branch.")
+            return
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
             return
@@ -5853,6 +6037,8 @@ class CraniotomyWindow(QMainWindow):
         point_count = max(1, len(surface_targets) - 1)
         outcome = "completed"
         try:
+            if not getattr(self.controller, "supports_drilling_protocol", True):
+                raise StereoDriveError("Direct USB continuous drilling profiles are not validated.")
             if point_count <= 0:
                 return
             needs_drilling = [
@@ -6122,19 +6308,28 @@ class CraniotomyWindow(QMainWindow):
 
 
 def main() -> None:
+    import argparse
+    parser=argparse.ArgumentParser(description="Direct USB planner: disconnected simulation by default")
+    parser.add_argument("--live",action="store_true",help="Choose hardware mode; zero calibration and explicit connection still required")
+    args=parser.parse_args()
     app = QApplication(sys.argv)
     app.setApplicationName("Craniotomy Planner")
     application_font = QFont("Segoe UI")
     application_font.setPointSize(9)
     app.setFont(application_font)
+    lock_root=Path.home()/"Documents"/"Neurostar_Master"/"Configs"/"DirectUSB"/("live" if args.live else "simulation")
+    lock_root.mkdir(parents=True,exist_ok=True)
+    instance_lock=QLockFile(str(lock_root/"planner.lock"))
+    instance_lock.setStaleLockTime(0)
+    if not instance_lock.tryLock(0):
+        QMessageBox.warning(None,"Already open","A direct planner is already running for this mode.");return
     try:
-        window = CraniotomyWindow()
+        window = CraniotomyWindow(StereoDriveController(live=args.live))
     except StereoDriveError:
         QMessageBox.warning(
             None,
-            "StereoDrive Not Found",
-            "StereoDrive main window was not found.\n\n"
-            "Open StereoDrive first, then start Craniotomy Planner again.",
+            "Direct USB setup",
+            "Direct USB could not initialize. Check calibration and device setup. Keep StereoDrive closed for hardware control.",
         )
         return
     window.show()

@@ -53,11 +53,11 @@ class Session:
             if bool(saved.get('absolute_calibration', False)) != (calibrated is not None):
                 raise RuntimeError('Supply the same calibration mode used by saved state')
             self.states = saved['backlash_state']; self.reference = saved['reference_normal']
-            if any(self.states[a] not in (0, BACKLASH[a]) for a in AXES): raise RuntimeError('Invalid saved backlash state.')
+            if any(type(self.states[a]) is not int or self.states[a] not in (0, BACKLASH[a]) for a in AXES): raise RuntimeError('Invalid saved backlash state.')
             if any(not math.isfinite(self.reference[a]) for a in AXES): raise RuntimeError('Invalid saved reference.')
             self.log('RESTORED', raw=self.raw, backlash=self.states)
         else:
-            if any(initial_states[a] not in (0, BACKLASH[a]) for a in AXES): raise ValueError('Invalid initial backlash state.')
+            if any(type(initial_states[a]) is not int or initial_states[a] not in (0, BACKLASH[a]) for a in AXES): raise ValueError('Invalid initial backlash state.')
             self.states = dict(initial_states)
             self.reference = calibrated if calibrated is not None else {a: self.raw[a] - self.states[a] for a in AXES}
             self.log('NEW_REFERENCE', raw=self.raw, backlash=self.states)
@@ -110,13 +110,20 @@ class Session:
         self.refresh()
         old = dict(self.raw); normal = self.command_normal[axis]
         next_normal = normal + SIGNS[axis] * direction * step * self.scales[axis]
+        if axis=='PISTON' and self.absolute_calibration:
+            estimate=(next_normal-self.reference[axis])/self.scales[axis]
+            if not -1e-7 <= estimate <= 5000+1e-7:
+                raise ValueError('Calibrated Nano 5 µL piston target exceeds 0–5000 nL travel range.')
         if abs(next_normal - self.connection_normal[axis]) / self.scales[axis] > (100.0000001 if axis == 'PISTON' else 1.0000001):
             raise ValueError('Move exceeds the connection envelope (axes +/-1 mm; piston +/-100 nL).')
         new_state = BACKLASH[axis] if SIGNS[axis]*direction > 0 else 0
         requested = round(next_normal + new_state)
+        if not -(2**31) <= requested < 2**31:
+            raise ValueError('Target exceeds signed 32-bit motor count range.')
         # A crash/disconnect anywhere after this write must not restore stale state.
         self.save(False, 'Movement in progress; completion not yet verified.')
         self.busy = True
+        self.active_axis, self.active_backlash = axis,new_state
         try:
             if self.cancel.is_set(): raise InterruptedError('Stopped before movement.')
             with self.io_lock:
@@ -153,6 +160,7 @@ class Session:
             raise
         finally:
             self.busy = False
+            self.active_axis = None
 
     def stopped(self):
         """Idle Stop verifies that no motion occurred; interrupted motion stays invalid."""

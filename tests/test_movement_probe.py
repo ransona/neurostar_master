@@ -188,7 +188,8 @@ class ProbeTests(unittest.TestCase):
                 self.submit(**payload)
         self.assertEqual(self.controller.injector_actions, [])
         self.service.max_injector_volume = 500
-        self.submit(kind="injector_inject",volume_nl=500)
+        with self.assertRaises(probe.Rejected):
+            self.submit(kind="injector_inject",volume_nl=500)
 
     def test_injector_duplicate_does_not_repeat_dose(self):
         payload = dict(command_id="dose",kind="injector_inject",volume_nl=100)
@@ -228,43 +229,9 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["state"], "stopped")
         self.assertFalse(self.service.status()["ready"])
 
-    def test_native_injector_clicks_once_and_waits_for_idle(self):
-        from test_movement import SimController, controller as native_module
-        class NativeFake(SimController):
-            def _find_below_skull_warning_dialog(self):
-                return None
-            def set_injection_volume(self, label):
-                self.volume_label = label
-            def _is_control_enabled(self, control_id):
-                return True
-            def _injectomate_motion_status_text(self):
-                return "busy" if self.clicks and self.clock.now < .1 else ""
-            def stop_injectomate_motion(self, trigger):
-                self.stop_triggers.append(trigger)
-        module = SimpleNamespace(StereoDriveController=NativeFake, INJECT_BUTTON_ID=10008,
-                                 SYRINGE_STEP_UP_ID=10000, SYRINGE_STEP_DOWN_ID=10002)
-        with patch.object(probe.sys, "platform", "win32"), patch.dict(sys.modules, {"stereodrive_controller": module}):
-            native = probe.real_controller()
-            native.clock = self.clock
-            native.stop_triggers = []
-            native.probe_injector_action("up", 10, lambda: False, 1)
-            self.assertEqual(native.volume_label, "10 nl")
-            self.assertEqual(native.clicks, [10000])
-            self.assertGreaterEqual(self.clock.now, .3)
-            self.assertIsNone(native._active_injectomate_trigger_control_id)
-            native._injectomate_motion_status_text = lambda: ""
-            with self.assertRaisesRegex(RuntimeError, "Timed out"):
-                native.probe_injector_action("down", 10, lambda: False, .05)
-            self.assertEqual(native._active_injectomate_trigger_control_id, 10002)
-            native.probe_stop_injector()
-            native.probe_stop_injector()
-            self.assertEqual(native.stop_triggers, [10002])
-            native._motion_click = Mock(side_effect=RuntimeError("cancelled before click"))
-            with self.assertRaisesRegex(RuntimeError, "cancelled before click"):
-                native.probe_injector_action("up",10,lambda:False,1)
-            self.assertIsNone(native._active_injectomate_trigger_control_id)
-            native.probe_stop_injector()
-            self.assertEqual(native.stop_triggers, [10002])
+    def test_direct_backend_requires_zero_setup(self):
+        with self.assertRaisesRegex(RuntimeError, "measured zero"):
+            probe.real_controller(None, simulate=True)
 
     def test_three_axis_fine_move_can_exceed_100_increments(self):
         self.service.allow_dv = True
@@ -401,16 +368,26 @@ class ProbeTests(unittest.TestCase):
         row = dict(sequence=1, utc="2026-10-09T10:00:00+00:00", event="INCOMING_MOVE", command={"kind":"nudge"})
         self.assertIn('"kind": "nudge"', gui_helpers["format_event"](row))
 
-    def test_real_adapter_does_not_accept_skull_warning(self):
-        class FakeNative:
-            def _find_below_skull_warning_dialog(self):
-                return 123
-        with patch.object(probe.sys, "platform", "win32"), \
-                patch.dict(sys.modules, {"stereodrive_controller": SimpleNamespace(StereoDriveController=FakeNative)}):
-            native = probe.real_controller()
-            with self.assertRaisesRegex(RuntimeError, "NOT accepted"):
-                native.confirm_below_skull_warning(timeout_seconds=.01)
-            self.assertFalse(native.confirm_no_actual_movement_dialog())
+    def test_direct_adapter_uses_public_api_for_axis_and_piston(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            setup=root/'setup.json'
+            setup.write_text(json.dumps(dict(calibration=dict(axis_zero_counts=dict(AP=105280,ML=75864,DV=41767),
+                piston_3000_count=-8572,anchor_backlash=dict(AP=0,ML=261,DV=0,PISTON=0)),
+                verified_backlash=dict(AP=0,ML=261,DV=0,PISTON=0))))
+            with patch.dict('os.environ', {'LOCALAPPDATA':directory}):
+                controller=probe.real_controller(setup,allow_dv=True,allow_piston=True,simulate=True)
+            try:
+                controller.prepare_motion()
+                controller.goto_axis_position(.01,.01,-.01)
+                position=controller.get_current_axis_position()
+                self.assertAlmostEqual(position[0],.01,delta=1/5225)
+                controller.probe_injector_action('up',10,lambda:False,5)
+                self.assertAlmostEqual(controller.read_injectomate_calibrate_scale_nl(),3010,delta=1/161.36)
+                with self.assertRaisesRegex(ValueError,'unvalidated'):
+                    controller.probe_injector_action('inject',10,lambda:False,5)
+                self.assertFalse(controller.confirm_below_skull_warning())
+            finally:controller.close()
 
     def test_log_is_saved_per_event_without_credentials(self):
         with tempfile.TemporaryDirectory() as directory:

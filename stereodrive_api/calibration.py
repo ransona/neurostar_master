@@ -16,7 +16,7 @@ class Calibration:
         for a in AXES:
             if type(counts[a]) is not int or not -(2**31) <= counts[a] < 2**31:
                 raise ValueError('Anchors must be signed 32-bit integer counts')
-            if self.anchor_backlash[a] not in (0, BACKLASH[a]): raise ValueError('Invalid anchor backlash state')
+            if type(self.anchor_backlash[a]) is not int or self.anchor_backlash[a] not in (0, BACKLASH[a]): raise ValueError('Invalid anchor backlash state')
         ref={a:counts[a]-self.anchor_backlash[a] for a in AXES}
         ref['PISTON'] -= 3000 * scales['PISTON']
         return ref

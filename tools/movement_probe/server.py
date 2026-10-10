@@ -15,7 +15,7 @@ import uuid
 
 AXES = ("AP", "ML", "DV")
 STEPS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)
-INJECTOR_VOLUMES_NL = (10, 20, 50, 100, 200, 500, 1000)
+INJECTOR_VOLUMES_NL = (10, 20, 50, 100)
 
 
 class Rejected(ValueError):
@@ -75,72 +75,29 @@ class SimulatedController:
         self.cancelled = True
 
 
-def real_controller():
-    if sys.platform != "win32":
-        raise RuntimeError("Real movement requires the Windows computer running StereoDrive. Use --simulate here.")
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from stereodrive_controller import StereoDriveController
-
+def real_controller(setup_path, *, allow_dv=False, allow_piston=False, simulate=False):
+    if setup_path is None:
+        raise RuntimeError("Direct USB requires --api-setup with measured zero calibration and verified current backlash history.")
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from direct_api_controller import StereoDriveController
+    from stereodrive_api import Calibration
+    setup=json.loads(Path(setup_path).read_text(encoding="utf-8"))
     class ProbeController(StereoDriveController):
-        # The main GUI intentionally confirms some native warnings. This probe
-        # must never approve those dialogs on behalf of an unattended agent.
-        def safety_check(self):
-            if self._find_below_skull_warning_dialog() is not None:
-                raise RuntimeError("StereoDrive skull warning: operator intervention required; NOT accepted.")
-
-        def confirm_below_skull_warning(self, **kwargs):
-            self.safety_check()
-            return False
-
-        def confirm_no_actual_movement_dialog(self, **kwargs):
-            return False
-
-        def probe_injector_action(self, action, volume_nl, stop_requested, timeout_seconds):
-            from stereodrive_controller import INJECT_BUTTON_ID, SYRINGE_STEP_UP_ID, SYRINGE_STEP_DOWN_ID
-            self._check_motion_cancelled(stop_requested)
-            self.set_injection_volume(f"{volume_nl:g} nl")
-            trigger = {"inject": INJECT_BUTTON_ID, "up": SYRINGE_STEP_UP_ID, "down": SYRINGE_STEP_DOWN_ID}[action]
-            with self._motion_lock:
-                self._check_motion_cancelled(stop_requested)
-                if not self._is_control_enabled(trigger) or self._injectomate_motion_status_text():
-                    raise RuntimeError("Injectomate is busy; no command issued.")
-                self._active_injectomate_trigger_control_id = trigger
-                try:
-                    self._motion_click(trigger, stop_requested)
-                except Exception:
-                    # No click was issued if the cancellation check rejected it;
-                    # don't turn that unused trigger into a new "Stop" click.
-                    self._active_injectomate_trigger_control_id = None
-                    raise
-            deadline = time.monotonic() + timeout_seconds
-            stable_since = None
-            # Keep the trigger until verified idle or explicit Stop. Do not use
-            # the shared wait's auto-Stop: posting Stop twice can toggle motion
-            # back on after the first Stop has already restored the button.
-            while time.monotonic() < deadline:
-                self._check_motion_cancelled(stop_requested)
-                self.safety_check()
-                busy = bool(self._injectomate_motion_status_text()) or not self._is_control_enabled(trigger)
-                if busy:
-                    stable_since = None
-                elif stable_since is None:
-                    stable_since = time.monotonic()
-                elif time.monotonic() - stable_since >= .2:
-                    with self._motion_lock:
-                        self._check_motion_cancelled(stop_requested)
-                        self._active_injectomate_trigger_control_id = None
-                    return
-                time.sleep(.02)
-            raise RuntimeError("Timed out waiting for Injectomate completion.")
-
-        def probe_stop_injector(self):
-            with self._motion_lock:
-                trigger = self._active_injectomate_trigger_control_id
-                if trigger is not None:
-                    self.stop_injectomate_motion(trigger)
-                    self._active_injectomate_trigger_control_id = None
-
-    return ProbeController()
+        supports_controlled_injection=False
+        def safety_check(self):self._require()
+        def motion_controls_ready(self,axes=AXES):return not self.busy and not self.drive.is_moving()
+        def probe_injector_action(self,action,volume_nl,stop_requested,timeout_seconds):
+            if action not in ("up","down"):
+                raise ValueError("Controlled injection profile is unvalidated; free-piston up/down only.")
+            self.syringe_step(f"{volume_nl:g} nl",up=action=="up",stop_requested=stop_requested)
+        def probe_stop_injector(self):self.stop()
+    controller=ProbeController(live=not simulate)
+    import os
+    state=Path(os.environ.get("LOCALAPPDATA",str(Path.home())))/"NeurostarDirectProbe"/("simulation.json" if simulate else "live.json")
+    controller.connect(Calibration(**setup["calibration"]),setup["verified_backlash"],state,
+        new_reference=bool(setup.get("new_reference",False)),allow_dv=allow_dv,allow_piston=allow_piston,
+        speed=setup.get("speed_mm_s",1))
+    return controller
 
 
 class ProbeService:
@@ -167,7 +124,11 @@ class ProbeService:
         self.monitor = threading.Thread(target=self._monitor, daemon=True)
         self.monitor.start()
         self.log("START", origin=self.origin, radius_mm=radius, max_move_mm=max_move,
-                 allow_dv=allow_dv, simulated=isinstance(controller, SimulatedController))
+                 allow_dv=allow_dv, simulated=self.simulated)
+
+    @property
+    def simulated(self):
+        return isinstance(self.controller, SimulatedController) or not getattr(self.controller, "live", True)
 
     def read_position(self):
         values = tuple(number(v) for v in self.controller.get_current_axis_position())
@@ -211,7 +172,7 @@ class ProbeService:
     def status(self):
         with self.lock:
             return dict(ready=not self.closed.is_set() and self.fault is None,
-                        fault=self.fault, simulated=isinstance(self.controller, SimulatedController),
+                        fault=self.fault, simulated=self.simulated,
                         coordinates="mechanical Axis mm; never native Bregma",
                         position=self.read_position(), origin=self.origin,
                         bounds={a: [o - self.radius, o + self.radius] for a, o in zip(AXES, self.origin)},
@@ -284,9 +245,11 @@ class ProbeService:
                 raise Rejected("Position outside envelope.")
             injector = payload.get("kind") in ("injector_step", "injector_inject", "injector_out_and_back")
             if injector:
+                if payload["kind"]=="injector_inject" and not getattr(self.controller,"supports_controlled_injection",True):
+                    raise Rejected("Direct API does not implement controlled injection; use bounded injector_step up/down.")
                 volume = number(payload.get("volume_nl"))
                 if volume not in INJECTOR_VOLUMES_NL or volume > self.max_injector_volume:
-                    raise Rejected("Injector volume must be a supported 10/20/50/100/200/500/1000 nL step within the configured limit.")
+                    raise Rejected("Injector volume must be a supported 10/20/50/100 nL step within the configured limit.")
                 action = "inject" if payload["kind"] == "injector_inject" else payload.get("direction")
                 if action not in ("inject", "up", "down") or (payload["kind"] != "injector_inject" and action == "inject"):
                     raise Rejected("Injector step direction must be up or down.")
@@ -309,7 +272,7 @@ class ProbeService:
             raise RuntimeError("Movement cancelled or timed out.")
         self.controller.safety_check()
         current = self.read_position()
-        if not self.in_envelope(current):
+        if not self.in_envelope(current) and not (getattr(self.controller,"direct_api",False) and self.controller.busy):
             raise RuntimeError("Observed position outside envelope.")
         return current
 
@@ -420,7 +383,7 @@ class ProbeService:
             timeout_seconds=max(.01, deadline - time.monotonic()))
         self._check(deadline)
         self.log("INJECTOR_COMPLETED", action=action, volume_nl=volume,
-                 verification="native status/control completion, not independently measured delivered volume")
+                 verification="controller completion, not independently measured delivered volume")
 
     def _monitor(self):
         while not self.closed.wait(0.1):
@@ -429,7 +392,7 @@ class ProbeService:
                     if self.fault is not None:
                         continue
                     self.controller.safety_check()
-                    if not self.in_envelope(self.read_position()):
+                    if not self.in_envelope(self.read_position()) and not (getattr(self.controller,"direct_api",False) and self.controller.busy):
                         self.stop("Observed position outside envelope", fault=True)
             except Exception as exc:
                 self.stop("Monitor failure: " + str(exc), fault=True)
@@ -440,6 +403,7 @@ class ProbeService:
         if self.worker:
             self.worker.join(timeout=5)
         self.monitor.join(timeout=2)
+        if hasattr(self.controller,"close"):self.controller.close()
 
 
 def handler(service):
@@ -531,12 +495,14 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1", help="Loopback only; LAN/public connections are prohibited")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--api-setup",type=Path,help="JSON containing measured calibration and verified_backlash for direct USB")
+    parser.add_argument("--allow-injector",action="store_true",help="Opt in to verified Nano 5 µL free-piston setup")
     parser.add_argument("--console", action="store_true", help="Legacy terminal UI instead of the default small GUI")
     parser.add_argument("--allow-dv", action="store_true", help="Local operator allows DV experiments in an empty/retracted workspace.")
     parser.add_argument("--radius-mm", type=float, default=1.0)
     parser.add_argument("--max-move-mm", type=float, default=1.0)
     parser.add_argument("--max-injector-volume-nl", type=float, default=100.0,
-                        help="Per injector action/leg cap; default 100 nL, hard maximum 1000 nL")
+                        help="Per injector action/leg cap; default and hard maximum 100 nL")
     parser.add_argument("--log-dir", type=Path, default=Path.home() / "StereoDriveProbeLogs")
     args = parser.parse_args()
     try:
@@ -548,11 +514,13 @@ def main():
     if not (math.isfinite(args.radius_mm) and 0 < args.radius_mm <= 1
             and math.isfinite(args.max_move_mm) and 0 < args.max_move_mm <= min(args.radius_mm, 1.0)):
         parser.error("radius must be >0 and <=1 mm; max move >0 and <=1 mm and <=radius.")
-    if not math.isfinite(args.max_injector_volume_nl) or not 10 <= args.max_injector_volume_nl <= 1000:
-        parser.error("Injector volume limit must be 10–1000 nL.")
+    if not math.isfinite(args.max_injector_volume_nl) or not 10 <= args.max_injector_volume_nl <= 100:
+        parser.error("Injector volume limit must be 10–100 nL.")
     args.log_dir.mkdir(parents=True, exist_ok=True)
     log_path = args.log_dir / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8] + ".jsonl")
-    service = ProbeService(SimulatedController() if args.simulate else real_controller(),
+    controller=SimulatedController() if args.simulate and args.api_setup is None else real_controller(
+        args.api_setup,allow_dv=args.allow_dv,allow_piston=args.allow_injector,simulate=args.simulate)
+    service = ProbeService(controller,
                            radius=args.radius_mm, max_move=args.max_move_mm,
                            allow_dv=args.allow_dv, log_path=log_path, max_injector_volume=args.max_injector_volume_nl)
     server = None
