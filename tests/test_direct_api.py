@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"tools"))
 from direct_api_controller import StereoDriveController, StereoDriveError
@@ -57,6 +58,15 @@ class DirectTests(unittest.TestCase):
         for target in (.001,.002,.003,.004,.005):d.move_axis_to('AP',target)
         self.assertAlmostEqual(d.position()['axes_mm']['AP'],.005,delta=1/5225)
 
+    def test_rounded_held_axis_at_envelope_edge_is_not_a_new_target(self):
+        d=self.drive()
+        d.move_axis_to('AP',.0001);d.close();d.connect() # Simulator-only restoration test.
+        d.move_axis_to('AP',1.0001)
+        p=d.position()['axes_mm']
+        self.assertGreater(p['AP'],1.0001) # Quantized motor readout exceeds fractional target.
+        d.move_axes_to(dict(p,ML=.01))
+        self.assertAlmostEqual(d.position()['axes_mm']['ML'],.01,delta=1/5225)
+
     def test_adapter_menu_keyboard_injector_and_stop_routes_api(self):
         c=StereoDriveController();self.addCleanup(c.close)
         with self.assertRaises(StereoDriveError):c.prepare_motion()
@@ -72,6 +82,30 @@ class DirectTests(unittest.TestCase):
             with self.assertRaises(StereoDriveError):action()
         c.stop()
         self.assertFalse(c.drive.drill_state())
+
+    def test_idle_display_read_cannot_interrupt_protocol_command_start(self):
+        c=StereoDriveController();self.addCleanup(c.close)
+        c.connect(CAL,STATES,self.path);c.prepare_motion()
+        entered=threading.Event();release=threading.Event();errors=[]
+        original=c.drive.position
+        def delayed_position():
+            if threading.current_thread().name=='display-reader':
+                with c.drive._lock:
+                    entered.set();release.wait(2)
+            return original()
+        def move():
+            try:c.goto_axis_position(.01,0,0)
+            except Exception as exc:errors.append(exc)
+        with patch.object(c.drive,'position',side_effect=delayed_position):
+            reader=threading.Thread(target=c.get_current_axis_position,name='display-reader');reader.start()
+            self.assertTrue(entered.wait(1))
+            mover=threading.Thread(target=move);mover.start()
+            time.sleep(.02)
+            self.assertTrue(mover.is_alive())
+            release.set();reader.join(2);mover.join(3)
+        self.assertFalse(reader.is_alive());self.assertFalse(mover.is_alive())
+        self.assertEqual(errors,[])
+        self.assertAlmostEqual(c.get_current_axis('AP'),.01,delta=1/5225)
 
     def test_absolute_stop_cancels_remaining_legs(self):
         d=self.drive(allow_dv=True);errors=[]

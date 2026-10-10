@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from direct_api_controller import StereoDriveController, StereoDriveError
+import pulsed_protocol
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
@@ -1548,9 +1549,9 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(resume_selected_btn, 2, 2)
         sites_layout.addWidget(self.block_check, 3, 0, 1, 3)
         self.validation_clearance_edit = self._double_spinbox(self.validation_clearance_mm, minimum=0.0, maximum=20.0)
-        self.validation_clearance_edit.setToolTip("Starting DV height above GUI Bregma for every injection-site validation.")
+        self.validation_clearance_edit.setToolTip("Validation starts this far above GUI Bregma. Pulsed bench workflows also use this clearance above surfaces and Bregma; complete paths are preflighted.")
         self.validation_clearance_edit.editingFinished.connect(self.save_validation_clearance)
-        sites_layout.addWidget(QLabel("Validation height (mm above Bregma)"), 4, 0, 1, 2)
+        sites_layout.addWidget(QLabel("Validation / pulsed clearance (mm)"), 4, 0, 1, 2)
         sites_layout.addWidget(self.validation_clearance_edit, 4, 2)
         sites_layout.addWidget(self.injection_sites_list, 5, 0, 1, 3)
 
@@ -1559,7 +1560,7 @@ class CraniotomyWindow(QMainWindow):
         self.options_dialog.setWindowTitle("Options")
         self.options_dialog.resize(760, 860)
         options_layout = QVBoxLayout(self.options_dialog)
-        direct_label=QLabel("Direct USB: zero calibration required; native StereoDrive must be closed. Automated drilling and rate-controlled injection are disabled.")
+        direct_label=QLabel("Direct USB: zero calibration required; native StereoDrive must be closed. Optional supervised bench workflows use timed pulses, not continuous speed/flow. Existing travel and volume limits remain enforced.")
         direct_label.setWordWrap(True)
         options_layout.addWidget(direct_label)
         positions_box = QGroupBox("Home / Work — mechanical Axis coordinates")
@@ -1708,12 +1709,13 @@ class CraniotomyWindow(QMainWindow):
             sample.clicked.connect(simulation_anchors); layout.addWidget(sample)
         allow_dv=QCheckBox("Enable DV (reverify clearance each connection)")
         allow_piston=QCheckBox("Enable Nano 5 µL piston (reverify setup each connection; 10–100 nL free steps only)")
-        allow_drill=QCheckBox("Enable supervised drill ON (not an automated drilling protocol)")
-        for name,widget in (("allow_dv",allow_dv),("allow_piston",allow_piston),("allow_drill",allow_drill)):
+        allow_drill=QCheckBox("Enable supervised drill ON (spindle is never started automatically)")
+        allow_pulsed=QCheckBox("Enable PULSED drilling/injection workflows — supervised bench only, no specimen; not continuous motion/flow")
+        for name,widget in (("allow_dv",allow_dv),("allow_piston",allow_piston),("allow_drill",allow_drill),("allow_pulsed",allow_pulsed)):
             widget.setChecked(saved.get(name,False))
         verified=QCheckBox("Measured zero/anchor calibration and current direction history verified; workspace clear and physical Stop accessible")
         verified.setChecked(False)
-        for widget in (allow_dv,allow_piston,allow_drill,verified):layout.addWidget(widget)
+        for widget in (allow_dv,allow_piston,allow_drill,allow_pulsed,verified):layout.addWidget(widget)
         speed=QComboBox();speed.addItems(["1","2"]);layout.addWidget(QLabel("Captured Axis speed profile (mm/s)"));layout.addWidget(speed)
         speed.setCurrentText(str(saved.get("speed_mm_s",1)))
         def persist_setup():
@@ -1723,11 +1725,11 @@ class CraniotomyWindow(QMainWindow):
                 calibration=dict(axis_zero_counts=value.axis_zero_counts,piston_3000_count=value.piston_3000_count,
                                  anchor_backlash=value.anchor_backlash) if value else None,
                 speed_mm_s=int(speed.currentText()),allow_dv=allow_dv.isChecked(),
-                allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked()))
+                allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),allow_pulsed=allow_pulsed.isChecked()))
             try:self._save_direct_control_settings()
             except OSError as exc:QMessageBox.warning(dialog,"Save direct settings",str(exc))
         speed.currentTextChanged.connect(persist_setup)
-        for widget in (allow_dv,allow_piston,allow_drill):widget.toggled.connect(persist_setup)
+        for widget in (allow_dv,allow_piston,allow_drill,allow_pulsed):widget.toggled.connect(persist_setup)
         new_reference=QCheckBox("Establish independently verified new reference (not recovery from an unknown fault)");layout.addWidget(new_reference)
         status=QLabel("Disconnected; loading calibration does not move or reset the controller.");status.setWordWrap(True);layout.addWidget(status)
         row=QHBoxLayout(); connect=QPushButton("Connect / restore calibrated state");disconnect=QPushButton("Disconnect / Stop");row.addWidget(connect);row.addWidget(disconnect);layout.addLayout(row)
@@ -1741,7 +1743,7 @@ class CraniotomyWindow(QMainWindow):
                     "Only proceed after independent physical reference and direction verification. This must not bypass an unresolved fault.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
             states={a:c.currentData() for a,c in choices.items()}
             cfg=dict(new_reference=new_reference.isChecked(),allow_dv=allow_dv.isChecked(),
-                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()))
+                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()),allow_pulsed=allow_pulsed.isChecked())
             value=calibration["value"]
             finished.clear();result.clear();timer.start(100)
             connecting[0]=True;connect.setEnabled(False);disconnect.setEnabled(False)
@@ -2037,7 +2039,7 @@ class CraniotomyWindow(QMainWindow):
                      axis_zero_reference=self.axis_zero_reference,home_axis=self.home_axis,work_axis=self.work_axis)
         # Never store verification, current direction history, or auto-connect intent.
         payload={k:v for k,v in payload.items() if k in ("version","live","calibration","speed_mm_s",
-                 "allow_dv","allow_piston","allow_drill","axis_zero_reference","home_axis","work_axis")}
+                 "allow_dv","allow_piston","allow_drill","allow_pulsed","axis_zero_reference","home_axis","work_axis")}
         temporary=path.with_suffix(".tmp")
         with temporary.open("w",encoding="utf-8") as handle:
             handle.write(json.dumps(payload,indent=2,allow_nan=False))
@@ -2064,13 +2066,13 @@ class CraniotomyWindow(QMainWindow):
                 Calibration(**payload["calibration"]).reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
             speed=payload.get("speed_mm_s",1)
             if isinstance(speed,bool) or speed not in (1,2):raise ValueError("Invalid captured speed profile")
-            if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill")):
+            if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill","allow_pulsed")):
                 raise ValueError("Invalid direct-control preferences")
             reference=payload.get("axis_zero_reference")
             if reference is not None and (not isinstance(reference,dict) or set(reference)!={"AP","ML","DV"}
                     or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in reference.values())):
                 raise ValueError("Invalid saved Axis-zero fingerprint")
-            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill") if k in payload}
+            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill","allow_pulsed") if k in payload}
             self.axis_zero_reference=reference
             self.home_axis=self._session_axis(payload.get("home_axis"))
             self.work_axis=self._session_axis(payload.get("work_axis"))
@@ -2905,6 +2907,9 @@ class CraniotomyWindow(QMainWindow):
         )
 
     def ensure_syringe_move_allowed(self, requested_nl: float, up: bool) -> None:
+        if getattr(self.controller,"pulsed_protocol",False):
+            self.controller.validate_piston_steps([requested_nl if up else -requested_nl])
+            return
         position_nl = self.current_syringe_position()
         if position_nl is None:
             self.sync_syringe_position_before_injection()
@@ -2967,6 +2972,9 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Syringe position checked: {value_nl:.3f} nl")
 
     def track_injection_delivery(self, volume_nl: int) -> None:
+        if getattr(self.controller,"pulsed_protocol",False):
+            self.syringe_position_signal.emit(self.controller.read_injectomate_calibrate_scale_nl())
+            return
         self.adjust_tracked_syringe_position(-volume_nl)
 
     def track_syringe_empty(self) -> None:
@@ -3528,9 +3536,9 @@ class CraniotomyWindow(QMainWindow):
                 f"(main {settings.main_volume_nl:g} nl/site + insertion {insertion_volume_nl:g} nl/site"
                 + (f" + two blockage tests {test_volume_total_nl / site_count:g} nl/site)." if test_volume_total_nl else ").")
                 + f" Expected timed protocol duration: {self._format_duration(expected_duration_s)} "
-                "(excluding travel and blockage-confirmation time)."
+                "(excluding travel, command overhead and blockage-confirmation time; pulses can make this longer)."
             ),
-            "Move to 1.000 mm above the stored surface, then move normally to the surface.",
+            f"Move to {(self.validation_clearance_mm if getattr(self.controller,'pulsed_protocol',False) else 1.0):.3f} mm above the stored surface, then to the surface.",
             (
                 f"Insert from surface to {settings.injection_depth_mm + settings.overshoot_mm:.3f} mm below surface at "
                 f"{settings.insert_retract_speed_um_s:.1f} um/sec while injecting at "
@@ -3538,20 +3546,21 @@ class CraniotomyWindow(QMainWindow):
             ),
             f"Retract overshoot back to the target at {settings.insert_retract_speed_um_s:.1f} um/sec.",
         ]
-        if injection_duration_s > insertion_time_s + retract_time_s + 0.05:
+        if getattr(self.controller,"pulsed_protocol",False) or injection_duration_s > insertion_time_s + retract_time_s + 0.05:
             steps.append(
                 f"Continue injecting at target at {settings.main_rate_nl_min:.1f} nl/min "
-                f"until {settings.main_volume_nl} nl total is delivered."
+                + (f"for {settings.main_volume_nl} nl MAIN pulses, in addition to rounded insertion pulses."
+                   if getattr(self.controller,"pulsed_protocol",False) else f"until {settings.main_volume_nl} nl total is delivered.")
             )
         if settings.post_inject_pause_s > 0:
             steps.append(f"Pause at target for {settings.post_inject_pause_s:.1f} s.")
         steps.append(
             f"Retract to the stored surface at {settings.insert_retract_speed_um_s:.1f} um/sec, "
-            "then move normally to 1.000 mm above the surface."
+            "then move above the surface to the configured clearance."
         )
         if self.block_check.isChecked():
             steps.append(
-                "Run the blockage test from 1.000 mm above the stored surface; only continue if confirmed not blocked, "
+                "Run the blockage test above the stored surface; only continue if confirmed not blocked, "
                 "otherwise offer repeated test injections until declined."
             )
         for index, text in enumerate(steps, start=1):
@@ -3567,6 +3576,8 @@ class CraniotomyWindow(QMainWindow):
         """Conservative preparation volume: main, insertion delivery, and two tests/site."""
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
         insertion_volume_nl = settings.insertion_rate_nl_min * (insertion_time_s + retract_time_s) / 60.0
+        if getattr(self.controller,"pulsed_protocol",False):
+            insertion_volume_nl=pulsed_protocol.insertion_volume(settings)
         test_volume_total_nl = 0.0
         if self.block_check.isChecked():
             test_volume_total_nl = 2.0 * self._rounded_test_volume() * site_count
@@ -3588,7 +3599,7 @@ class CraniotomyWindow(QMainWindow):
         }
         next_index = 3
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
-        if self._main_injection_duration_s(settings) > insertion_time_s + retract_time_s + 0.05:
+        if getattr(self.controller,"pulsed_protocol",False) or self._main_injection_duration_s(settings) > insertion_time_s + retract_time_s + 0.05:
             indexes["main_injection"] = next_index
             next_index += 1
         if settings.post_inject_pause_s > 0:
@@ -3598,6 +3609,8 @@ class CraniotomyWindow(QMainWindow):
         next_index += 1
         if check_blocked:
             indexes["block"] = next_index
+        if getattr(self.controller,"pulsed_protocol",False):
+            indexes={k:v+1 for k,v in indexes.items()} # Total-volume summary occupies row zero.
         return indexes
 
     def add_injection_site(self) -> None:
@@ -4287,7 +4300,7 @@ class CraniotomyWindow(QMainWindow):
 
     def start_single_injection(self) -> None:
         if not getattr(self.controller,"supports_injection_protocol",True):
-            QMessageBox.warning(self,"Direct USB limits","Rate-controlled injection and slow insertion are not validated in this API. Use supervised bounded manual piston steps only.")
+            QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous flow is not implemented.")
             return
         if not self._require_idle("Injection"):
             return
@@ -4331,7 +4344,7 @@ class CraniotomyWindow(QMainWindow):
 
     def resume_injection_from_selected(self) -> None:
         if not getattr(self.controller, "supports_injection_protocol", True):
-            QMessageBox.warning(self, "Injection", "Direct USB controlled injection and slow insertion profiles are not validated. Resume is disabled.")
+            QMessageBox.warning(self, "Injection", "Enable calibrated pulsed workflows in USB setup before resuming.")
             return
         if not self._require_idle("Injection"):
             return
@@ -4386,6 +4399,47 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Injection", str(exc))
 
+    def _preflight_pulsed_injections(self,sites,settings,check_blocked,test_volume_nl):
+        clearance=getattr(self,"pulsed_clearance_mm",self.validation_clearance_mm)
+        count=len(sites)*(settings.main_volume_nl+pulsed_protocol.insertion_volume(settings)
+                          +(2*test_volume_nl if check_blocked else 0))//10
+        if count>20:raise StereoDriveError("Entire workflow, including insertion and two tests/site, cannot fit the API's +/-100 nL connection window. Choose a smaller bench-test plan; do not reconnect to bypass limits.")
+        self.controller.validate_piston_steps([-10]*int(count))
+        current=self.controller.get_current_axis_position();plans=[]
+        for site in sites:
+            plan=pulsed_protocol.injection_plan(current,site,settings,self.injection_clearance_axis_dv,clearance)
+            plans.append(plan);current=next(e.target for e in reversed(plan) if e.target is not None)
+        self.controller.validate_axis_path([e.target for plan in plans for e in plan if e.target is not None])
+        return plans
+
+    def _run_pulsed_injections(self,sites,settings,check_blocked,test_volume_nl,start_offset,total_count):
+        plans=self._preflight_pulsed_injections(sites,settings,check_blocked,test_volume_nl)
+        total_count=total_count or len(sites)
+        steps=self._sequence_step_indexes(settings,check_blocked)
+        phase_index={'approach':'approach','surface':'approach','insert':'advance','insertion_dose':'advance',
+                     'overshoot_retract':'retract','main_dose':'main_injection','hold':'pause',
+                     'surface_retract':'return','return_above':'return'}
+        for relative,(site,plan) in enumerate(zip(sites,plans)):
+            site_index=start_offset+relative
+            self.active_injection_site_signal.emit(site_index)
+            completed=[0]
+            def on_event(event):
+                self.sequence_step_signal.emit(steps.get(phase_index[event.phase],steps['approach']))
+                completed[0]+=1
+                fraction=completed[0]/max(1,len(plan))
+                self.injection_site_progress_signal.emit(int(fraction*100))
+                self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
+                    f"Pulsed {event.phase}: site {site_index+1}/{total_count}; verified serial commands, duration may exceed estimate")
+            pulsed_protocol.execute(self.controller,plan,stop_requested=self.injection_stop_requested.is_set,
+                pause_requested=self.injection_pause_requested.is_set,on_event=on_event,
+                on_delivered=self.syringe_position_signal.emit)
+            if check_blocked:
+                self.sequence_step_signal.emit(steps['block'])
+                self._run_block_test(site,settings,test_volume_nl)
+            if self.injection_stop_requested.is_set():raise pulsed_protocol.PulseCancelled('Sequence stopped')
+        self.sequence_step_signal.emit(-1);self.active_injection_site_signal.emit(-1)
+        self.injection_finished_signal.emit("Pulsed injection workflow complete (estimated piston displacement, not measured delivery)")
+
     def _start_injection_sequence(
         self,
         sites: list[InjectionSite],
@@ -4398,13 +4452,21 @@ class CraniotomyWindow(QMainWindow):
         initial_status: str,
     ) -> None:
         if not getattr(self.controller, "supports_injection_protocol", True):
-            raise StereoDriveError("Direct USB automated injection is not validated; no movements were requested.")
+            raise StereoDriveError("Calibrated pulsed workflows are not enabled; no movements were requested.")
         self._require_project_coordinates("injection_sites")
         # Saved sites stay GUI-Bregma-relative; workers receive frozen Axis targets.
         sites = [InjectionSite(*self._bregma_to_axis((site.ap, site.ml, site.dv)), generated=site.generated)
                  for site in sites]
-        self.injection_clearance_axis_dv = self.bregma_axis[2] - 0.5
-        self.controller.prepare_motion()
+        self.injection_clearance_axis_dv = self.bregma_axis[2] - self.validation_clearance_mm
+        self.pulsed_clearance_mm=self.validation_clearance_mm
+        if getattr(self.controller,"pulsed_protocol",False):
+            self._preflight_pulsed_injections(sites,settings,check_blocked,test_volume_nl)
+            if QMessageBox.warning(self,"Pulsed injection — bench test",
+                    "This uses serial 10 nL free-piston pulses and small axis steps, NOT continuous flow. Actual duration may be longer than requested. Verify no specimen, safe fluid collection and physical Stop. Continue?",
+                    QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
+        try:self.controller.prepare_motion()
+        except Exception as exc:
+            QMessageBox.warning(self,"Injection setup",str(exc));return
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
         self.injection_pause_requested.clear()
@@ -4471,7 +4533,10 @@ class CraniotomyWindow(QMainWindow):
     ) -> None:
         try:
             if not getattr(self.controller, "supports_injection_protocol", True):
-                raise StereoDriveError("Direct USB automated injection profiles are not validated.")
+                raise StereoDriveError("Calibrated pulsed workflows are not enabled.")
+            if getattr(self.controller,"pulsed_protocol",False):
+                self._run_pulsed_injections(sites,settings,check_blocked,test_volume_nl,start_site_offset,total_site_count)
+                return
             total_units = max(1, total_site_count if total_site_count is not None else len(sites))
             step_indexes = self._sequence_step_indexes(settings, check_blocked)
             for relative_site_index, site in enumerate(sites, start=1):
@@ -4730,13 +4795,16 @@ class CraniotomyWindow(QMainWindow):
         return site.dv + settings.injection_depth_mm
 
     def _above_surface_dv(self, site: InjectionSite) -> float:
-        return site.dv - 1.0
+        return site.dv - (self.validation_clearance_mm if getattr(self.controller,"pulsed_protocol",False) else 1.0)
 
     def _bregma_dv_to_axis(self, bregma_dv: float) -> float:
         """Translate a GUI-Bregma DV value to mechanical Axis DV."""
         return self._bregma_to_axis((0.0, 0.0, bregma_dv))[2]
 
     def _main_injection_duration_s(self, settings: InjectionProtocolSettings) -> float:
+        if getattr(self.controller,"pulsed_protocol",False):
+            insertion,retract=self._insertion_retraction_times(settings)
+            return max(insertion+retract,pulsed_protocol.insertion_volume(settings)/settings.insertion_rate_nl_min*60)+settings.main_volume_nl/settings.main_rate_nl_min*60
         insertion_time_s, retract_time_s = self._insertion_retraction_times(settings)
         insertion_window_s = insertion_time_s + retract_time_s
         insertion_volume_nl = (settings.insertion_rate_nl_min / 60.0) * insertion_window_s
@@ -4808,6 +4876,8 @@ class CraniotomyWindow(QMainWindow):
         )
         while not self.injection_stop_requested.is_set():
             QApplication.beep()
+            if getattr(self.controller,"pulsed_protocol",False):
+                self.controller.validate_piston_steps([-v for v in self._injection_step_plan(test_volume_nl)])
             for remaining in range(5, 0, -1):
                 if self.injection_stop_requested.is_set():
                     return
@@ -5225,7 +5295,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
-            if self.seeds or self.top_view.overlay_image is not None:
+            if self.seeds or self.injection_sites or self.top_view.overlay_image is not None:
                 self.redraw_views(current_point=(ml, ap))
         except Exception as exc:
             if getattr(self.controller, "direct_api", False):
@@ -5767,7 +5837,7 @@ class CraniotomyWindow(QMainWindow):
 
     def start_drilling_round(self, *, drill_confirmed: bool = False) -> None:
         if not getattr(self.controller,"supports_drilling_protocol",True):
-            QMessageBox.warning(self,"Direct USB limits","The API supports only 1/2 mm/s profiles, not a validated slow drilling trajectory. Automated drilling is disabled on this branch.")
+            QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous-speed drilling is not implemented.")
             return
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
@@ -5803,7 +5873,9 @@ class CraniotomyWindow(QMainWindow):
             if response != QMessageBox.Yes:
                 self.set_status("Drilling not started. Turn on the drill, then start again.")
                 return
-        self.controller.prepare_motion()
+        try:self.controller.prepare_motion()
+        except Exception as exc:
+            QMessageBox.warning(self,"Drilling setup",str(exc));return
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
         self.drill_pause_requested.clear()
@@ -5822,7 +5894,11 @@ class CraniotomyWindow(QMainWindow):
         self.active_depth_ratio = 0.0
         self.start_round_btn.setText("Pause")
         surface_targets = [self._bregma_to_axis(point) for point in self.trajectory]
-        self.drill_clearance_axis_dv = self.bregma_axis[2] - 0.5
+        self.pulsed_clearance_mm=self.validation_clearance_mm
+        self.pulsed_drill_rate=float(self.drill_rate_mm_per_s.value()) if getattr(self.controller,"pulsed_protocol",False) else 1.0
+        self.pulsed_drill_thickness_mm=float(self.skull_thickness_mm.value()) if getattr(self.controller,"pulsed_protocol",False) else 1.0
+        clearance=self.pulsed_clearance_mm if getattr(self.controller,"pulsed_protocol",False) else 2.0
+        self.drill_clearance_axis_dv = self.bregma_axis[2] - (clearance if getattr(self.controller,"pulsed_protocol",False) else .5)
         target_depths = [
             current_depth if frozen else max(current_depth, depth)
             for current_depth, frozen in zip(current_depths, frozen_points, strict=False)
@@ -5832,8 +5908,22 @@ class CraniotomyWindow(QMainWindow):
         center_above_position = self._bregma_to_axis((
             self.mid_ap.value(),
             self.mid_ml.value(),
-            self._craniotomy_center_surface_dv() - 2.0,
+            self._craniotomy_center_surface_dv() - clearance,
         ))
+        if getattr(self.controller,"pulsed_protocol",False):
+            try:
+                self._preflight_pulsed_drilling(surface_targets,current_depths,target_depths,frozen_points,round_time_seconds,center_above_position)
+                if not self.controller.reported_drill_state():raise StereoDriveError("Drill power is reported OFF. Explicitly turn it on and verify the spindle before starting.")
+                if not drill_confirmed and QMessageBox.warning(self,"Pulsed drilling — bench test",
+                        "Serial microsteps stop and settle between commands; actual round duration can be longer than requested. This is NOT a continuous-speed cut. Confirm a supervised empty bench and physical Stop accessible.",
+                        QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:
+                    self.controller.turn_drill_off()
+                    self.on_drill_round_finished("stopped");return
+            except Exception as exc:
+                try:self.controller.turn_drill_off()
+                except Exception:pass
+                self.on_drill_round_finished("error")
+                QMessageBox.warning(self,"Pulsed drilling preflight",str(exc));return
         self.drill_thread = threading.Thread(
             target=self._run_drilling_round,
             args=(
@@ -5851,7 +5941,7 @@ class CraniotomyWindow(QMainWindow):
 
     def pause_drilling_round(self) -> None:
         self.drill_pause_requested.set()
-        self.set_status("Pausing drilling and retracting to 2 mm above surface.")
+        self.set_status("Pausing at verified idle and retracting to configured clearance.")
 
     def on_drill_round_finished(self, outcome: str) -> None:
         self.drill_round_started_at = None
@@ -5890,6 +5980,9 @@ class CraniotomyWindow(QMainWindow):
                 self.drilling_paused = True
                 self.start_round_btn.setText("Continue")
                 self.set_status(f"Paused before next round to {self.current_target_depth_mm:.3f} mm.")
+                if getattr(self.controller,"pulsed_protocol",False):
+                    try:self.controller.turn_drill_off()
+                    except Exception as exc:QMessageBox.warning(self,"Drill OFF",str(exc)+" Use physical Stop if needed.")
         else:
             self.drilling_paused = True
             self.start_round_btn.setText("Continue")
@@ -6050,7 +6143,8 @@ class CraniotomyWindow(QMainWindow):
             self.drilled_depths[point_count] = target_depth
         self.active_depth_ratio = max(
             0.0,
-            min(1.0, target_depth / max(self.skull_thickness_mm.value(), 0.001)),
+            min(1.0, target_depth / max(getattr(self,"pulsed_drill_thickness_mm",1.0)
+                if getattr(self.controller,"pulsed_protocol",False) else self.skull_thickness_mm.value(), 0.001)),
         )
         self.redraw_signal.emit()
         self.drill_progress_signal.emit(index + 1)
@@ -6106,6 +6200,58 @@ class CraniotomyWindow(QMainWindow):
                 time.sleep(min(0.05, remaining))
         return completed_substeps
 
+    def _preflight_pulsed_drilling(self,surfaces,current_depths,target_depths,frozen,seconds,center):
+        plan=pulsed_protocol.drilling_plan(self.controller.get_current_axis_position(),surfaces,current_depths,
+            target_depths,frozen,self.drill_clearance_axis_dv,self.pulsed_clearance_mm,center,seconds,self.pulsed_drill_rate)
+        checked=[]
+        for event in plan:
+            if event.target is None:continue
+            checked.append(event.target)
+            if event.surface_dv is not None:
+                retract=(*event.target[:2],min(event.target[2],event.surface_dv-self.pulsed_clearance_mm,self.drill_clearance_axis_dv))
+                checked.extend(pulsed_protocol.line(event.target,retract,1))
+                checked.extend(pulsed_protocol.line(retract,event.target,1))
+        self.controller.validate_axis_path(checked)
+        return plan
+
+    def _run_pulsed_drilling(self,surfaces,current_depths,target_depths,frozen,seconds,center):
+        outcome="completed"
+        try:
+            if not self.controller.supports_drilling_protocol:raise StereoDriveError('Pulsed workflow not enabled')
+            if not self.controller.reported_drill_state():raise StereoDriveError('Reported drill power is OFF')
+            plan=self._preflight_pulsed_drilling(surfaces,current_depths,target_depths,frozen,seconds,center)
+            count=len(surfaces)-1
+            def on_event(event):
+                if event.surface_dv is not None:self.active_surface_dv=event.surface_dv
+                if event.point_index is not None:
+                    self._mark_continuous_round_point(event.point_index,event.depth_mm,count)
+                self.status_signal.emit(f"Pulsed drilling: {event.phase}; verified serial microsteps, no catch-up")
+            pulsed_protocol.execute(self.controller,plan,stop_requested=self.drill_stop_requested.is_set,
+                pause_requested=self.drill_pause_requested.is_set,retract_on_pause=True,on_event=on_event)
+        except pulsed_protocol.PulsePaused:
+            outcome="paused"
+            try:
+                current=self.controller.get_current_axis_position()
+                surface=self.active_surface_dv if self.active_surface_dv is not None else current[2]
+                target=min(current[2],surface-self.pulsed_clearance_mm,self.drill_clearance_axis_dv)
+                self.controller.move_axis_to_target('DV',target,step_mm=1,dwell_seconds=0,
+                    stop_requested=self.drill_stop_requested.is_set)
+                self.controller.turn_drill_off()
+                self.status_signal.emit("Pulsed drilling paused, retracted and drill OFF. Turn drill on explicitly before Continue.")
+            except Exception as exc:
+                outcome="error";self.status_signal.emit(str(exc))
+        except Exception as exc:
+            outcome="stopped" if self.drill_stop_requested.is_set() else "error"
+            self.status_signal.emit(str(exc))
+        finally:
+            if outcome in ("stopped","error"):
+                try:self.controller.stop();self.controller.wait_until_stopped()
+                except Exception as exc:outcome="error";self.status_signal.emit(str(exc))
+            self.drill_pause_requested.clear();self.drill_stop_requested.clear()
+            self.drill_round_started_at=None;self.drill_round_target_seconds=0
+            self.active_surface_dv=self.active_depth_ratio=None
+            self.drill_round_finished_signal.emit(outcome)
+
     def _run_drilling_round(
         self,
         surface_targets: list[tuple[float, float, float]],
@@ -6116,6 +6262,9 @@ class CraniotomyWindow(QMainWindow):
         depth_mm: float,
         center_above_position: tuple[float, float, float],
     ) -> None:
+        if getattr(self.controller,"pulsed_protocol",False):
+            self._run_pulsed_drilling(surface_targets,current_depths,target_depths,frozen_points,round_time_seconds,center_above_position)
+            return
         point_count = max(1, len(surface_targets) - 1)
         outcome = "completed"
         try:

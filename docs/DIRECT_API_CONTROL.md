@@ -49,8 +49,8 @@ ignored for control and retained until the user explicitly saves new setup.
 | Position labels/map crosses | Verified idle counts or moving motor telemetry; stale displays cleared on read failure |
 | Manual piston/test volume | Worker-owned bounded steps; counter updated from verified result, not assumed delivery |
 | Drill toggle | Worker-owned API ON/OFF; ON requires calibration/opt-in; Stop always attempts OFF |
-| Injection start, Resume, sequence and worker | All reject unvalidated rate-controlled/slow protocols before movement |
-| Automatic drilling entry and worker | Reject unvalidated continuous/slow paths |
+| Injection start, Resume, sequence and worker | Explicit pulsed opt-in; complete travel/dose preflight, serial 10 nL delivery, no catch-up |
+| Automatic drilling entry and worker | Pulsed opt-in and drill confirmation/reported ON; microsteps, frozen gaps, verified pause/retraction |
 | Empty/fill and native benchmark | Disabled, no guessed replacement |
 | Local HTTP server | Same calibrated API adapter; mandatory measured setup, free-piston only |
 | Native control-ID/screenshot diagnostics | Direct diagnostics/no native handles; not a source of direct counters |
@@ -81,29 +81,46 @@ requested; otherwise AP/ML/DV), **not collision planning or simultaneous traject
   settings/state, one planner per mode, exclusive live transport, StereoDrive refused.
 - Piston ±100 nL connection window plus estimated 0–5000 nL capacity; no unlimited
   fill/empty or rate-controlled injection hidden behind free-step requests.
-- Resume injection guarded separately and centrally; faults/disconnects clear stale
+- Resume injection uses whole-plan preflight/bench confirmation; faults/disconnects clear stale
   crosses/readings. Branch updater cannot reset this branch to `origin/main`.
 - Options probe waits for verified idle before reversal, not transient target counts;
   progress dialogs poll moving telemetry so map crosses stay current.
 - Current history disagreement at restoration, boolean history/speed values and
   signed 32-bit count overflow are rejected before target writes.
 
-## Unsupported commands and remaining validation
+## Pulsed workflows and remaining validation
 
 Captured profiles cover axis moves at 1/2 mm/s and fixed free-piston steps. They do
 not establish tissue-safe slow insertion/retraction, controlled nL/min injection,
-continuous drilling, Auto-Speed, native skull limits or homing. Planning controls
-remain visible, but unsupported automated protocols refuse execution. Enabling them
-requires documented protocol evidence, tests and supervised hardware validation.
+continuous drilling, Auto-Speed, native skull limits or homing. The user-approved
+pulsed implementation serializes small axis moves and 10 nL free-piston doses
+through existing captured profiles. It never invents speed/flow packets. No overlap,
+automatic recovery or overdue-dose catch-up is permitted. Actual duration can exceed
+the requested schedule. See [bench guide](PULSED_BENCH_TEST.md).
+
+Insertion volume is additional to main volume and rounded UP to 10 nL units.
+Preflight checks all sites, depths, overshoot, return paths and two test volumes/site
+against the actual remaining piston window/capacity. Every repeated blockage test
+is checked again before its first dose. Piston counters come from verified API
+results, not subtraction of assumed delivery. Pause freezes future events; drilling
+waits for idle, retracts via a preflighted path and requests drill OFF. Continue
+requires explicit drill ON again. Frozen gaps are crossed at clearance.
 
 Simulation covers calibration guards, absolute/fractional targets, path rejection,
 multi-leg cancellation, Stop/OFF, API adapter routes, actual Qt setup/progress/
 keyboard/piston/reference/disconnect behavior, and HTTP behavior. Run both root README
 test commands. Original capture evidence is not end-to-end validation of this branch.
 
-Final local verification: 121 application tests and 22 API/GUI tests passed with
-PySide6 and Tkinter available (no skips); 14 changed Python sources compiled and
-`git diff --check` passed. All test connections used simulators, not hardware.
+Simulation also exercises pulse quantization, insertion-plus-main accounting,
+overdue timing, pause/cancel, frozen gaps, whole-plan rejection, end-to-end Qt
+injection/Bregma/counters and drilling pause/completion. All test connections use
+simulators, not hardware. Run both suites before bench testing.
+
+Final pulsed-integration check: 136 application tests and 22 API/GUI tests pass with
+no skips. Seven changed Python sources compile; `git diff --check` passes. Added
+regressions cover fractional/rounded held coordinates at envelope edges and an idle
+display read racing command startup. The adapter serializes idle reads/preflight
+with command startup; moving telemetry shares only the transport's I/O lock.
 
 No actual hardware motion, drill activation or fluid delivery was performed during
 integration. Reported counts can agree while physical steps are missed. Externally

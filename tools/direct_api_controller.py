@@ -18,6 +18,7 @@ class StereoDriveController:
     direct_api = True
     supports_drilling_protocol = False
     supports_injection_protocol = False
+    pulsed_protocol = True
 
     def __init__(self, *, live=False):
         self.live = live
@@ -33,7 +34,8 @@ class StereoDriveController:
         self.last_rejection = None
 
     def connect(self, calibration, states, state_path, *, new_reference=False,
-                allow_dv=False, allow_piston=False, allow_drill=False, speed=1):
+                allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False):
+        if type(allow_pulsed) is not bool:raise StereoDriveError('Pulsed workflow opt-in must be an explicit boolean')
         if self.drive is not None:
             raise StereoDriveError("Disconnect first; calibration cannot change while connected.")
         if not isinstance(calibration, Calibration):
@@ -49,6 +51,7 @@ class StereoDriveController:
             drive.close()
             raise
         self.drive = drive
+        self.supports_drilling_protocol=self.supports_injection_protocol=bool(allow_pulsed)
         self.error = None
         self.last_rejection = None
         self.cancelled.clear()
@@ -113,7 +116,10 @@ class StereoDriveController:
             message=self.last_rejection; self.last_rejection=None
             raise StereoDriveError(message)
         drive=self._require()
-        p=drive.live_position() if self.busy else drive.position()
+        # Idle reads and preflight share the adapter gate with command startup.
+        # A display read must not cause a false "Controller busy" protocol failure.
+        with self.lock:
+            p=drive.live_position() if self.busy else drive.position()
         return tuple(p["axes_mm"][a] for a in ("AP","ML","DV"))
 
     def get_current_axis(self, axis):
@@ -135,12 +141,20 @@ class StereoDriveController:
         delta=self.steps[axis]*(1 if positive else -1)
         # Preflight before the asynchronous worker so rejection is immediate.
         drive=self._require()
-        p=drive.position()["axes_mm"]
-        drive.validate_axis_path([{axis:p[axis]+delta}])
+        p=dict(zip(('AP','ML','DV'),self.get_current_axis_position()))
+        p[axis]+=delta
+        self.validate_axis_path([tuple(p[a] for a in ('AP','ML','DV'))])
         return self._run(lambda d:d.move_mm(axis,delta), asynchronous=True, directions={axis:positive})
 
     def validate_axis_path(self, positions):
-        return self._require().validate_axis_path([dict(zip(("AP","ML","DV"),p)) for p in positions])
+        with self.lock:
+            if self.busy:raise StereoDriveError('Controller busy; path preflight rejected')
+            return self._require().validate_axis_path([dict(zip(("AP","ML","DV"),p)) for p in positions])
+
+    def validate_piston_steps(self, steps):
+        with self.lock:
+            if self.busy:raise StereoDriveError('Controller busy; dose preflight rejected')
+            return self._require().validate_piston_steps(steps)
 
     def goto_axis_position(self, ap, ml, dv, delay_seconds=0, stop_requested=None):
         self.validate_axis_path([(ap,ml,dv)])
@@ -158,13 +172,31 @@ class StereoDriveController:
         if any(abs(a-b)>tolerance_mm for a,b in zip(p,(ap,ml,dv))):
             raise StereoDriveError("Direct API did not verify the requested calibrated target.")
 
-    def move_axis_to_target(self, axis, target, stop_requested=None, **kwargs):
+    def move_axis_to_target(self, axis, target, stop_requested=None, step_mm=.005,dwell_seconds=0,**kwargs):
         p=list(self.get_current_axis_position())
         p[("AP","ML","DV").index(axis.upper())]=target
-        return self.goto_axis_position(*p,stop_requested=stop_requested)
+        return self.move_to_position_nudged(*p,step_mm=step_mm,dwell_seconds=dwell_seconds,stop_requested=stop_requested)
 
-    def move_to_position_nudged(self, ap, ml, dv, stop_requested=None, **kwargs):
-        return self.goto_axis_position(ap,ml,dv,stop_requested=stop_requested)
+    def move_to_position_nudged(self, ap, ml, dv, stop_requested=None, step_mm=.005,dwell_seconds=0,**kwargs):
+        from pulsed_protocol import line,finite
+        dwell_seconds=finite(dwell_seconds,'pulse period')
+        start=self.get_current_axis_position()
+        points=line(start,(ap,ml,dv),step_mm)
+        self.validate_axis_path(points)
+        def move(d):
+            previous=start
+            for target in points:
+                self._check_motion_cancelled(stop_requested)
+                started=time.monotonic()
+                result=d.move_axes_to(dict(zip(('AP','ML','DV'),target)))
+                period=dwell_seconds*math.dist(previous,target)/step_mm
+                while time.monotonic()-started<period:
+                    self._check_motion_cancelled(stop_requested)
+                    time.sleep(max(0,min(.03,period-(time.monotonic()-started))))
+                previous=target
+            return result
+        directions={a:t>c for a,t,c in zip(('AP','ML','DV'),(ap,ml,dv),start) if abs(t-c)>.0001}
+        return self._run(move,directions=directions,stop_requested=stop_requested)
 
     def syringe_step(self, volume_label, up=True, stop_requested=None, asynchronous=False, on_completed=None):
         try: volume=float(volume_label.lower().replace("nl", "").strip())
@@ -178,7 +210,17 @@ class StereoDriveController:
         return self._run(step,stop_requested=stop_requested,asynchronous=asynchronous)
 
     def read_injectomate_calibrate_scale_nl(self, **kwargs):
-        return self._require().position()["piston_nl_estimate"]
+        with self.lock:
+            if self.busy:raise StereoDriveError('Wait for verified idle piston position')
+            return self._require().position()["piston_nl_estimate"]
+
+    def reported_drill_state(self):
+        with self.lock:
+            if self.busy:raise StereoDriveError('Controller busy; drill query rejected')
+            return self._require().drill_state()
+
+    def turn_drill_off(self):
+        return self._run(lambda d:d.drill_off())
 
     def stop(self):
         self.cancelled.set()
@@ -201,6 +243,7 @@ class StereoDriveController:
 
     def close(self):
         self.cancelled.set()
+        self.supports_drilling_protocol=self.supports_injection_protocol=False
         if self.drive:
             try:self.drive.close()
             finally:self.drive=None

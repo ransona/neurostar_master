@@ -6,8 +6,10 @@ Bregma fields or button clicks. **StereoDrive must be closed.**
 
 This is an experimental, supervised bench branch. Motor counts are not independent
 tool-position feedback. No hardware motion was performed during implementation.
-Automatic drilling and rate-controlled injection are disabled: the documented API
-does not yet provide validated slow movement or injection-flow profiles.
+Automatic drilling and injection sequences are implemented using **timed pulses**
+behind a USB-setup opt-in. These are verified serial microsteps/free-piston doses,
+not continuous-speed cuts or firmware-controlled injection flow. See the
+[pulsed bench-test guide](docs/PULSED_BENCH_TEST.md) before hardware testing.
 
 ## Install and launch
 
@@ -63,8 +65,12 @@ Axis limits: 1 mm per command, ±1 mm per axis from connection, and 1 mm combine
 distance per absolute multi-axis request. Complete approach paths are preflighted.
 Piston limits: 10/20/50/100 nL, ±100 nL from connection, estimated 0–5000 nL capacity.
 These limits do not prove clearance. Reconnecting to expand travel is not a workaround.
-Empty/fill, automatic drilling, rate-controlled injection and native benchmarks are
-blocked with explanations rather than approximated using unvalidated profiles.
+Pulsed drilling includes frozen sections, pause/retract/Continue and round progression.
+Pulsed injection includes Start/Resume, insertion and main doses, overshoot,
+post-injection hold, Pause/Resume, surface return and blockage tests.
+Continuous firmware rate control, empty/fill and native benchmarks remain unsupported.
+Use small bench plans fitting existing envelopes: larger default/site-grid
+protocols may be rejected in full before movement. No limits were widened.
 
 Connecting conservatively clears tool references, captured surfaces and quick
 targets for reverification. Home/Work persist with identical Axis calibration,
@@ -73,6 +79,7 @@ Live and simulation settings/state are separated
 under `Documents\Neurostar_Master\Configs\DirectUSB`, outside the repository.
 Each mode has a dedicated `direct-control.json` for measured calibration, captured
 speed profile, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
+The `allow_pulsed` preference is saved there too; it is off by default.
 These are separate from general `settings.json` and the API motion journal
 `api-state.json`. Setup preferences save immediately; existing Home/Work metadata
 migrates automatically. Startup stays disconnected, with safety confirmation and

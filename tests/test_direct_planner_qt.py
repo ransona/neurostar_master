@@ -39,10 +39,11 @@ class PlannerTests(unittest.TestCase):
         self.window.close();self.app.processEvents()
         self.dialogs_patch.stop();self.settings_patch.stop();self.directory.cleanup()
 
-    def connect(self):
+    def connect(self,**kwargs):
         c=self.window.controller
+        options=dict(allow_dv=True,allow_piston=True);options.update(kwargs)
         c.connect(Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,dict(AP=0,ML=261,DV=0,PISTON=0)),
-                  dict(AP=0,ML=261,DV=0,PISTON=0),self.root/'api.json',allow_dv=True,allow_piston=True)
+                  dict(AP=0,ML=261,DV=0,PISTON=0),self.root/'api.json',**options)
         self.window.refresh_live_position()
 
     def wait_idle(self):
@@ -135,6 +136,88 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.controller.has_active_motion())
         self.wait_idle();self.app.processEvents()
         self.assertAlmostEqual(self.window.current_syringe_position(),3010,delta=1/161.36)
+
+    def pulse_settings(self):
+        return planner.InjectionProtocolSettings(main_volume_nl=10,insertion_rate_nl_min=60000,
+            main_rate_nl_min=60000,injection_depth_mm=.005,insert_retract_speed_um_s=1000,
+            overshoot_mm=0,post_inject_pause_s=0)
+
+    def test_pulsed_injection_worker_uses_gui_bregma_and_verified_counter(self):
+        self.connect(allow_pulsed=True)
+        self.window.controller.prepare_motion();self.window.controller.goto_axis_position(.02,.01,.01)
+        self.window.set_local_bregma()
+        self.window.validation_clearance_mm=.02
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        self.window._start_injection_sequence([planner.InjectionSite(0,0,0)],self.pulse_settings(),[10],False,10,0,1,'test')
+        deadline=time.monotonic()+8
+        while self.window.injection_thread.is_alive() and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        self.assertFalse(self.window.injection_thread.is_alive());self.app.processEvents()
+        p=self.window.controller.get_current_axis_position()
+        self.assertAlmostEqual(p[0],.02,delta=1/5225)
+        self.assertAlmostEqual(p[1],.01,delta=1/5225)
+        self.assertAlmostEqual(p[2],-.01,delta=1/5225)
+        self.assertAlmostEqual(self.window.current_syringe_position(),2980,delta=1/161.36)
+        self.assertIsNone(self.window.controller.error)
+
+    def test_pulsed_workflow_preflight_rejects_later_site_and_whole_dose(self):
+        self.connect(allow_pulsed=True);self.window.injection_clearance_axis_dv=-.02
+        self.window.pulsed_clearance_mm=.02
+        with self.assertRaises(ValueError):
+            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0),planner.InjectionSite(2,0,0)],self.pulse_settings(),False,10)
+        with self.assertRaises(Exception):
+            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0)]*6,self.pulse_settings(),False,10)
+        self.assertFalse(any(p[1]==0x0c for p in self.window.controller.drive._session.transport.packets))
+
+    def test_resume_selected_routes_remaining_sites_to_pulsed_sequence(self):
+        self.connect(allow_pulsed=True);self.window.set_local_bregma()
+        self.window.injection_sites=[planner.InjectionSite(0,0,0),planner.InjectionSite(.01,.02,0)]
+        self.window.refresh_injection_sites_list();self.window.injection_sites_list.setCurrentRow(1)
+        with patch.object(self.window,'_injection_protocol_settings',return_value=self.pulse_settings()), \
+                patch.object(self.window,'_start_injection_sequence') as start:
+            self.window.resume_injection_from_selected()
+        self.assertEqual(start.call_args.kwargs['start_site_offset'],1)
+        self.assertEqual(len(start.call_args.kwargs['sites']),1)
+        self.assertEqual(start.call_args.kwargs['sites'][0].ml,.02)
+
+    def test_pulsed_drill_pause_retracts_without_losing_reference(self):
+        self.connect(allow_pulsed=True,allow_drill=True)
+        self.window.controller.drive.drill_on()
+        self.window.pulsed_clearance_mm=.02;self.window.pulsed_drill_rate=1
+        self.window.drill_clearance_axis_dv=-.02
+        self.window.drill_pause_requested.set()
+        surfaces=[(0,0,0),(.01,0,0),(0,.01,0),(0,0,0)]
+        self.window._run_pulsed_drilling(surfaces,[0]*4,[.005]*4,[False]*4,.1,(0,0,-.02))
+        self.assertIsNone(self.window.controller.error)
+        self.assertTrue(self.window.controller.drive._session.store.read()['valid'])
+        self.assertFalse(self.window.controller.drive.drill_state())
+        self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
+        self.assertTrue(self.window.drilling_paused)
+
+    def test_pulsed_drilling_start_completes_closed_perimeter(self):
+        self.connect(allow_pulsed=True,allow_drill=True)
+        self.window.set_local_bregma();self.window.controller.drive.drill_on()
+        self.window.validation_clearance_mm=.02
+        self.window.trajectory=[(0,0,0),(.01,0,0),(0,.01,0),(0,0,0)]
+        self.window.seeds=[planner.SeedPoint(0,0,0,0,0),planner.SeedPoint(1,180,.01,0,0)]
+        self.window.drilled_depths=[0]*4;self.window.frozen_points=[False]*4
+        self.window.current_target_depth_mm=.005;self.window.drill_depth.setValue(.005)
+        self.window.drill_rate_mm_per_s.setValue(1);self.window.round_time_seconds.setValue(1)
+        self.window.cut_offset.setValue(0);self.window.mid_ap.setValue(0);self.window.mid_ml.setValue(0)
+        self.window.auto_start_rounds.setChecked(False)
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        outcomes=[];self.window.drill_round_finished_signal.connect(outcomes.append)
+        self.window.start_drilling_round()
+        self.assertIsNotNone(self.window.drill_thread)
+        deadline=time.monotonic()+10
+        while self.window.drill_thread.is_alive() and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        self.assertFalse(self.window.drill_thread.is_alive());self.app.processEvents()
+        self.assertEqual(outcomes,['completed'])
+        self.assertIsNone(self.window.controller.error)
+        self.assertEqual(self.window.drilled_depths,[.005]*4)
+        self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
 
     def test_zero_setup_wizard_simulation(self):
         # Persistent mechanical targets survive reconnect with the same Axis zero.

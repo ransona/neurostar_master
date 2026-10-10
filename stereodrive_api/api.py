@@ -155,7 +155,10 @@ class StereoDrive:
         for axis, value in targets.items():
             if axis not in planned or isinstance(value, bool) or not isinstance(value, (int,float)) or not math.isfinite(value):
                 raise ValueError('Absolute targets require finite AP/ML/DV numbers')
-            planned[axis] = float(value)
+            # Held axes are often supplied from rounded motor telemetry. Keep
+            # their fractional commanded target within half a motor count;
+            # otherwise a held edge-of-envelope axis can spuriously fail.
+            planned[axis] = start[axis] if abs(value-start[axis])<=.5/session.scales[axis] else float(value)
         for axis in planned:
             delta = planned[axis] - start[axis]
             if axis == 'DV' and abs(delta) > .5/session.scales[axis] and not self.allow_dv:
@@ -185,6 +188,32 @@ class StereoDrive:
                 finally:self._session.emergency_stop()
             raise
         finally: self._lock.release()
+
+    def validate_piston_steps(self, steps):
+        """Preflight every signed free-piston step, without sending targets."""
+        if not self._lock.acquire(blocking=False):raise RuntimeError('Controller busy')
+        try:
+            s=self._require();self._require_zero_calibration(s)
+            if not self.allow_piston:raise ValueError('Piston disabled')
+            if s.fault:raise RuntimeError('Session fault: '+s.fault)
+            s.refresh();normal=s.command_normal['PISTON']
+            for step in steps:
+                if isinstance(step,bool) or step not in (-100,-50,-20,-10,10,20,50,100):
+                    raise ValueError('Use signed 10/20/50/100 nL free steps')
+                normal+=step*s.scales['PISTON']
+                if abs(normal-s.connection_normal['PISTON'])/s.scales['PISTON']>100.0000001:
+                    raise ValueError('Pulsed workflow exceeds piston +/-100 nL connection envelope')
+                estimate=(normal-s.reference['PISTON'])/s.scales['PISTON']
+                if not -1e-7<=estimate<=5000+1e-7:raise ValueError('Piston capacity exceeded')
+                raw=round(normal+(BACKLASH['PISTON'] if step>0 else 0))
+                if not -(2**31)<=raw<2**31:raise ValueError('Piston raw target overflow')
+        except ValueError:raise
+        except Exception as exc:
+            if self._session is not None:
+                try:self._session.invalidate(exc)
+                finally:self._session.emergency_stop()
+            raise
+        finally:self._lock.release()
 
     def move_axis_to(self, axis, position_mm):
         """Move to a calibrated absolute Axis position; no GUI text boxes."""
