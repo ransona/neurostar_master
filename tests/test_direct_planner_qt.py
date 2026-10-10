@@ -452,16 +452,24 @@ class PlannerTests(unittest.TestCase):
         self.window.controller.live=False
 
     def test_large_blockage_test_expands_volume_and_tracks_verified_pulses(self):
+        self.window.controller.close()
         self.connect(allow_pulsed=True);self.window.controller.prepare_motion()
         self.window.pulsed_clearance_mm=.02
+        progress_signal=Mock()
+        self.window.injection_progress_signal=progress_signal
         sleeper=time.sleep
         def confirm():self.window.block_prompt_event.set()
         with patch.object(self.window,'block_prompt_signal') as prompt, \
                 patch.object(planner.time,'sleep',side_effect=lambda delay:None if delay==1 else sleeper(delay)):
             prompt.emit.side_effect=confirm
-            self.window._run_block_test(planner.InjectionSite(0,0,0),self.pulse_settings(),200)
+            self.window._run_block_test(
+                planner.InjectionSite(0,0,0),self.pulse_settings(),200,
+                overall_progress_percent=50,
+            )
         self.app.processEvents()
         self.assertAlmostEqual(self.window.current_syringe_position(),2800,delta=1/161.36)
+        self.assertTrue(progress_signal.emit.call_args_list)
+        self.assertTrue(all(call.args[0] == 50 for call in progress_signal.emit.call_args_list))
 
     def test_benchmark_options_runs_and_displays_results(self):
         self.connect();timer=QTimer();timer.setInterval(50);started=[False];outputs=[]

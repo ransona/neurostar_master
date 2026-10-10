@@ -5299,9 +5299,13 @@ class CraniotomyWindow(QMainWindow):
                 on_delivered=self.syringe_position_signal.emit)
             if check_blocked:
                 self.sequence_step_signal.emit(steps['block'])
-                self._run_block_test(site,settings,test_volume_nl)
+                self._run_block_test(
+                    site, settings, test_volume_nl,
+                    overall_progress_percent=int((site_index + 1) / max(1, total_count) * 100),
+                )
             if self.injection_stop_requested.is_set():raise pulsed_protocol.PulseCancelled('Sequence stopped')
         self.sequence_step_signal.emit(-1);self.active_injection_site_signal.emit(-1)
+        self.injection_progress_signal.emit(100, "Injection sequence complete")
         self.injection_finished_signal.emit("Pulsed injection workflow complete (estimated piston displacement, not measured delivery)")
 
     def _start_injection_sequence(
@@ -5438,7 +5442,10 @@ class CraniotomyWindow(QMainWindow):
                 )
                 if check_blocked and not self.injection_stop_requested.is_set():
                     self.sequence_step_signal.emit(step_indexes["block"])
-                    self._run_block_test(site, settings, test_volume_nl)
+                    self._run_block_test(
+                        site, settings, test_volume_nl,
+                        overall_progress_percent=int(site_index / max(1, total_units) * 100),
+                    )
             if self.injection_stop_requested.is_set():
                 self.controller.stop()
                 self.controller.wait_until_stopped()
@@ -5804,8 +5811,13 @@ class CraniotomyWindow(QMainWindow):
         site: InjectionSite,
         settings: InjectionProtocolSettings,
         test_volume_nl: int,
+        overall_progress_percent: int = 0,
     ) -> None:
-        self.injection_progress_signal.emit(100, "Retracting pipette")
+        # A blockage check is part of the current site, not the whole sequence.
+        # Keep the overall bar at the completed-site fraction instead of
+        # reporting 100% while later sites are still pending.
+        progress = max(0, min(99, int(overall_progress_percent)))
+        self.injection_progress_signal.emit(progress, "Retracting pipette")
         above_dv = self._above_surface_dv(site)
         self.controller.goto_axis_position(site.ap, site.ml, above_dv, delay_seconds=0.5,
                                            stop_requested=self.injection_stop_requested.is_set)
@@ -5825,12 +5837,12 @@ class CraniotomyWindow(QMainWindow):
             for remaining in range(5, 0, -1):
                 if self.injection_stop_requested.is_set():
                     return
-                self.injection_progress_signal.emit(100, f"Verifying no blockage in {remaining}s")
+                self.injection_progress_signal.emit(progress, f"Verifying no blockage in {remaining}s")
                 time.sleep(1.0)
             for step_nl in self._injection_step_plan(test_volume_nl):
                 if self.injection_stop_requested.is_set():
                     return
-                self.injection_progress_signal.emit(100, f"Verifying no blockage (test volume = {step_nl} nl)")
+                self.injection_progress_signal.emit(progress, f"Verifying no blockage (test volume = {step_nl} nl)")
                 self.ensure_syringe_move_allowed(step_nl, False)
                 callbacks={"on_completed":self.syringe_position_signal.emit} if getattr(self.controller,"direct_api",False) else {}
                 self.controller.syringe_step(
@@ -5849,13 +5861,13 @@ class CraniotomyWindow(QMainWindow):
             if self.injection_stop_requested.is_set():
                 return
             if self.block_prompt_result == "clear":
-                self.injection_progress_signal.emit(100, "Blockage test confirmed clear")
+                self.injection_progress_signal.emit(progress, "Blockage test confirmed clear")
                 return
             if self.block_prompt_result == "retest":
-                self.injection_progress_signal.emit(100, "Repeating blockage test injection")
+                self.injection_progress_signal.emit(progress, "Repeating blockage test injection")
                 continue
             self.injection_stop_requested.set()
-            self.injection_progress_signal.emit(100, "Sequence stopped after blockage test")
+            self.injection_progress_signal.emit(progress, "Sequence stopped after blockage test")
             return
 
     def set_injection_progress(self, percent: int, message: str) -> None:
