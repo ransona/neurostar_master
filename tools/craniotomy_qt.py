@@ -5773,8 +5773,8 @@ class CraniotomyWindow(QMainWindow):
         )
         volume_percent = min(100.0, max(0.0, int(delivered_nl) / max(1, int(target_nl)) * 100.0))
         return (
-            f"Insert {depth_um:.0f} µm ({depth_percent:.0f}%); "
-            f"dose {int(delivered_nl)}/{int(target_nl)} nL ({volume_percent:.0f}%)"
+            f"Inserting {depth_um:.0f} µm ({depth_percent:.0f}%); "
+            f"injecting volume {int(delivered_nl)}/{int(target_nl)} nL ({volume_percent:.0f}%)"
         )
 
     @staticmethod
@@ -5783,12 +5783,12 @@ class CraniotomyWindow(QMainWindow):
         phase = str(message).lower().replace("_", " ")
         if "block" in phase or "verifying no blockage" in phase:
             return "Checking blockage"
-        if "insertion dose" in phase or "inserting dose" in phase:
-            return "Delivering insertion dose"
-        if "main dose" in phase or "injecting" in phase or "main injection" in phase:
-            return "Delivering dose"
+        if "insertion" in phase:
+            return "Injecting volume"
+        if "main" in phase or "injecting" in phase:
+            return "Injecting volume"
         if "hold" in phase or "pause" in phase:
-            return "Waiting after dose"
+            return "Waiting after injection"
         if "retract" in phase or "return" in phase:
             return "Retracting pipette"
         if "insert" in phase or "advance" in phase:

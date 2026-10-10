@@ -352,7 +352,7 @@ class GuiCoordinateTests(unittest.TestCase):
             self.w, 42, "Pulsed main_dose: site 2/5; verified serial commands"
         )
         self.w.action_status_label.setText.assert_called_with(
-            "Status: Injection 2/5: Delivering dose"
+            "Status: Injection 2/5: Injecting volume"
         )
         self.w.action_status_label.setText.reset_mock()
         Window.set_injection_progress(self.w, 42, "Moving to surface for injection site")
@@ -371,7 +371,7 @@ class GuiCoordinateTests(unittest.TestCase):
         Window.set_injection_progress(self.w, 35, detail)
 
         self.w.action_status_label.setText.assert_called_with(
-            "Status: Injection 1/3: Insert 250 µm (50%); dose 40/100 nL (40%)"
+            "Status: Injection 1/3: Inserting 250 µm (50%); injecting volume 40/100 nL (40%)"
         )
 
     def test_injection_run_button_says_resume_while_paused(self):
