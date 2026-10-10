@@ -71,7 +71,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.inject_up_btn.text(),'Step Syringe Up')
         self.assertEqual(self.window.inject_down_btn.text(),'Step Syringe Down')
         self.assertFalse(hasattr(self.window,'pause_injection_btn'))
-        self.assertEqual(self.window.start_injection_btn.text(),'Go')
+        self.assertEqual(self.window.start_injection_btn.text(),'Start Injection Sequence')
         self.assertTrue(self.window.sequence_steps_list.wordWrap())
         self.assertEqual(self.window.direct_limit_edits['PISTON'][0].value(),500)
         self.assertEqual(self.window.direct_limit_edits['PISTON'][1].value(),4500)
@@ -486,7 +486,7 @@ class PlannerTests(unittest.TestCase):
         self.window.controller.prepare_motion();self.window.controller.goto_axis_position(.02,.01,.01)
         self.window.set_local_bregma()
         self.window.validation_clearance_mm=.02
-        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        self.dialogs.warning.reset_mock()
         self.window._start_injection_sequence([planner.InjectionSite(0,0,0)],self.pulse_settings(),[10],False,10,0,1,'test')
         deadline=time.monotonic()+8
         while self.window.injection_thread.is_alive() and time.monotonic()<deadline:
@@ -498,6 +498,7 @@ class PlannerTests(unittest.TestCase):
         self.assertAlmostEqual(p[2],-.01,delta=1/5225)
         self.assertAlmostEqual(self.window.current_syringe_position(),2980,delta=1/161.36)
         self.assertIsNone(self.window.controller.error)
+        self.dialogs.warning.assert_not_called()
 
     def test_pulsed_workflow_preflight_rejects_later_site_and_whole_dose(self):
         self.connect(allow_pulsed=True);self.window.injection_clearance_axis_dv=-.02

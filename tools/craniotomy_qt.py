@@ -1595,7 +1595,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_site_progress = QProgressBar()
         self.injection_site_progress.setRange(0, 100)
         self.injection_site_progress.setValue(0)
-        self.start_injection_btn = QPushButton("Go")
+        self.start_injection_btn = QPushButton("Start Injection Sequence")
         self.start_injection_btn.setProperty("variant", "primary")
         self.start_injection_btn.style().unpolish(self.start_injection_btn)
         self.start_injection_btn.style().polish(self.start_injection_btn)
@@ -5268,9 +5268,6 @@ class CraniotomyWindow(QMainWindow):
         self.pulsed_clearance_mm=self.validation_clearance_mm
         if getattr(self.controller,"pulsed_protocol",False):
             self._preflight_pulsed_injections(sites,settings,check_blocked,test_volume_nl)
-            if QMessageBox.warning(self,"Pulsed injection — bench test",
-                    "This uses serial 10 nL free-piston pulses and small axis steps, NOT continuous flow. Actual duration may be longer than requested. Verify no specimen, safe fluid collection and physical Stop. Continue?",
-                    QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
         try:self.controller.prepare_motion()
         except Exception as exc:
             QMessageBox.warning(self,"Injection setup",str(exc));return
@@ -5799,7 +5796,7 @@ class CraniotomyWindow(QMainWindow):
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
         self.set_status(display_message)
         self.start_injection_btn.setEnabled(True)
-        self.start_injection_btn.setText("Go")
+        self.start_injection_btn.setText("Start Injection Sequence")
         if message in ("Injection complete", "Injection protocol complete"):
             self.injection_progress.setValue(100)
             self.injection_site_progress.setValue(100)
