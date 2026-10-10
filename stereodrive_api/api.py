@@ -186,6 +186,15 @@ class StereoDrive:
             if self._stopping.is_set(): raise InterruptedError('Stop in progress')
             try: s.move(axis, 1 if delta > 0 else -1, abs(delta))
             except (ValueError,): raise
+            except InterruptedError:
+                # Session.move reconciles a deterministic simulator stop. Keep
+                # that recoverable state; a live controller remains invalidated.
+                if s.simulated:
+                    s.cancel.clear()
+                else:
+                    try: s.invalidate('Movement interrupted; verify physical position/history before reconnecting.')
+                    finally: s.emergency_stop()
+                raise
             except Exception as exc:
                 try: s.invalidate(exc)
                 finally: s.emergency_stop()
@@ -345,6 +354,13 @@ class StereoDrive:
                 s.move(axis, 1 if delta>0 else -1,abs(delta))
             return dict(s.positions())
         except ValueError: raise
+        except InterruptedError:
+            if self._session is not None and self._session.simulated:
+                self._session.cancel.clear()
+            elif self._session is not None:
+                try: self._session.invalidate('Movement interrupted; verify physical position/history before reconnecting.')
+                finally: self._session.emergency_stop()
+            raise
         except Exception as exc:
             if self._session is not None:
                 try:self._session.invalidate(exc)

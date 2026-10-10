@@ -165,6 +165,44 @@ class Session:
                 else: settled = None
                 time.sleep(.05)
             raise RuntimeError('Movement timed out; no automatic reverse or retry.')
+        except InterruptedError as exc:
+            if not self.simulated:
+                self.fault = str(exc)
+                try: self.invalidate(exc)
+                except Exception: pass
+                try: self.emergency_stop()
+                except Exception as stop_exc:
+                    try: self.log('STOP_ERROR', error=str(stop_exc))
+                    except Exception: pass
+                raise
+            # A simulator can report an exact stop state, unlike live hardware.
+            # Stop all pending axes, then reconcile only the requested axis if
+            # its deterministic simulated target had already completed.
+            try:
+                self.emergency_stop()
+                readings = self.snapshot()
+                if any(reading.moving for reading in readings.values()):
+                    raise RuntimeError('Simulator still reports movement after Stop.')
+                reached_target = readings[axis].raw == requested
+                if readings[axis].raw not in (old[axis], requested):
+                    raise RuntimeError('Simulator stopped at an unknown position.')
+                if any(readings[name].raw != old[name] for name in AXES if name != axis):
+                    raise RuntimeError('An uncommanded simulated axis changed.')
+                if reached_target:
+                    self.raw[axis] = requested
+                    self.states[axis] = new_state
+                    self.command_normal[axis] = next_normal
+                self.save(True)
+                self.log('MOVE_CANCELLED', axis=axis, reached_target=reached_target,
+                         relative_units=self.positions())
+            except Exception as stop_exc:
+                self.fault = str(stop_exc)
+                try: self.invalidate(stop_exc)
+                except Exception: pass
+                try: self.emergency_stop()
+                except Exception: pass
+                raise
+            raise
         except Exception as exc:
             self.fault = str(exc)
             try: self.invalidate(exc)

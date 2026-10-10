@@ -98,9 +98,13 @@ class APITests(unittest.TestCase):
         with self.assertRaises(RuntimeError):d.move_mm('ML',.01)
         d.stop();thread.join(2)
         self.assertFalse(thread.is_alive());self.assertTrue(errors)
-        self.assertFalse(json.loads(self.path.read_text())['valid'])
+        # Simulator reports an exact stopped position, so cancellation is
+        # recoverable rather than becoming a latched USB safety fault.
+        self.assertTrue(json.loads(self.path.read_text())['valid'])
+        d.move_mm('ML',.01)
+        self.assertAlmostEqual(d.position()['axes_mm']['ML'],.01,delta=1/5225)
         packets=d._session.transport.packets
-        self.assertEqual(sum(p[1]==0x0c for p in packets),1)
+        self.assertEqual(sum(p[1]==0x0c for p in packets),2)
         self.assertEqual({p[2] for p in packets if p[1]==0x0f},{0x40,0x50,0x60,0x70})
 
     def test_corrupt_ack_stops_and_faults(self):

@@ -127,7 +127,11 @@ class Simulator:
             self.drill_on = bool(data[2])
         if data[:2] == b'\xaf\x0f':
             axis = next(a for a in AXES if SELECTORS[a] == data[2])
-            self.pending.pop(axis, None)
+            pending = self.pending.pop(axis, None)
+            # If the simulated target has already elapsed when Stop arrives,
+            # report it as completed; otherwise preserve the pre-move position.
+            if pending and time.monotonic() >= pending[1]:
+                self.raw[axis] = pending[0]
 
     def exchange(self, data, size):
         self.write(data)

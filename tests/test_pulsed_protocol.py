@@ -73,6 +73,43 @@ class PulseTests(unittest.TestCase):
         self.assertTrue(any(e.target[2]==-.02 for e in between))
         self.assertEqual([e.due_s for e in plan],sorted(e.due_s for e in plan))
 
+    def test_spaced_borehole_sampling_is_uniform_and_respects_frozen_segments(self):
+        perimeter=[(0,0,0),(2,0,0),(2,2,0),(0,2,0),(0,0,0)]
+        holes=pulse.sample_boreholes(perimeter,1.1,[False,True,False,False,False])
+        self.assertEqual(len(holes),8)
+        self.assertAlmostEqual(holes[0][0],0)
+        self.assertAlmostEqual(holes[0][1],0)
+        self.assertTrue(any(hole[3] for hole in holes))
+        distances=[((holes[(i+1)%len(holes)][0]-hole[0])**2+
+                    (holes[(i+1)%len(holes)][1]-hole[1])**2)**.5 for i,hole in enumerate(holes)]
+        self.assertLess(max(distances),1.1+1e-9)
+
+    def test_per_hole_freeze_overrides_can_freeze_or_unfreeze_inherited_holes(self):
+        holes=[(0,0,0,True),(1,0,0,False),(2,0,0,False)]
+        effective=pulse.apply_borehole_freeze_overrides(holes,[False,True,None])
+        self.assertEqual([hole[3] for hole in effective],[False,True,False])
+
+    def test_spaced_boreholes_infer_surface_from_perimeter_profile(self):
+        perimeter=[(0,0,0),(2,0,2),(2,2,2),(0,2,0),(0,0,0)]
+        holes=pulse.sample_boreholes(perimeter,1.0,[False]*len(perimeter))
+        self.assertAlmostEqual(holes[1][2],1.0)
+
+    def test_borehole_plan_retracts_before_lateral_move_and_limits_depth(self):
+        holes=[(0,0,0,False),(.5,0,0,False)]
+        plan=pulse.borehole_drilling_plan((0,0,-.05),holes,[0,0],[.01,.01],-.02,.02,
+            (.25,0,-.05),.1)
+        drill=[event for event in plan if event.phase=='borehole_drill']
+        self.assertTrue(drill)
+        self.assertEqual({event.point_index for event in drill}, {0, 1})
+        self.assertTrue(all(event.target[2] <= .010001 for event in drill))
+        self.assertTrue(all(event.target[2] >= -1e-9 for event in drill))
+        # Circuit duration is no longer used to insert waits between holes.
+        self.assertLess(max(event.due_s for event in plan), 1.0)
+        for left,right in zip(plan,plan[1:]):
+            if left.target and right.target and abs(left.target[0]-right.target[0])>1e-9:
+                self.assertLessEqual(left.target[2],-.02+1e-9)
+                self.assertLessEqual(right.target[2],-.02+1e-9)
+
     def test_piston_preflight_rejects_whole_overbudget_without_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             c=StereoDriveController();c.connect(CAL,STATES,Path(directory)/'api.json',allow_piston=True)

@@ -75,19 +75,33 @@ size and pulsed average rates. The previous ±1 mm/±100 nL connection envelopes
 are preflighted. Limits are not collision protection; verify the full path independently.
 Piston free steps remain 10/20/50/100 nL; configured limits cannot exceed 0–5000 nL
 for the Nano 5 µL syringe. Signed motor-count overflow remains rejected.
+Craniotomy **Drilling pattern and timing → Mode** defaults to **Spaced boreholes**;
+select **Continuous path** for the existing perimeter-tracing behavior. Boreholes are placed
+uniformly along the closed perimeter at no more than the selected center-to-center
+spacing. Set every craniotomy seed surface first; the surface at each borehole is
+inferred from the interpolated seed-surface profile, so individual hole surfaces do
+not need separate capture. Each advances by **Depth increment / round** until **Max Depth**, retracting
+to clearance before moving to the next hole. Hole progress is retained only while
+the sampled surface plan and spacing still match. Spaced-borehole execution requires
+the verified pulsed controller workflow. **Time per circuit** paces visits around the
+perimeter; serial movement and settling overhead can make actual time longer.
+In this mode, **Freeze Holes** and **Unfreeze Holes** let you draw over individual
+hole markers on the map; frozen holes are gray and are skipped on deeper rounds.
+Increase **Max Depth** to continue deepening the remaining unfrozen holes; the next
+depth increment becomes available when the previous maximum had already been reached.
+The same draw controls freeze/unfreeze perimeter sections in Continuous path mode.
 Pulsed drilling includes frozen sections, pause/retract/Continue and round progression.
 Pulsed injection includes Start/Resume, insertion and main doses, overshoot,
 post-injection hold, Pause/Resume, surface return and blockage tests.
-The craniotomy tab lists each distinct perimeter point; select one from the list
+The craniotomy tab lists seed points; select one from the list
 or click it on the map, then choose **Set Surface**. The planner moves to the
 planned point above its surface and opens a shortcut-enabled dialog. Lower the
 tool to touch the skull and choose **At Surface** to save its current GUI Bregma
 position. Captured point surfaces are autosaved and become the surface targets
-used by drilling. The closing perimeter point is represented by the first list
-entry. **Drill On/Off** sends an explicit, state-checked ON or OFF command through
-the direct API; turning ON asks for confirmation and still requires verified
-USB setup/calibration and the drill opt-in. Reported power is not proof of spindle
-rotation or rest.
+used by drilling. **Drill On/Off** toggles the reported drill state directly through
+the API without a confirmation popup; the drilling sequence still separately asks
+you to confirm the drill is on and verifies reported power. Reported power is not
+proof of spindle rotation or rest.
 Manual/test volumes up to 2000 nL are restored: larger requests expand into
 captured 10/20/50/100 nL steps, with whole-dose preflight and per-step verified
 counters. Keyboard movement step choices again include 2 and 5 mm, within travel limits.

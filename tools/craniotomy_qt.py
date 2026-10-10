@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess, QTimer, Signal, QLockFile
-from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -207,11 +207,15 @@ class CraniotomyConfig:
     round_time_seconds: float
     drill_rate_mm_per_s: float
     auto_start_rounds: bool
+    drilling_mode: str
+    hole_spacing_mm: float
 
 
 class ProjectionWidget(QWidget):
     freeze_drawn = Signal(int)
     unfreeze_drawn = Signal(int)
+    borehole_freeze_drawn = Signal(int)
+    borehole_unfreeze_drawn = Signal(int)
     trajectory_point_selected = Signal(int)
     location_double_clicked = Signal(float, float)
     location_clicked = Signal(float, float)
@@ -222,15 +226,21 @@ class ProjectionWidget(QWidget):
         self.y_label = y_label
         self.invert_y = invert_y
         self.trajectory: list[tuple[float, float, float]] = []
-        self.selected_trajectory_index: int | None = None
+        self.selected_seed_index: int | None = None
         self.seed_points: list[tuple[float, float, bool]] = []
         self.injection_site_points: list[tuple[float, float]] = []
+        self.quick_location_points: list[tuple[str, float, float]] = []
+        self.borehole_points: list[tuple[float, float, float, bool]] = []
         self.anchor_point: tuple[float, float] | None = None
         self.frozen_points: list[bool] = []
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
         self.unfreeze_mode = False
+        self._freeze_cursor = self._circle_cursor(QColor("#2563eb"))
+        self._unfreeze_cursor = self._circle_cursor(QColor("#f97316"))
         self._trajectory_screen_points: list[QPointF] = []
+        self._seed_screen_points: list[QPointF] = []
+        self._borehole_screen_points: list[QPointF] = []
         self._inner_ring_screen_points: list[QPointF] = []
         self._coordinate_bounds: tuple[float, float, float, float] | None = None
         self.overlay_image: QImage | None = None
@@ -277,7 +287,24 @@ class ProjectionWidget(QWidget):
         self._update_navigation_cursor()
 
     def _update_navigation_cursor(self) -> None:
-        self.setCursor(Qt.CrossCursor if self.add_site_mode else Qt.OpenHandCursor if self.navigation_enabled else Qt.ArrowCursor)
+        if self.freeze_mode:
+            self.setCursor(self._freeze_cursor)
+        elif self.unfreeze_mode:
+            self.setCursor(self._unfreeze_cursor)
+        else:
+            self.setCursor(Qt.CrossCursor if self.add_site_mode else Qt.OpenHandCursor if self.navigation_enabled else Qt.ArrowCursor)
+
+    @staticmethod
+    def _circle_cursor(color: QColor) -> QCursor:
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(color, 2.5))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QRectF(3.5, 3.5, 17.0, 17.0))
+        painter.end()
+        return QCursor(pixmap, 12, 12)
 
     def _position_to_coordinates(self, position) -> tuple[float, float] | None:
         if self._coordinate_bounds is None or self._draw_rect is None or not self._draw_rect.contains(position):
@@ -308,13 +335,17 @@ class ProjectionWidget(QWidget):
         current_point: tuple[float, float] | None = None,
         injection_sites: list[tuple[float, float]] | None = None,
         anchor_point: tuple[float, float] | None = None,
-        selected_trajectory_index: int | None = None,
+        selected_seed_index: int | None = None,
+        quick_locations: list[tuple[str, float, float]] | None = None,
+        borehole_points: list[tuple[float, float, float, bool]] | None = None,
     ) -> None:
         self.trajectory = trajectory
         self.seed_points = seed_points
         self.injection_site_points = injection_sites or []
         self.anchor_point = anchor_point
-        self.selected_trajectory_index = selected_trajectory_index
+        self.quick_location_points = quick_locations or []
+        self.borehole_points = borehole_points or []
+        self.selected_seed_index = selected_seed_index
         self.frozen_points = frozen_points or [False] * len(trajectory)
         self.current_point = current_point
         self.update()
@@ -323,12 +354,14 @@ class ProjectionWidget(QWidget):
         self.freeze_mode = enabled
         if enabled:
             self.unfreeze_mode = False
+        self._update_navigation_cursor()
         self.update()
 
     def set_unfreeze_mode(self, enabled: bool) -> None:
         self.unfreeze_mode = enabled
         if enabled:
             self.freeze_mode = False
+        self._update_navigation_cursor()
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -352,15 +385,15 @@ class ProjectionWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._pan_anchor is not None and event.button() == Qt.LeftButton:
             coordinates = self._position_to_coordinates(event.position()) if self.add_site_mode and not self._pan_dragged else None
-            if not self._pan_dragged and not self.add_site_mode and self._trajectory_screen_points:
+            if not self._pan_dragged and not self.add_site_mode and self._seed_screen_points:
                 nearest_index = min(
-                    range(len(self._trajectory_screen_points)),
+                    range(len(self._seed_screen_points)),
                     key=lambda index: math.hypot(
-                        self._trajectory_screen_points[index].x() - event.position().x(),
-                        self._trajectory_screen_points[index].y() - event.position().y(),
+                        self._seed_screen_points[index].x() - event.position().x(),
+                        self._seed_screen_points[index].y() - event.position().y(),
                     ),
                 )
-                point = self._trajectory_screen_points[nearest_index]
+                point = self._seed_screen_points[nearest_index]
                 if math.hypot(point.x() - event.position().x(), point.y() - event.position().y()) <= 14:
                     self.trajectory_point_selected.emit(nearest_index)
             self._pan_anchor = None
@@ -429,6 +462,17 @@ class ProjectionWidget(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def _emit_nearest_trajectory_index(self, position, freeze: bool) -> None:
+        if self.borehole_points:
+            nearest_index = None
+            nearest_distance = 18.0
+            for index, point in enumerate(self._borehole_screen_points):
+                distance = math.hypot(point.x() - position.x(), point.y() - position.y())
+                if distance <= nearest_distance:
+                    nearest_index = index
+                    nearest_distance = distance
+            if nearest_index is not None:
+                (self.borehole_freeze_drawn if freeze else self.borehole_unfreeze_drawn).emit(nearest_index)
+            return
         if not self._trajectory_screen_points:
             return
         nearest_index = None
@@ -471,6 +515,8 @@ class ProjectionWidget(QWidget):
             not self.trajectory
             and not self.seed_points
             and not self.injection_site_points
+            and not self.quick_location_points
+            and not self.borehole_points
             and self.anchor_point is None
             and self.current_point is None
             and not overlay_visible
@@ -483,8 +529,14 @@ class ProjectionWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, message)
             return
 
-        xs = [p[0] for p in self.trajectory] + [s[0] for s in self.seed_points] + [p[0] for p in self.injection_site_points]
-        ys = [p[1] for p in self.trajectory] + [s[1] for s in self.seed_points] + [p[1] for p in self.injection_site_points]
+        xs = ([p[0] for p in self.trajectory] + [s[0] for s in self.seed_points]
+              + [p[0] for p in self.injection_site_points]
+              + [p[1] for p in self.quick_location_points]
+              + [p[0] for p in self.borehole_points])
+        ys = ([p[1] for p in self.trajectory] + [s[1] for s in self.seed_points]
+              + [p[1] for p in self.injection_site_points]
+              + [p[2] for p in self.quick_location_points]
+              + [p[1] for p in self.borehole_points])
         if self.anchor_point is not None:
             xs.append(self.anchor_point[0])
             ys.append(self.anchor_point[1])
@@ -587,6 +639,8 @@ class ProjectionWidget(QWidget):
                     painter.restore()
 
         self._trajectory_screen_points = [map_point(point[0], point[1]) for point in self.trajectory]
+        self._seed_screen_points = [map_point(point[0], point[1]) for point in self.seed_points]
+        self._borehole_screen_points = [map_point(point[0], point[1]) for point in self.borehole_points]
         if self.trajectory:
             center_x = sum(point[0] for point in self.trajectory) / len(self.trajectory)
             center_y = sum(point[1] for point in self.trajectory) / len(self.trajectory)
@@ -613,21 +667,6 @@ class ProjectionWidget(QWidget):
                 painter.setPen(QPen(QColor("#2563eb" if frozen else "#16a34a"), 12 if frozen else 4))
                 painter.drawLine(start, end)
 
-        for index, point in enumerate(self._trajectory_screen_points):
-            painter.setPen(QPen(QColor("#1d4ed8" if index == self.selected_trajectory_index else "#374151"), 2))
-            painter.setBrush(QColor("#60a5fa" if index == self.selected_trajectory_index else "#f9fafb"))
-            painter.drawEllipse(point, 5 if index == self.selected_trajectory_index else 2.5,
-                                5 if index == self.selected_trajectory_index else 2.5)
-
-        for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
-            pt = map_point(x, y)
-            color = QColor("#0d8a63" if sampled else "#dd6e42")
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(pt, 6, 6)
-            painter.setPen(color)
-            painter.drawText(pt + QPointF(8, -8), f"{idx} [{x:.2f}, {y:.2f}]")
-
         for idx, (x, y) in enumerate(self.injection_site_points, start=1):
             pt = map_point(x, y)
             painter.setPen(QPen(QColor("#6b21a8"), 2))
@@ -635,6 +674,39 @@ class ProjectionWidget(QWidget):
             painter.drawEllipse(pt, 8, 8)
             painter.setPen(QColor("#3b0764"))
             painter.drawText(QRectF(pt.x() - 6, pt.y() - 8, 12, 16), Qt.AlignCenter, str(idx))
+
+        quick_colors = {"A": QColor("#059669"), "B": QColor("#2563eb"), "C": QColor("#d4a900")}
+        for name, x, y in self.quick_location_points:
+            pt = map_point(x, y)
+            color = quick_colors.get(name, QColor("#475569"))
+            painter.setPen(QPen(color.darker(125), 2))
+            painter.setBrush(color)
+            painter.drawEllipse(pt, 9, 9)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(QRectF(pt.x() - 7, pt.y() - 8, 14, 16), Qt.AlignCenter, name)
+
+        if self.borehole_points:
+            for x, y, _depth, frozen in self.borehole_points:
+                pt = map_point(x, y)
+                painter.setPen(QPen(QColor("#374151" if frozen else "#7c2d12"), 2))
+                painter.setBrush(QColor("#9ca3af" if frozen else "#fdba74"))
+                painter.drawEllipse(pt, 5.5 if frozen else 4.5, 5.5 if frozen else 4.5)
+
+        # Seed markers are deliberately painted above boreholes and quick
+        # locations, since a generated hole can overlap a seed exactly.
+        for idx, (x, y, sampled) in enumerate(self.seed_points, start=1):
+            pt = map_point(x, y)
+            color = QColor("#16a34a" if sampled else "#dd6e42")
+            selected = idx - 1 == self.selected_seed_index
+            if selected:
+                painter.setPen(QPen(QColor("#1d4ed8"), 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(pt, 10, 10)
+            painter.setPen(QPen(QColor("#ffffff"), 1.5))
+            painter.setBrush(color)
+            painter.drawEllipse(pt, 6, 6)
+            painter.setPen(color)
+            painter.drawText(pt + QPointF(8, -8), f"{idx} [{x:.2f}, {y:.2f}]")
 
         if self.anchor_point is not None:
             pt = map_point(self.anchor_point[0], self.anchor_point[1])
@@ -681,6 +753,7 @@ class DepthLegendWidget(QWidget):
         self.setMinimumWidth(90)
         self.setMaximumWidth(90)
         self.setMinimumHeight(260)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
     def set_skull_thickness_mm(self, skull_thickness_mm: float) -> None:
         self.skull_thickness_mm = skull_thickness_mm
@@ -726,7 +799,7 @@ class PlungerGaugeWidget(QWidget):
         self.maximum_nl = 5000.0
         self.setMinimumWidth(92)
         self.setMaximumWidth(92)
-        self.setMinimumHeight(520)
+        self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
     def set_position(self, position_nl: float | None) -> None:
@@ -794,8 +867,11 @@ class CraniotomyWindow(QMainWindow):
         self.setWindowTitle("Neurostar — Direct USB API Planner · "+("LIVE (calibration required)" if self.controller.live else "SIMULATION"))
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
+        self.borehole_depths: list[float] = []
+        self.borehole_signature: list[tuple[float, float, float]] = []
+        self.frozen_boreholes: list[bool | None] = []
         self.craniotomy_surface_validated: list[bool] = []
-        self.selected_craniotomy_point_index: int | None = None
+        self.selected_craniotomy_point_index: int | None = None  # selected seed index
         self.drilled_depths: list[float] = []
         self.frozen_points: list[bool] = []
         self.current_seed_index: int | None = None
@@ -822,6 +898,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
         self.drill_completed_points = 0
+        self.drilling_progress_reset_requires_ack = False
         self.drill_round_started_at: float | None = None
         self.drill_round_target_seconds: float = 0.0
         self.active_surface_dv: float | None = None
@@ -1047,7 +1124,7 @@ class CraniotomyWindow(QMainWindow):
         self.current_ap_label = QLabel("-")
         self.current_ml_label = QLabel("-")
         self.current_dv_label = QLabel("-")
-        self.action_status_label = QLabel(self.current_action)
+        self.action_status_label = QLabel("Status: No trajectory yet")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setMinimumHeight(34)
         self.action_status_label.setStyleSheet(
@@ -1163,9 +1240,16 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(self.tabs, 1)
 
         craniotomy_tab = QWidget()
-        content = QVBoxLayout(craniotomy_tab)
+        content = QHBoxLayout(craniotomy_tab)
+        content.setContentsMargins(7, 6, 7, 7)
         content.setSpacing(4)
         self.tabs.addTab(craniotomy_tab, "Craniotomy")
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        content.addWidget(left_panel, 1)
 
         self._build_options_dialog()
 
@@ -1174,7 +1258,7 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.setContentsMargins(7, 6, 7, 7)
         setup_layout.setHorizontalSpacing(8)
         setup_layout.setVerticalSpacing(3)
-        content.addWidget(setup_box)
+        left_layout.addWidget(setup_box)
 
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
@@ -1183,12 +1267,44 @@ class CraniotomyWindow(QMainWindow):
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
         self.cut_offset = self._double_spinbox(value=0.0, minimum=-5.0, maximum=5.0)
         self.drill_depth = self._double_spinbox(value=0.20, minimum=0.0, maximum=5.0)
+        self._last_configured_max_depth_mm = float(self.drill_depth.value())
+        self.drill_depth.valueChanged.connect(self._on_max_drill_depth_changed)
         self.depth_per_round = self._double_spinbox(value=0.05, minimum=0.001, maximum=5.0)
         self.skull_thickness_mm = self._double_spinbox(value=0.25, minimum=0.001, maximum=5.0)
         self.round_time_seconds = self._double_spinbox(value=60.0, minimum=1.0, maximum=3600.0)
+        self.round_time_seconds.setToolTip(
+            "Target time for one complete circuit around the craniotomy. "
+            "Command and settling overhead can make actual elapsed time longer."
+        )
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
+        self.drill_rate_mm_per_s.setToolTip("Configured depth advance rate used by the pulsed drilling workflow.")
+        self.drilling_mode_combo = QComboBox()
+        self.drilling_mode_combo.addItem("Spaced boreholes", "boreholes")
+        self.drilling_mode_combo.addItem("Continuous path", "continuous")
+        self.drilling_mode_combo.setCurrentIndex(0)
+        self.drilling_mode_combo.currentIndexChanged.connect(self._on_drilling_mode_changed)
+        self.drilling_mode_combo.setToolTip(
+            "Spaced boreholes makes separate holes around the perimeter. Continuous path traces the perimeter."
+        )
+        self.hole_spacing_mm = self._double_spinbox(value=0.5, minimum=0.1, maximum=10.0)
+        self.hole_spacing_mm.setToolTip("Maximum center-to-center distance along the perimeter between boreholes.")
+        self.hole_spacing_mm.setEnabled(False)
+        self.hole_spacing_mm.valueChanged.connect(self._on_hole_spacing_changed)
+        # Geometry edits invalidate the current drilling pass. A paused pass
+        # must not remain resumable against a changed plan.
+        for control in (
+            self.mid_ap, self.mid_ml, self.diameter, self.trajectory_points,
+            self.cut_offset, self.depth_per_round, self.skull_thickness_mm,
+            self.drill_rate_mm_per_s,
+        ):
+            control.valueChanged.connect(self._on_drilling_geometry_changed)
         self.auto_start_rounds = QCheckBox("Auto start next round")
         self.auto_start_rounds.setChecked(True)
+        self.drilling_mode_description = QLabel(
+            "Spaced boreholes: set all seed surfaces first; each hole's surface is inferred from the interpolated seed profile."
+        )
+        self.drilling_mode_description.setProperty("role", "muted")
+        self.drilling_mode_description.setWordWrap(True)
         self.current_seed_spin = self._spinbox(value=1, minimum=1, maximum=1)
         self.current_seed_spin.valueChanged.connect(self.on_seed_spin_changed)
         self.current_seed_coords = QLabel("Seed: -")
@@ -1218,41 +1334,48 @@ class CraniotomyWindow(QMainWindow):
 
         setup_layout.addWidget(QLabel("Cut Offset DV"), 2, 0)
         setup_layout.addWidget(self.cut_offset, 2, 1)
-        setup_layout.addWidget(QLabel("Max Depth"), 2, 2)
+        setup_layout.addWidget(QLabel("Max Depth (mm)"), 2, 2)
         setup_layout.addWidget(self.drill_depth, 2, 3)
         setup_layout.addWidget(QLabel("Skull Thickness (mm)"), 2, 4)
         setup_layout.addWidget(self.skull_thickness_mm, 2, 5)
 
-        setup_layout.addWidget(QLabel("Current Seed"), 3, 0)
-        setup_layout.addWidget(self.current_seed_spin, 3, 1)
-        setup_layout.addWidget(QLabel("Drill Rate (mm/s)"), 3, 2)
-        setup_layout.addWidget(self.drill_rate_mm_per_s, 3, 3)
-        setup_layout.addWidget(QLabel("Round Time (s)"), 3, 4)
-        setup_layout.addWidget(self.round_time_seconds, 3, 5)
-        setup_layout.addWidget(QLabel("Depth per round"), 4, 0)
-        setup_layout.addWidget(self.depth_per_round, 4, 1)
-        setup_layout.addWidget(self.auto_start_rounds, 4, 2, 1, 2)
+        timing_box = QGroupBox("Drilling pattern and timing")
+        timing_layout = QGridLayout(timing_box)
+        timing_layout.setContentsMargins(7, 5, 7, 5)
+        timing_layout.setHorizontalSpacing(8)
+        timing_layout.setVerticalSpacing(3)
+        timing_layout.addWidget(QLabel("Mode"), 0, 0)
+        timing_layout.addWidget(self.drilling_mode_combo, 0, 1)
+        timing_layout.addWidget(QLabel("Hole spacing (mm)"), 0, 2)
+        timing_layout.addWidget(self.hole_spacing_mm, 0, 3)
+        self.round_time_label = QLabel("Time per circuit (s)")
+        timing_layout.addWidget(self.round_time_label, 0, 4)
+        timing_layout.addWidget(self.round_time_seconds, 0, 5)
+        timing_layout.addWidget(QLabel("Drill Rate (mm/s)"), 1, 0)
+        timing_layout.addWidget(self.drill_rate_mm_per_s, 1, 1)
+        timing_layout.addWidget(self.auto_start_rounds, 1, 2, 1, 4)
+        timing_layout.addWidget(self.drilling_mode_description, 2, 0, 1, 6)
+        setup_layout.addWidget(timing_box, 3, 0, 1, 6)
+        setup_layout.addWidget(QLabel("Current Seed"), 4, 0)
+        setup_layout.addWidget(self.current_seed_spin, 4, 1)
+        setup_layout.addWidget(QLabel("Depth increment / round (mm)"), 4, 2)
+        setup_layout.addWidget(self.depth_per_round, 4, 3)
 
-        generate_btn = QPushButton("Generate Seeds")
-        generate_btn.clicked.connect(self.generate_seeds)
+        self.generate_seeds_btn = QPushButton("Generate Seeds")
+        self.generate_seeds_btn.clicked.connect(self.generate_seeds)
         self.move_seed_btn = QPushButton("Next seed")
         self.move_seed_btn.clicked.connect(self.move_to_current_seed)
         self.capture_surface_btn = QPushButton("Set Surface")
-        self.capture_surface_btn.setText("Set Seed Surface")
+        self.capture_surface_btn.setText("Set Seed Surfaces")
         self.capture_surface_btn.setProperty("variant", "primary")
         self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
         self.capture_surface_btn.style().polish(self.capture_surface_btn)
         self.capture_surface_btn.clicked.connect(self.capture_surface)
-        stop_btn = QPushButton("Stop Motion")
-        stop_btn.setProperty("variant", "danger")
-        stop_btn.style().unpolish(stop_btn)
-        stop_btn.style().polish(stop_btn)
-        stop_btn.clicked.connect(self.stop_motion)
         clear_btn = QPushButton("Clear Surface Measurements")
         clear_btn.clicked.connect(self.clear_surface_measurements)
         clear_craniotomy_btn = QPushButton("Clear Craniotomy")
         clear_craniotomy_btn.clicked.connect(self.clear_craniotomy)
-        self.start_round_btn = QPushButton("Start Drilling")
+        self.start_round_btn = QPushButton("Start")
         self.start_round_btn.setProperty("variant", "primary")
         self.start_round_btn.style().unpolish(self.start_round_btn)
         self.start_round_btn.style().polish(self.start_round_btn)
@@ -1270,70 +1393,77 @@ class CraniotomyWindow(QMainWindow):
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
         button_layout.setVerticalSpacing(3)
-        button_layout.addWidget(generate_btn, 0, 0)
+        button_layout.addWidget(self.generate_seeds_btn, 0, 0)
         button_layout.addWidget(clear_btn, 0, 1)
         button_layout.addWidget(clear_craniotomy_btn, 0, 2)
         button_layout.addWidget(self.move_seed_btn, 1, 0)
-        button_layout.addWidget(self.capture_surface_btn, 1, 1)
-        button_layout.addWidget(self.start_round_btn, 1, 2)
+        button_layout.addWidget(self.capture_surface_btn, 1, 1, 1, 2)
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
         button_layout.addWidget(self.clear_freeze_btn, 2, 1)
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
-        button_layout.addWidget(stop_btn, 3, 0, 1, 3)
+        button_layout.addWidget(self.start_round_btn, 3, 0, 1, 3)
         setup_layout.addLayout(button_layout, 6, 0, 1, 6)
 
         views_box = QGroupBox()
-        views_layout = QGridLayout(views_box)
+        views_layout = QVBoxLayout(views_box)
         views_layout.setContentsMargins(7, 6, 7, 7)
         content.addWidget(views_box, 1)
 
         self.top_view = ProjectionWidget("ML", "AP")
         self.top_view.freeze_drawn.connect(self.mark_frozen_point)
         self.top_view.unfreeze_drawn.connect(self.unmark_frozen_point)
+        self.top_view.borehole_freeze_drawn.connect(self.mark_frozen_point)
+        self.top_view.borehole_unfreeze_drawn.connect(self.unmark_frozen_point)
         self.top_view.trajectory_point_selected.connect(self.select_craniotomy_point)
         self.top_view.location_double_clicked.connect(self.move_to_map_location)
         self.top_view.set_navigation_enabled(True)
-        self.top_view.setMinimumSize(420, 420)
-        self.top_view.setMaximumWidth(620)
+        self.top_view.setMinimumSize(320, 320)
+        self.top_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         map_layout = QVBoxLayout()
-        map_layout.addWidget(self.top_view)
+        map_layout.addWidget(self.top_view, 1)
         self.zoom_mode_combo = QComboBox()
         self.zoom_mode_combo.addItems(["Zoom to craniotomy", "Zoom to mid-range", "Zoom to skull"])
         self.zoom_mode_combo.currentIndexChanged.connect(self.set_zoom_mode)
         map_layout.addWidget(self.zoom_mode_combo)
-        views_layout.addLayout(map_layout, 0, 0)
-        legend_layout = QVBoxLayout()
-        legend_layout.setSpacing(3)
+        views_layout.addLayout(map_layout)
+        right_panel = QWidget()
+        right_panel_layout = QHBoxLayout(right_panel)
+        right_panel_layout.setContentsMargins(0, 0, 0, 0)
+        right_panel_layout.setSpacing(10)
         self.depth_legend = DepthLegendWidget()
         self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
-        legend_layout.addWidget(self.depth_legend, 0, Qt.AlignTop)
-        self.round_elapsed_label = QLabel("Elapsed: --:--")
-        self.round_remaining_label = QLabel("Remaining: --:--")
-        self.round_percent_label = QLabel("Complete: --%")
+        right_panel_layout.addWidget(self.depth_legend)
+        details_panel = QWidget()
+        legend_layout = QVBoxLayout(details_panel)
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(3)
+        self.round_elapsed_label = QLabel("Circuit elapsed: --:--")
+        self.round_percent_label = QLabel("Circuit complete: --%")
         self.current_target_depth_label = QLabel("Current Target Depth: -- mm")
         self.change_target_depth_btn = QPushButton("Change")
         self.change_target_depth_btn.clicked.connect(self.change_current_target_depth)
         self.round_elapsed_label.setProperty("role", "muted")
-        self.round_remaining_label.setProperty("role", "muted")
         self.round_percent_label.setProperty("role", "muted")
         self.current_target_depth_label.setProperty("role", "muted")
         legend_layout.addWidget(self.round_elapsed_label)
-        legend_layout.addWidget(self.round_remaining_label)
         legend_layout.addWidget(self.round_percent_label)
         legend_layout.addWidget(self.current_target_depth_label)
         legend_layout.addWidget(self.change_target_depth_btn)
-        views_layout.addLayout(legend_layout, 0, 1)
-        surface_box = QGroupBox("Craniotomy Points")
+        surface_box = QGroupBox("Craniotomy Seed Points")
         surface_layout = QVBoxLayout(surface_box)
         self.craniotomy_points_list = QListWidget()
-        self.craniotomy_points_list.setMinimumHeight(150)
+        # Leave enough room for the action button even when the window is
+        # short; the seed list should give up height before controls collide.
+        self.craniotomy_points_list.setMinimumHeight(80)
         self.craniotomy_points_list.currentRowChanged.connect(self.select_craniotomy_point)
         self.set_craniotomy_surface_btn = QPushButton("Set Surface")
         self.set_craniotomy_surface_btn.clicked.connect(self.set_selected_craniotomy_surface)
-        surface_layout.addWidget(self.craniotomy_points_list, 1)
         surface_layout.addWidget(self.set_craniotomy_surface_btn)
+        surface_layout.addWidget(self.craniotomy_points_list, 1)
         legend_layout.addWidget(surface_box, 1)
         legend_layout.addStretch(1)
+        right_panel_layout.addWidget(details_panel, 1)
+        left_layout.addWidget(right_panel, 1)
         self.update_current_target_depth_label()
         self.update_move_speed_label()
         self._build_injection_tab()
@@ -1342,18 +1472,19 @@ class CraniotomyWindow(QMainWindow):
         if default_index >= 0:
             self.overlay_combo.setCurrentIndex(default_index)
         self.refresh_craniotomy_points_list()
+        self._on_drilling_mode_changed()
 
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
         outer_layout = QHBoxLayout(injection_tab)
         outer_layout.setContentsMargins(7, 6, 7, 7)
         outer_layout.setSpacing(6)
-        layout = QVBoxLayout()
+        left_panel = QWidget()
+        layout = QVBoxLayout(left_panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        outer_layout.addLayout(layout, 1)
+        outer_layout.addWidget(left_panel, 1)
         self.plunger_gauge = PlungerGaugeWidget()
-        outer_layout.addWidget(self.plunger_gauge)
         self.tabs.addTab(injection_tab, "Injection")
 
         status_box = QGroupBox("Manual Control")
@@ -1403,6 +1534,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(update_syringe_position_btn, 5, 0, 1, 2)
         status_layout.addWidget(test_blockage_btn, 5, 2, 1, 2)
         status_layout.addWidget(self.fill_syringe_btn, 6, 3)
+        status_layout.addWidget(self.plunger_gauge, 0, 4, 7, 1)
 
         single_box = QGroupBox("Injection")
         single_layout = QGridLayout(single_box)
@@ -1506,60 +1638,19 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.stop_injection_btn, 8, 2, 1, 4)
 
         self._build_injection_sites_section(layout)
+        self._build_injection_map(outer_layout)
         self.update_manual_volume_label()
         self.update_injection_rate_label()
         self.refresh_injection_sequence_summary()
 
     def _build_injection_sites_section(self, parent_layout: QVBoxLayout) -> None:
-        """Build the bottom half of Injection with map and site list side by side."""
-        sites_section = QWidget()
-        sites_outer_layout = QHBoxLayout(sites_section)
-        sites_outer_layout.setContentsMargins(0, 0, 0, 0)
-        sites_outer_layout.setSpacing(8)
-        parent_layout.addWidget(sites_section, 1)
-
-        map_box = QGroupBox("Map")
-        map_layout = QVBoxLayout(map_box)
-        self.injection_sites_view = ProjectionWidget("ML", "AP")
-        self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
-        self.injection_sites_view.location_clicked.connect(self.add_injection_site_from_map)
-        self.injection_sites_view.set_navigation_enabled(True)
-        self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
-        self.injection_sites_view.set_overlay_image(self.top_view.overlay_image, self.top_view.overlay_calibration)
-        # This lives in the lower half of the Injection tab, so keep it usable
-        # without forcing the tab taller than a normal application window.
-        self.injection_sites_view.setMinimumSize(260, 260)
-        map_layout.addWidget(self.injection_sites_view, 1)
-        injection_map_controls = QHBoxLayout()
-        self.show_craniotomy_on_injection_map = QCheckBox("Show craniotomy")
-        self.show_craniotomy_on_injection_map.setChecked(True)
-        self.show_craniotomy_on_injection_map.toggled.connect(lambda _checked: self.redraw_views())
-        injection_map_controls.addWidget(self.show_craniotomy_on_injection_map)
-        injection_map_controls.addStretch(1)
-        self.injection_sites_zoom_combo = QComboBox()
-        self.injection_sites_zoom_combo.addItems([
-            "Zoom To Craniotomy",
-            "Zoom To Injection Map",
-            "Zoom To Skull",
-        ])
-        self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
-        injection_map_controls.addWidget(self.injection_sites_zoom_combo)
-        map_layout.addLayout(injection_map_controls)
-        self.add_sites_on_map_checkbox = QCheckBox("Add sites on map")
-        self.add_sites_on_map_checkbox.setToolTip(
-            "Click to add unvalidated injection sites without moving the tool. "
-            "Drag to pan and use the mouse wheel to zoom. Turn this off to double-click for movement."
-        )
-        self.add_sites_on_map_checkbox.toggled.connect(self.set_add_sites_on_map)
-        map_layout.addWidget(self.add_sites_on_map_checkbox)
-        sites_outer_layout.addWidget(map_box, 1)
-
+        """Build the Injection Sites panel below the injection settings."""
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
         sites_layout.setContentsMargins(7, 6, 7, 7)
         sites_layout.setHorizontalSpacing(8)
         sites_layout.setVerticalSpacing(3)
-        sites_outer_layout.addWidget(sites_box, 1)
+        parent_layout.addWidget(sites_box, 1)
 
         self.injection_sites_list = QListWidget()
         self.injection_sites_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1612,6 +1703,43 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(QLabel("Validation / pulsed clearance (mm)"), 4, 0, 1, 2)
         sites_layout.addWidget(self.validation_clearance_edit, 4, 2)
         sites_layout.addWidget(self.injection_sites_list, 5, 0, 1, 3)
+
+    def _build_injection_map(self, parent_layout: QHBoxLayout) -> None:
+        """Place the injection map in the full-height right-hand column."""
+        map_box = QGroupBox("Map")
+        map_layout = QVBoxLayout(map_box)
+        self.injection_sites_view = ProjectionWidget("ML", "AP")
+        self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
+        self.injection_sites_view.location_clicked.connect(self.add_injection_site_from_map)
+        self.injection_sites_view.set_navigation_enabled(True)
+        self.injection_sites_view.set_coordinate_mode_bregma(self.coordinate_mode == "bregma")
+        self.injection_sites_view.set_overlay_image(self.top_view.overlay_image, self.top_view.overlay_calibration)
+        self.injection_sites_view.setMinimumSize(320, 320)
+        self.injection_sites_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        map_layout.addWidget(self.injection_sites_view, 1)
+        injection_map_controls = QHBoxLayout()
+        self.show_craniotomy_on_injection_map = QCheckBox("Show craniotomy")
+        self.show_craniotomy_on_injection_map.setChecked(True)
+        self.show_craniotomy_on_injection_map.toggled.connect(lambda _checked: self.redraw_views())
+        injection_map_controls.addWidget(self.show_craniotomy_on_injection_map)
+        injection_map_controls.addStretch(1)
+        self.injection_sites_zoom_combo = QComboBox()
+        self.injection_sites_zoom_combo.addItems([
+            "Zoom To Craniotomy",
+            "Zoom To Injection Map",
+            "Zoom To Skull",
+        ])
+        self.injection_sites_zoom_combo.currentIndexChanged.connect(self.set_injection_sites_zoom_mode)
+        injection_map_controls.addWidget(self.injection_sites_zoom_combo)
+        map_layout.addLayout(injection_map_controls)
+        self.add_sites_on_map_checkbox = QCheckBox("Add sites on map")
+        self.add_sites_on_map_checkbox.setToolTip(
+            "Click to add unvalidated injection sites without moving the tool. "
+            "Drag to pan and use the mouse wheel to zoom. Turn this off to double-click for movement."
+        )
+        self.add_sites_on_map_checkbox.toggled.connect(self.set_add_sites_on_map)
+        map_layout.addWidget(self.add_sites_on_map_checkbox)
+        parent_layout.addWidget(map_box, 1)
 
     def _build_options_dialog(self) -> None:
         self.options_dialog = QDialog(self)
@@ -2270,6 +2398,8 @@ class CraniotomyWindow(QMainWindow):
                 "round_time_seconds": self._craniotomy_config().round_time_seconds,
                 "drill_rate_mm_per_s": self._craniotomy_config().drill_rate_mm_per_s,
                 "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
+                "drilling_mode": self._craniotomy_config().drilling_mode,
+                "hole_spacing_mm": self._craniotomy_config().hole_spacing_mm,
             },
             "craniotomy_center": {"ap": self.mid_ap.value(), "ml": self.mid_ml.value()},
             "seeds": [
@@ -2283,6 +2413,9 @@ class CraniotomyWindow(QMainWindow):
             "craniotomy_surface_validated": self.craniotomy_surface_validated,
             "drilled_depths": self.drilled_depths,
             "frozen_points": self.frozen_points,
+            "borehole_signature": self.borehole_signature,
+            "borehole_depths": self.borehole_depths,
+            "frozen_boreholes": self.frozen_boreholes,
             "current_seed_index": self.current_seed_index,
             "current_target_depth_mm": self.current_target_depth_mm,
             "injection_config": self._injection_config_dict(),
@@ -2374,6 +2507,8 @@ class CraniotomyWindow(QMainWindow):
                     round_time_seconds=float(config.get("round_time_seconds", self.round_time_seconds.value())),
                     drill_rate_mm_per_s=float(config.get("drill_rate_mm_per_s", self.drill_rate_mm_per_s.value())),
                     auto_start_rounds=bool(config.get("auto_start_rounds", self.auto_start_rounds.isChecked())),
+                    drilling_mode=str(config.get("drilling_mode", "boreholes")),
+                    hole_spacing_mm=float(config.get("hole_spacing_mm", 0.5)),
                 )
             )
         injection_config = payload.get("injection_config")
@@ -2408,9 +2543,13 @@ class CraniotomyWindow(QMainWindow):
         )
         if len(self.craniotomy_surface_validated) != len(self.trajectory):
             self.craniotomy_surface_validated = [False] * len(self.trajectory)
-        self.selected_craniotomy_point_index = 0 if self.trajectory else None
+        self.selected_craniotomy_point_index = 0 if self.seeds else None
         self.drilled_depths = [float(value) for value in payload.get("drilled_depths", [])]
         self.frozen_points = [bool(value) for value in payload.get("frozen_points", [])]
+        self._restore_borehole_progress(
+            payload.get("borehole_signature", []), payload.get("borehole_depths", []),
+            payload.get("frozen_boreholes", []),
+        )
         self.current_seed_index = payload.get("current_seed_index") if isinstance(payload.get("current_seed_index"), int) else None
         if self.current_seed_index is not None and not 0 <= self.current_seed_index < len(self.seeds):
             self.current_seed_index = None
@@ -2588,6 +2727,8 @@ class CraniotomyWindow(QMainWindow):
             round_time_seconds=float(self.round_time_seconds.value()),
             drill_rate_mm_per_s=float(self.drill_rate_mm_per_s.value()),
             auto_start_rounds=bool(self.auto_start_rounds.isChecked()),
+            drilling_mode=str(self.drilling_mode_combo.currentData() or "boreholes"),
+            hole_spacing_mm=float(self.hole_spacing_mm.value()),
         )
 
     def _apply_craniotomy_config(self, config: CraniotomyConfig) -> None:
@@ -2601,6 +2742,10 @@ class CraniotomyWindow(QMainWindow):
         self.round_time_seconds.setValue(config.round_time_seconds)
         self.drill_rate_mm_per_s.setValue(config.drill_rate_mm_per_s)
         self.auto_start_rounds.setChecked(config.auto_start_rounds)
+        mode_index = self.drilling_mode_combo.findData(config.drilling_mode)
+        self.drilling_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else self.drilling_mode_combo.findData("boreholes"))
+        self.hole_spacing_mm.setValue(config.hole_spacing_mm)
+        self.hole_spacing_mm.setEnabled(config.drilling_mode == "boreholes")
         self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         self.update_current_target_depth_label()
         self.redraw_views()
@@ -2659,6 +2804,8 @@ class CraniotomyWindow(QMainWindow):
                 "round_time_seconds": self._craniotomy_config().round_time_seconds,
                 "drill_rate_mm_per_s": self._craniotomy_config().drill_rate_mm_per_s,
                 "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
+                "drilling_mode": self._craniotomy_config().drilling_mode,
+                "hole_spacing_mm": self._craniotomy_config().hole_spacing_mm,
             },
         )
 
@@ -2684,6 +2831,8 @@ class CraniotomyWindow(QMainWindow):
                         round_time_seconds=float(self._read_config_file(craniotomy_path).get("round_time_seconds", 60.0)),
                         drill_rate_mm_per_s=float(self._read_config_file(craniotomy_path).get("drill_rate_mm_per_s", 0.01)),
                         auto_start_rounds=bool(self._read_config_file(craniotomy_path).get("auto_start_rounds", True)),
+                        drilling_mode=str(self._read_config_file(craniotomy_path).get("drilling_mode", "boreholes")),
+                        hole_spacing_mm=float(self._read_config_file(craniotomy_path).get("hole_spacing_mm", 0.5)),
                     )
                 )
             except Exception:
@@ -2748,6 +2897,8 @@ class CraniotomyWindow(QMainWindow):
             "round_time_seconds": config.round_time_seconds,
             "drill_rate_mm_per_s": config.drill_rate_mm_per_s,
             "auto_start_rounds": config.auto_start_rounds,
+            "drilling_mode": config.drilling_mode,
+            "hole_spacing_mm": config.hole_spacing_mm,
         }
         self._write_config_file(path, payload)
         self._write_config_file(self._last_used_config_path("craniotomy"), payload)
@@ -2778,6 +2929,8 @@ class CraniotomyWindow(QMainWindow):
             round_time_seconds=float(payload.get("round_time_seconds", 60.0)),
             drill_rate_mm_per_s=float(payload.get("drill_rate_mm_per_s", 0.01)),
             auto_start_rounds=bool(payload.get("auto_start_rounds", True)),
+            drilling_mode=str(payload.get("drilling_mode", "boreholes")),
+            hole_spacing_mm=float(payload.get("hole_spacing_mm", 0.5)),
         )
         self._apply_craniotomy_config(config)
         self._write_config_file(
@@ -2793,6 +2946,8 @@ class CraniotomyWindow(QMainWindow):
                 "round_time_seconds": config.round_time_seconds,
                 "drill_rate_mm_per_s": config.drill_rate_mm_per_s,
                 "auto_start_rounds": config.auto_start_rounds,
+                "drilling_mode": config.drilling_mode,
+                "hole_spacing_mm": config.hole_spacing_mm,
             },
         )
         self.set_status(f"Loaded craniotomy config from {path}")
@@ -2800,7 +2955,20 @@ class CraniotomyWindow(QMainWindow):
     def set_status(self, message: str) -> None:
         self.current_action = message or "Trajectory"
         if hasattr(self, "action_status_label"):
-            self.action_status_label.setText(self.current_action)
+            brief_source = " ".join(self.current_action.split())
+            if brief_source.split() and brief_source.split()[0].rstrip(":").lower() == "status":
+                brief_source = (
+                    brief_source.partition(":")[2].strip()
+                    if ":" in brief_source
+                    else " ".join(brief_source.split()[1:])
+                )
+            for separator in (";", ":", "!", "?"):
+                brief_source = brief_source.partition(separator)[0]
+            words = brief_source.split()
+            brief_message = " ".join(words[:4]) if words else "Ready now"
+            if len(words) == 1:
+                brief_message = f"{brief_message} now"
+            self.action_status_label.setText(f"Status: {brief_message}")
 
     def update_move_speed_label(self) -> None:
         try:
@@ -2826,6 +2994,22 @@ class CraniotomyWindow(QMainWindow):
             if self.validation_move_cancel_callback is not None:
                 self.validation_move_cancel_callback()
             return True
+        if (
+            key == Qt.Key.Key_Escape
+            and self.drill_thread is not None
+            and self.drill_thread.is_alive()
+        ):
+            # Escape pauses the active craniotomy round and lets its worker
+            # retract safely; completed point depths remain available to resume.
+            self.pause_drilling_round()
+            return True
+        if key == Qt.Key.Key_Escape and QApplication.activeModalWidget() is None:
+            if self.freeze_draw_btn.isChecked():
+                self.freeze_draw_btn.setChecked(False)
+                return True
+            if self.unfreeze_draw_btn.isChecked():
+                self.unfreeze_draw_btn.setChecked(False)
+                return True
         # Ordinary options/confirmation dialogs must not turn navigation keys
         # into physical motion. Only the dedicated site-validation modal opts in.
         modal=QApplication.activeModalWidget()
@@ -2862,6 +3046,11 @@ class CraniotomyWindow(QMainWindow):
         if self._key_matches_binding(self.movement_key_bindings["speed_increase"], key, combined_key):
             self.adjust_move_speed(1)
             return True
+        allowed_axes = None
+        if modal is not None:
+            axis_setting = modal.property("allowed_motor_axes")
+            if axis_setting is not None:
+                allowed_axes = {axis.strip().upper() for axis in str(axis_setting).split(",")}
         for binding, axis, positive, label in (
             (self.movement_key_bindings["ml_left"], "ML", False, "ML left"),
             (self.movement_key_bindings["ml_right"], "ML", True, "ML right"),
@@ -2871,6 +3060,8 @@ class CraniotomyWindow(QMainWindow):
             (self.movement_key_bindings["dv_down"], "DV", True, "DV down"),
         ):
             if self._key_matches_binding(binding, key, combined_key):
+                if allowed_axes is not None and axis not in allowed_axes:
+                    return True
                 if self.nudge_all_sites_active and axis in {"AP", "ML"}:
                     self.nudge_all_injection_sites(axis, positive, label)
                     return True
@@ -3421,22 +3612,48 @@ class CraniotomyWindow(QMainWindow):
             self.controller.prepare_motion()
             currently_on = bool(self.controller.reported_drill_state())
             enabled = not currently_on
-            if enabled:
-                answer = QMessageBox.warning(
-                    self,
-                    "Turn Drill On",
-                    "Send the drill ON command directly through the StereoDrive API? Ensure the spindle is clear and physical Stop is accessible. Software power state does not prove spindle rotation or stopping.",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if answer != QMessageBox.Yes:
-                    return
             self.controller.set_drill_power(enabled, asynchronous=True)
-            self.set_status(
-                f"Direct API drill {'ON' if enabled else 'OFF'} command sent; waiting for reported power state."
-            )
         except Exception as exc:
-            QMessageBox.critical(self, "StereoDrive Drill", str(exc))
+            self.set_status(f"Drill command failed: {exc}")
+
+    def _ensure_drill_on_for_drilling(self) -> bool:
+        """Require reported drill power before starting any drilling operation."""
+        try:
+            if bool(self.controller.reported_drill_state()):
+                return True
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Drill State Unavailable",
+                f"Could not verify whether the drill is on, so drilling will not start.\n\n{exc}",
+            )
+            return False
+
+        response = QMessageBox.question(
+            self,
+            "Drill Is Off",
+            "The drill is currently reported as OFF. Would you like to turn it on now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if response != QMessageBox.Yes:
+            self.set_status("Drilling not started; the drill is off.")
+            return False
+
+        try:
+            self.controller.prepare_motion()
+            self.controller.set_drill_power(True)
+            if not bool(self.controller.reported_drill_state()):
+                raise StereoDriveError("The controller did not confirm that drill power is ON.")
+            self.set_status("Drill power is ON and confirmed.")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Could Not Turn On Drill",
+                f"The drill did not reach a confirmed ON state. Drilling will not start.\n\n{exc}",
+            )
+            return False
 
     def goto_home(self) -> None:
         self._goto_persistent_axis_location("home")
@@ -3763,6 +3980,8 @@ class CraniotomyWindow(QMainWindow):
         try:
             ap, ml, dv = self.get_bregma_position()
             self.quick_locations[slot] = StoredLocation(ap=ap, ml=ml, dv=dv)
+            self.redraw_views()
+            self._autosave_project_session()
             self.set_status(f"Stored location {slot}: AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -4345,12 +4564,14 @@ class CraniotomyWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         message_label = QLabel(message)
         message_label.setWordWrap(True)
+        message_label.setMinimumWidth(500)
         layout.addWidget(message_label)
         progress = QProgressBar()
         progress.setRange(0, 0)
         layout.addWidget(progress)
         cancel_button = QPushButton("Cancel Movement (Esc)")
         layout.addWidget(cancel_button)
+        dialog.setMinimumWidth(540)
 
         def request_cancel() -> None:
             if cancelled.is_set():
@@ -5676,7 +5897,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_seed_index = 0
             self.trajectory = self._flat_circle_trajectory(mid_ap, mid_ml, radius)
             self.craniotomy_surface_validated = [False] * len(self.trajectory)
-            self.selected_craniotomy_point_index = 0 if self.trajectory else None
+            self.selected_craniotomy_point_index = 0 if self.seeds else None
             self.current_seed_spin.blockSignals(True)
             self.current_seed_spin.setRange(1, len(self.seeds))
             self.current_seed_spin.setValue(1)
@@ -5685,6 +5906,7 @@ class CraniotomyWindow(QMainWindow):
             self.drill_completed_points = 0
             self.drilled_depths = [0.0] * len(self.trajectory)
             self.frozen_points = [False] * len(self.trajectory)
+            self._ensure_borehole_state(reset=True)
             self.current_target_depth_mm = self._initial_target_depth()
             self.active_surface_dv = None
             self.active_depth_ratio = None
@@ -5692,7 +5914,7 @@ class CraniotomyWindow(QMainWindow):
             self.drilling_paused = False
             self.drill_pause_requested.clear()
             self.drill_stop_requested.clear()
-            self.start_round_btn.setText("Start Drilling")
+            self.start_round_btn.setText("Start")
             if self.freeze_draw_btn.isChecked():
                 self.freeze_draw_btn.setChecked(False)
             if self.unfreeze_draw_btn.isChecked():
@@ -5703,13 +5925,17 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
             reply = QMessageBox.question(
                 self,
-                "Craniotomy",
-                "Move to first seed now?",
+                "Move to First Seed",
+                "Move to the first seed now so you can find the skull surface before setting the seed surfaces?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes,
             )
             if reply == QMessageBox.Yes:
-                self.move_to_current_seed()
+                # The surface workflow performs the safe move above the first
+                # seed, opens the adjustment dialog, and then advances through
+                # the remaining seeds. Starting it here avoids leaving the
+                # user at the first seed without entering the capture flow.
+                self.set_selected_craniotomy_surface()
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
@@ -5835,10 +6061,18 @@ class CraniotomyWindow(QMainWindow):
     def on_seed_spin_changed(self, value: int) -> None:
         if not self.seeds:
             self.current_seed_index = None
+            self.selected_craniotomy_point_index = None
             self.update_seed_selector_label()
+            self.redraw_views()
             return
         self.current_seed_index = max(0, min(len(self.seeds) - 1, value - 1))
+        self.selected_craniotomy_point_index = self.current_seed_index
+        if hasattr(self, "craniotomy_points_list"):
+            self.craniotomy_points_list.blockSignals(True)
+            self.craniotomy_points_list.setCurrentRow(self.current_seed_index)
+            self.craniotomy_points_list.blockSignals(False)
         self.update_seed_selector_label()
+        self.redraw_views()
 
     def move_to_current_seed(self) -> None:
         if self.current_seed_index is None or not self.seeds:
@@ -5855,7 +6089,7 @@ class CraniotomyWindow(QMainWindow):
             ):
                 return
             self.set_status(
-                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Lower manually to the skull surface, then click 'Set Surface'."
+                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Search for the skull surface, then use 'Set Seed Surfaces'."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -5879,24 +6113,10 @@ class CraniotomyWindow(QMainWindow):
                 self.redraw_views()
                 self.set_status("Debug: set all seed surfaces to DV 0.00 and updated the trajectory.")
                 return
-            ap, ml, dv = self.get_bregma_position()
-            seed = self.seeds[self.current_seed_index]
-            seed.dv = dv
-            seed.sampled_ap = ap
-            seed.sampled_ml = ml
-            self.compute_trajectory()
-            next_pending = next((s.index for s in self.seeds if s.dv is None), None)
-            self.current_seed_index = next_pending
-            if next_pending is not None:
-                self.current_seed_spin.blockSignals(True)
-                self.current_seed_spin.setValue(next_pending + 1)
-                self.current_seed_spin.blockSignals(False)
-            self.update_seed_selector_label()
-            self.redraw_views()
-            if next_pending is None:
-                self.set_status("Captured all seed points and updated the trajectory.")
-            else:
-                self.move_to_current_seed()
+            # Route the setup-panel button through the same safe positioning
+            # and adjustment modal as the seed-list Set Surface button.
+            self.selected_craniotomy_point_index = self.current_seed_index
+            self.set_selected_craniotomy_surface()
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
@@ -5912,6 +6132,9 @@ class CraniotomyWindow(QMainWindow):
         self.selected_craniotomy_point_index = None
         self.drilled_depths = []
         self.frozen_points = []
+        self.borehole_signature = []
+        self.borehole_depths = []
+        self.frozen_boreholes = []
         self.drill_completed_points = 0
         self.drill_round_started_at = None
         self.drill_round_target_seconds = 0.0
@@ -5920,7 +6143,7 @@ class CraniotomyWindow(QMainWindow):
         self.active_drill_depth_mm = None
         self.current_target_depth_mm = self._initial_target_depth()
         self.drilling_paused = False
-        self.start_round_btn.setText("Start Drilling")
+        self.start_round_btn.setText("Start")
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
         if self.unfreeze_draw_btn.isChecked():
@@ -5956,6 +6179,9 @@ class CraniotomyWindow(QMainWindow):
         self.seeds.clear()
         self.craniotomy_coordinate_system = "bregma"
         self.trajectory.clear()
+        self.borehole_signature = []
+        self.borehole_depths = []
+        self.frozen_boreholes = []
         self.craniotomy_surface_validated.clear()
         self.selected_craniotomy_point_index = None
         self.drilled_depths.clear()
@@ -5975,7 +6201,7 @@ class CraniotomyWindow(QMainWindow):
         self.drilling_paused = False
         self.drill_pause_requested.clear()
         self.drill_stop_requested.clear()
-        self.start_round_btn.setText("Start Drilling")
+        self.start_round_btn.setText("Start")
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
         if self.unfreeze_draw_btn.isChecked():
@@ -6003,6 +6229,9 @@ class CraniotomyWindow(QMainWindow):
             return
         self.seeds.clear()
         self.trajectory.clear()
+        self.borehole_signature = []
+        self.borehole_depths = []
+        self.frozen_boreholes = []
         self.drilled_depths.clear()
         self.frozen_points.clear()
         self.current_seed_index = None
@@ -6020,7 +6249,7 @@ class CraniotomyWindow(QMainWindow):
         self.drilling_paused = False
         self.drill_pause_requested.clear()
         self.drill_stop_requested.clear()
-        self.start_round_btn.setText("Start Drilling")
+        self.start_round_btn.setText("Start")
         self.injection_sites.clear()
         if self.nudge_all_sites_active:
             self.nudge_all_sites_btn.setChecked(False)
@@ -6053,16 +6282,18 @@ class CraniotomyWindow(QMainWindow):
     def compute_trajectory(self) -> None:
         if not self._require_idle("Compute Trajectory"):
             return
+        self._invalidate_drilling_progress()
         captured = [seed for seed in self.seeds if seed.dv is not None]
         if len(captured) < 2:
             radius = self.diameter.value() / 2.0
             self.trajectory = self._flat_circle_trajectory(self.mid_ap.value(), self.mid_ml.value(), radius)
             self.craniotomy_surface_validated = [False] * len(self.trajectory)
-            self.selected_craniotomy_point_index = 0 if self.trajectory else None
+            self.selected_craniotomy_point_index = 0 if self.seeds else None
             if len(self.drilled_depths) != len(self.trajectory):
                 self.drilled_depths = [0.0] * len(self.trajectory)
             if len(self.frozen_points) != len(self.trajectory):
                 self.frozen_points = [False] * len(self.trajectory)
+            self._ensure_borehole_state(reset=True)
             self.redraw_views()
             self.refresh_craniotomy_points_list()
             return
@@ -6083,29 +6314,154 @@ class CraniotomyWindow(QMainWindow):
         self.drilled_depths = [0.0] * len(self.trajectory)
         self.frozen_points = [False] * len(self.trajectory)
         self.craniotomy_surface_validated = [False] * len(self.trajectory)
-        self.selected_craniotomy_point_index = 0 if self.trajectory else None
+        self.selected_craniotomy_point_index = 0 if self.seeds else None
+        self._ensure_borehole_state(reset=True)
         self.redraw_views()
+
+    def _borehole_pattern(self, surfaces=None, frozen=None):
+        surfaces = self.trajectory if surfaces is None else surfaces
+        frozen = self.frozen_points if frozen is None else frozen
+        if len(surfaces) < 4:
+            return []
+        if len(frozen) != len(surfaces):
+            frozen = [False] * len(surfaces)
+        pattern = pulsed_protocol.sample_boreholes(surfaces, self.hole_spacing_mm.value(), frozen)
+        return pulsed_protocol.apply_borehole_freeze_overrides(pattern, self.frozen_boreholes)
+
+    def _restore_borehole_progress(self, signature, depths, frozen_boreholes=()):
+        """Restore hole depths only when the saved plan exactly matches this perimeter."""
+        self.borehole_signature = []
+        self.borehole_depths = []
+        self.frozen_boreholes = []
+        pattern = self._ensure_borehole_state(reset=True)
+        try:
+            saved_signature = [tuple(float(value) for value in point) for point in signature]
+            saved_depths = [float(value) for value in depths]
+            saved_frozen = list(frozen_boreholes)
+            current_signature = [(ap, ml, dv) for ap, ml, dv, _frozen in pattern]
+            if (len(saved_signature) == len(current_signature) == len(saved_depths)
+                    and all(len(point) == 3 and all(math.isfinite(v) for v in point) for point in saved_signature)
+                    and all(math.dist(saved, current) <= 1e-6
+                            for saved, current in zip(saved_signature, current_signature, strict=True))
+                    and all(math.isfinite(value) and 0 <= value <= 5.0 for value in saved_depths)
+                    and len(saved_frozen) in (0, len(current_signature))
+                    and all(value is None or isinstance(value, bool) for value in saved_frozen)):
+                self.borehole_signature = current_signature
+                self.borehole_depths = saved_depths
+                self.frozen_boreholes = saved_frozen or [None] * len(current_signature)
+        except (TypeError, ValueError):
+            pass
+
+    def _ensure_borehole_state(self, *, reset=False):
+        try:
+            pattern = self._borehole_pattern()
+        except (TypeError, ValueError):
+            pattern = []
+        signature = [(float(ap), float(ml), float(dv)) for ap, ml, dv, _frozen in pattern]
+        if reset or signature != self.borehole_signature or len(self.borehole_depths) != len(signature):
+            self.borehole_signature = signature
+            self.borehole_depths = [0.0] * len(signature)
+            self.frozen_boreholes = [None] * len(signature)
+        elif len(self.frozen_boreholes) != len(signature):
+            self.frozen_boreholes = [None] * len(signature)
+        return self._borehole_pattern()
+
+    def _on_drilling_mode_changed(self, *_args) -> None:
+        if not hasattr(self, "hole_spacing_mm"):
+            return
+        is_borehole = self.drilling_mode_combo.currentData() == "boreholes"
+        self.hole_spacing_mm.setEnabled(is_borehole)
+        self.round_time_label.setVisible(not is_borehole)
+        self.round_time_seconds.setVisible(not is_borehole)
+        if hasattr(self, "freeze_draw_btn"):
+            self.freeze_draw_btn.setText("Freeze Holes" if is_borehole else "Draw Freeze")
+            self.unfreeze_draw_btn.setText("Unfreeze Holes" if is_borehole else "Draw Unfreeze")
+            self.clear_freeze_btn.setText("Clear Freezes")
+            self.freeze_draw_btn.setToolTip(
+                "Draw across individual borehole markers to freeze them."
+                if is_borehole else "Draw along the perimeter to freeze sections."
+            )
+            self.unfreeze_draw_btn.setToolTip(
+                "Draw across borehole markers to allow those holes to deepen again."
+                if is_borehole else "Draw along frozen perimeter sections to unfreeze them."
+            )
+        if hasattr(self, "drilling_mode_description"):
+            if is_borehole:
+                self.drilling_mode_description.setText(
+                    "Spaced boreholes: surfaces are inferred from the seed profile. Holes drill as quickly as the DV rate allows; freeze selected holes and deepen the rest to Max Depth."
+                )
+            else:
+                self.drilling_mode_description.setText(
+                    "Continuous path: traces the perimeter at each depth increment until Max Depth."
+                )
+        if hasattr(self, "top_view"):
+            self._invalidate_drilling_progress()
+            self.redraw_views()
+            self._autosave_project_session()
+        self._update_round_status_labels()
+
+    def _on_hole_spacing_changed(self, *_args) -> None:
+        if not hasattr(self, "trajectory"):
+            return
+        self._invalidate_drilling_progress()
+        if hasattr(self, "top_view"):
+            self.redraw_views()
+            self._autosave_project_session()
         self.refresh_craniotomy_points_list()
 
-    def _unique_craniotomy_point_count(self) -> int:
-        if len(self.trajectory) > 1:
-            first, last = self.trajectory[0], self.trajectory[-1]
-            if math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6:
-                return len(self.trajectory) - 1
-        return len(self.trajectory)
+    def _on_drilling_geometry_changed(self, *_args) -> None:
+        if not hasattr(self, "trajectory"):
+            return
+        self._invalidate_drilling_progress()
+        if hasattr(self, "top_view"):
+            self.redraw_views()
+            self._autosave_project_session()
+
+    def _invalidate_drilling_progress(self) -> None:
+        """Reset tracked drilling progress and require a fresh Start after plan changes."""
+        had_progress = (
+            self.drilling_paused
+            or any(depth > 0.0 for depth in self.drilled_depths)
+            or any(depth > 0.0 for depth in self.borehole_depths)
+            or self.drill_completed_points > 0
+        )
+        self.drill_completed_points = 0
+        self.drilled_depths = [0.0] * len(self.trajectory)
+        self.frozen_points = [False] * len(self.trajectory)
+        self.borehole_signature = []
+        self.borehole_depths = []
+        self.frozen_boreholes = []
+        self._ensure_borehole_state(reset=True)
+        self.current_target_depth_mm = self._initial_target_depth()
+        self.drilling_paused = False
+        self.start_round_btn.setText("Start")
+        if hasattr(self, "current_target_depth_label"):
+            self.update_current_target_depth_label()
+        if had_progress:
+            self.drilling_progress_reset_requires_ack = True
+            self.set_status("Plan changed; restart required.")
+
+    def _on_max_drill_depth_changed(self, value: float) -> None:
+        maximum = max(0.0, float(value))
+        self._last_configured_max_depth_mm = maximum
+        self._invalidate_drilling_progress()
+        if hasattr(self, "top_view"):
+            self.redraw_views()
+
+    def _craniotomy_seed_count(self) -> int:
+        return len(self.seeds)
 
     def refresh_craniotomy_points_list(self) -> None:
         if not hasattr(self, "craniotomy_points_list"):
             return
-        count = self._unique_craniotomy_point_count()
+        count = self._craniotomy_seed_count()
         self.craniotomy_points_list.blockSignals(True)
         self.craniotomy_points_list.clear()
         for index in range(count):
-            ap, ml, dv = self.trajectory[index]
-            validated = index < len(self.craniotomy_surface_validated) and self.craniotomy_surface_validated[index]
-            state = f"surface DV {dv:.2f} mm" if validated else f"surface pending (plan DV {dv:.2f} mm)"
-            item = QListWidgetItem(f"Point {index + 1}: AP {ap:.2f}, ML {ml:.2f} — {state}")
-            item.setForeground(QColor("#111827" if validated else "#9ca3af"))
+            seed = self.seeds[index]
+            state = f"surface DV {seed.dv:.2f} mm" if seed.dv is not None else "surface pending"
+            item = QListWidgetItem(f"Seed {index + 1}: AP {seed.ap:.2f}, ML {seed.ml:.2f} — {state}")
+            item.setForeground(QColor("#111827" if seed.dv is not None else "#9ca3af"))
             self.craniotomy_points_list.addItem(item)
         if count:
             selected = self.selected_craniotomy_point_index
@@ -6117,98 +6473,163 @@ class CraniotomyWindow(QMainWindow):
             self.selected_craniotomy_point_index = None
         self.craniotomy_points_list.blockSignals(False)
         self.set_craniotomy_surface_btn.setEnabled(
-            bool(count) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
+            bool(self.seeds) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
         )
         if hasattr(self, "top_view"):
             self.redraw_views()
 
     def select_craniotomy_point(self, index: int) -> None:
-        count = self._unique_craniotomy_point_count()
-        if count and index == count and len(self.trajectory) == count + 1:
-            index = 0
+        count = self._craniotomy_seed_count()
         if not 0 <= index < count:
             return
         self.selected_craniotomy_point_index = index
+        self.current_seed_index = index
+        self.current_seed_spin.blockSignals(True)
+        self.current_seed_spin.setValue(index + 1)
+        self.current_seed_spin.blockSignals(False)
+        self.update_seed_selector_label()
         if self.craniotomy_points_list.currentRow() != index:
             self.craniotomy_points_list.setCurrentRow(index)
         self.redraw_views()
 
-    def _craniotomy_surface_dialog(self, index: int, ap: float, ml: float, plan_dv: float) -> bool:
+    def _set_borehole_controls_locked(self, locked: bool) -> None:
+        """Keep the active drilling plan fixed while a drilling round runs."""
+        self.drilling_mode_combo.setEnabled(not locked)
+        self.hole_spacing_mm.setEnabled(
+            not locked and self.drilling_mode_combo.currentData() == "boreholes"
+        )
+        for control in (
+            self.mid_ap, self.mid_ml, self.diameter, self.seed_count,
+            self.trajectory_points, self.cut_offset, self.drill_depth,
+            self.depth_per_round, self.skull_thickness_mm,
+            self.drill_rate_mm_per_s, self.generate_seeds_btn,
+            self.capture_surface_btn,
+        ):
+            control.setEnabled(not locked)
+        for control in (self.freeze_draw_btn, self.unfreeze_draw_btn, self.clear_freeze_btn):
+            control.setEnabled(not locked)
+
+    def _craniotomy_surface_dialog(self, index: int, ap: float, ml: float, plan_dv: float) -> str:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Set Craniotomy Point Surface")
+        dialog.setWindowTitle("Set Craniotomy Seed Surface")
         dialog.setProperty("allow_motor_shortcuts", True)
+        dialog.setProperty("allowed_motor_axes", "DV")
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(
-            f"Point {index + 1}: planned AP {ap:.2f}, ML {ml:.2f}, DV {plan_dv:.2f} mm.\n\n"
-            "Use the normal movement shortcuts to lower DV until the tool just touches the skull surface, "
-            "then select At Surface. Current AP, ML and DV will be saved for this point."
-        ))
+        layout.addWidget(QLabel("Move to surface"))
+        position_label = QLabel("Current Bregma position: reading…")
+        layout.addWidget(position_label)
         buttons = QDialogButtonBox()
-        surface_button = buttons.addButton("At Surface", QDialogButtonBox.AcceptRole)
+        surface_button = buttons.addButton("Set and Move to Next", QDialogButtonBox.AcceptRole)
+        next_button = buttons.addButton("Move to Next", QDialogButtonBox.ActionRole)
         cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
+        cancel_button.setText("Cancel")
         layout.addWidget(buttons)
-        result = {"capture": False}
+        result = {"action": "cancel"}
+
+        position_timer = QTimer(dialog)
+
+        def update_position() -> None:
+            try:
+                current_ap, current_ml, current_dv = self._axis_to_bregma(
+                    self.controller.get_current_axis_position()
+                )
+                position_label.setText(
+                    f"Current Bregma position: AP {current_ap:.2f}, "
+                    f"ML {current_ml:.2f}, DV {current_dv:.2f} mm"
+                )
+            except Exception:
+                # Position reads can briefly fail while a controller is
+                # transitioning between movement commands; keep the modal open.
+                pass
 
         def capture() -> None:
             if self.controller.has_active_motion():
                 self.set_status("Wait for the current movement to finish before recording the craniotomy surface.")
                 return
-            result["capture"] = True
+            result["action"] = "set"
+            dialog.accept()
+
+        def move_next() -> None:
+            if self.controller.has_active_motion():
+                self.set_status("Wait for the current movement to finish before moving to the next seed.")
+                return
+            result["action"] = "next"
             dialog.accept()
 
         surface_button.clicked.connect(capture)
+        next_button.clicked.connect(move_next)
         cancel_button.clicked.connect(dialog.reject)
         self.validation_modal_active = True
+        position_timer.timeout.connect(update_position)
+        update_position()
+        position_timer.start(150)
         try:
             dialog.exec()
         finally:
+            position_timer.stop()
             self.validation_modal_active = False
             if self.controller.has_active_motion():
                 self.stop_motion()
                 self.controller.wait_until_stopped()
-        return bool(result["capture"])
+        return str(result["action"])
 
     def set_selected_craniotomy_surface(self) -> None:
         if not self._require_idle("Set Craniotomy Surface"):
             return
-        if not self.trajectory:
-            QMessageBox.information(self, "Craniotomy Surface", "Generate a craniotomy trajectory first.")
+        if not self.seeds:
+            QMessageBox.information(self, "Craniotomy Surface", "Generate craniotomy seed points first.")
             return
         if self.bregma_axis is None:
             QMessageBox.information(self, "Craniotomy Surface", "Set GUI Bregma before recording craniotomy surfaces.")
             return
         index = self.selected_craniotomy_point_index
-        count = self._unique_craniotomy_point_count()
+        count = self._craniotomy_seed_count()
         if index is None or not 0 <= index < count:
-            QMessageBox.information(self, "Craniotomy Surface", "Select a craniotomy point in the list or on the map first.")
+            QMessageBox.information(self, "Craniotomy Surface", "Select a craniotomy seed in the list or on the map first.")
             return
-        ap, ml, plan_dv = self.trajectory[index]
         try:
             self._require_project_coordinates("craniotomy")
-            above_axis = self._bregma_to_axis((ap, ml, plan_dv - self.validation_clearance_mm))
-            safe_path = self._axis_clearance_path(above_axis, above_axis[2])
-            if not self._move_through_axis_positions_with_progress(
-                safe_path,
-                title="Moving Above Craniotomy Point",
-                message=f"Moving to point {index + 1}, {self.validation_clearance_mm:g} mm above its planned surface.",
-            ):
-                return
-            if not self._craniotomy_surface_dialog(index, ap, ml, plan_dv):
-                self.set_status(f"Surface capture cancelled for craniotomy point {index + 1}.")
-                return
-            actual_ap, actual_ml, actual_dv = self._axis_to_bregma(self.controller.get_current_axis_position())
-            self.trajectory[index] = (actual_ap, actual_ml, actual_dv)
-            if index == 0 and len(self.trajectory) > count:
-                self.trajectory[-1] = self.trajectory[index]
-            if len(self.craniotomy_surface_validated) != len(self.trajectory):
-                self.craniotomy_surface_validated = [False] * len(self.trajectory)
-            self.craniotomy_surface_validated[index] = True
-            if index == 0 and len(self.trajectory) > count:
-                self.craniotomy_surface_validated[-1] = True
-            self.refresh_craniotomy_points_list()
-            self._autosave_project_session()
-            self.set_status(f"Recorded surface at craniotomy point {index + 1}: DV {actual_dv:.2f} mm.")
+            for seed_index in range(index, len(self.seeds)):
+                seed = self.seeds[seed_index]
+                ap, ml = seed.ap, seed.ml
+                plan_dv = seed.dv - self.validation_clearance_mm if seed.dv is not None else -1.0
+                above_axis = self._bregma_to_axis((ap, ml, plan_dv))
+                safe_path = self._axis_clearance_path(above_axis, above_axis[2])
+                if not self._move_through_axis_positions_with_progress(
+                    safe_path,
+                    title="Moving Above Craniotomy Seed",
+                    message=(f"Moving above seed {seed_index + 1} to DV {plan_dv:.2f} mm."
+                             if seed.dv is not None else f"Moving to seed {seed_index + 1} at Bregma DV -1.00 mm."),
+                ):
+                    return
+                action = self._craniotomy_surface_dialog(seed_index, ap, ml, plan_dv)
+                if action == "cancel":
+                    self.set_status(f"Seed-surface workflow cancelled at seed {seed_index + 1}.")
+                    return
+                self.current_seed_index = seed_index
+                if action == "set":
+                    actual_ap, actual_ml, actual_dv = self._axis_to_bregma(self.controller.get_current_axis_position())
+                    seed.dv = actual_dv
+                    seed.sampled_ap = actual_ap
+                    seed.sampled_ml = actual_ml
+                    self.compute_trajectory()
+                    self._autosave_project_session()
+                    self.set_status(f"Recorded surface at seed {seed_index + 1}; moving to the next seed.")
+                else:
+                    self.set_status(f"Skipped seed {seed_index + 1} without changing its surface.")
+                self.refresh_craniotomy_points_list()
+            self.set_status("Seed-surface workflow complete.")
+            if self.seeds and all(seed.dv is not None for seed in self.seeds):
+                response = QMessageBox.question(
+                    self,
+                    "Seed Surfaces Complete",
+                    "All seed surfaces have been set. Would you like to start drilling now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if response == QMessageBox.Yes:
+                    self.start_drilling_round()
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy Surface", str(exc))
 
@@ -6217,7 +6638,10 @@ class CraniotomyWindow(QMainWindow):
             self.unfreeze_draw_btn.setChecked(False)
         self.top_view.set_freeze_mode(enabled)
         if enabled:
-            self.set_status("Draw on the circle to freeze points from deeper drilling.")
+            if self.drilling_mode_combo.currentData() == "boreholes":
+                self.set_status("Draw across individual borehole markers to freeze those holes from deeper drilling.")
+            else:
+                self.set_status("Draw on the circle to freeze points from deeper drilling.")
         elif self.trajectory:
             self.set_status("Freeze drawing off.")
 
@@ -6226,20 +6650,31 @@ class CraniotomyWindow(QMainWindow):
             self.freeze_draw_btn.setChecked(False)
         self.top_view.set_unfreeze_mode(enabled)
         if enabled:
-            self.set_status("Draw on the circle to remove frozen points.")
+            if self.drilling_mode_combo.currentData() == "boreholes":
+                self.set_status("Draw across frozen borehole markers to allow those holes to deepen again.")
+            else:
+                self.set_status("Draw on the circle to remove frozen points.")
         elif self.trajectory:
             self.set_status("Unfreeze drawing off.")
 
     def clear_frozen_points(self) -> None:
-        if not self.frozen_points:
+        if not self.frozen_points and not self.frozen_boreholes:
             return
         self.frozen_points = [False] * len(self.frozen_points)
+        self.frozen_boreholes = [None] * len(self.frozen_boreholes)
         if self.freeze_draw_btn.isChecked():
             self.freeze_draw_btn.setChecked(False)
         self.redraw_views()
-        self.set_status("Cleared all frozen trajectory points.")
+        self.set_status("Cleared all frozen perimeter points and boreholes.")
 
     def mark_frozen_point(self, index: int) -> None:
+        if self.drilling_mode_combo.currentData() == "boreholes":
+            pattern = self._ensure_borehole_state()
+            if 0 <= index < len(pattern) and self.frozen_boreholes[index] is not True:
+                self.frozen_boreholes[index] = True
+                self.redraw_views()
+                self._autosave_project_session()
+            return
         if not self.trajectory or index < 0 or index >= len(self.trajectory):
             return
         if not self.frozen_points:
@@ -6249,6 +6684,13 @@ class CraniotomyWindow(QMainWindow):
             self.redraw_views()
 
     def unmark_frozen_point(self, index: int) -> None:
+        if self.drilling_mode_combo.currentData() == "boreholes":
+            pattern = self._ensure_borehole_state()
+            if 0 <= index < len(pattern) and self.frozen_boreholes[index] is not False:
+                self.frozen_boreholes[index] = False
+                self.redraw_views()
+                self._autosave_project_session()
+            return
         if not self.frozen_points or index < 0 or index >= len(self.frozen_points):
             return
         if self.frozen_points[index]:
@@ -6288,7 +6730,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = completed_points
         self.redraw_views()
 
-    def start_drilling_round(self, *, drill_confirmed: bool = False) -> None:
+    def start_drilling_round(self) -> None:
         if not getattr(self.controller,"supports_drilling_protocol",True):
             QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous-speed drilling is not implemented.")
             return
@@ -6297,18 +6739,37 @@ class CraniotomyWindow(QMainWindow):
             return
         if not self._require_idle("Drilling"):
             return
+        if self.drilling_progress_reset_requires_ack:
+            answer = QMessageBox.warning(
+                self,
+                "Drilling Progress Reset",
+                "The plan changed, so recorded drill progress was reset. Existing physical holes may still be present. Verify the site and surface before restarting to avoid drilling too deeply. Start anyway?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            self.drilling_progress_reset_requires_ack = False
         try:
             self._require_project_coordinates("craniotomy")
         except Exception as exc:
             QMessageBox.warning(self, "Drilling", str(exc))
             return
+        spaced_boreholes = self.drilling_mode_combo.currentData() == "boreholes"
         seed_surfaces_ready = len(self.seeds) >= 2 and all(seed.dv is not None for seed in self.seeds)
         perimeter_surfaces_ready = (
             bool(self.trajectory)
             and len(self.craniotomy_surface_validated) == len(self.trajectory)
             and all(self.craniotomy_surface_validated)
         )
-        if not self.trajectory or not (seed_surfaces_ready or perimeter_surfaces_ready):
+        if spaced_boreholes and not seed_surfaces_ready:
+            QMessageBox.information(
+                self,
+                "Craniotomy Seed Surfaces Required",
+                "Set the surface for every craniotomy seed first. The surface at each spaced borehole is then inferred from the interpolated seed-surface profile.",
+            )
+            return
+        if not self.trajectory or not (seed_surfaces_ready or (not spaced_boreholes and perimeter_surfaces_ready)):
             QMessageBox.information(
                 self,
                 "Craniotomy",
@@ -6324,18 +6785,8 @@ class CraniotomyWindow(QMainWindow):
         if depth <= 0.0:
             QMessageBox.information(self, "Craniotomy", "Current target depth must be greater than zero.")
             return
-        if not drill_confirmed:
-            response = QMessageBox.question(
-                self,
-                "Confirm Drill Is On",
-                "Confirm that the drill is turned on before starting the craniotomy drilling sequence.\n\n"
-                "Is the drill turned on?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if response != QMessageBox.Yes:
-                self.set_status("Drilling not started. Turn on the drill, then start again.")
-                return
+        if not self._ensure_drill_on_for_drilling():
+            return
         try:self.controller.prepare_motion()
         except Exception as exc:
             QMessageBox.warning(self,"Drilling setup",str(exc));return
@@ -6345,14 +6796,22 @@ class CraniotomyWindow(QMainWindow):
         self.drill_stop_requested.clear()
         self.drilling_paused = False
         self.drill_completed_points = 0
-        current_depths = list(self.drilled_depths or [0.0] * len(self.trajectory))
-        frozen_points = list(self.frozen_points or [False] * len(self.trajectory))
+        if spaced_boreholes and not getattr(self.controller, "pulsed_protocol", False):
+            QMessageBox.warning(self, "Spaced Boreholes", "Spaced-borehole drilling requires the verified pulsed controller workflow.")
+            return
+        if spaced_boreholes:
+            hole_pattern = self._ensure_borehole_state()
+            current_depths = list(self.borehole_depths)
+            frozen_points = [hole[3] for hole in hole_pattern]
+        else:
+            current_depths = list(self.drilled_depths or [0.0] * len(self.trajectory))
+            frozen_points = list(self.frozen_points or [False] * len(self.trajectory))
         if not any((not frozen) and current_depth + 0.0005 < depth for current_depth, frozen in zip(current_depths, frozen_points, strict=False)):
             self.on_drill_round_finished("completed")
             return
         round_time_seconds = self.round_time_seconds.value()
         self.drill_round_started_at = time.monotonic()
-        self.drill_round_target_seconds = round_time_seconds
+        self.drill_round_target_seconds = 0.0 if spaced_boreholes else round_time_seconds
         self.active_drill_depth_mm = depth
         self.active_depth_ratio = 0.0
         self.start_round_btn.setText("Pause")
@@ -6377,11 +6836,6 @@ class CraniotomyWindow(QMainWindow):
             try:
                 self._preflight_pulsed_drilling(surface_targets,current_depths,target_depths,frozen_points,round_time_seconds,center_above_position)
                 if not self.controller.reported_drill_state():raise StereoDriveError("Drill power is reported OFF. Explicitly turn it on and verify the spindle before starting.")
-                if not drill_confirmed and QMessageBox.warning(self,"Pulsed drilling — bench test",
-                        "Serial microsteps stop and settle between commands; actual round duration can be longer than requested. This is NOT a continuous-speed cut. Confirm a supervised empty bench and physical Stop accessible.",
-                        QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:
-                    self.controller.turn_drill_off()
-                    self.on_drill_round_finished("stopped");return
             except Exception as exc:
                 try:self.controller.turn_drill_off()
                 except Exception:pass
@@ -6400,6 +6854,7 @@ class CraniotomyWindow(QMainWindow):
             ),
             daemon=True,
         )
+        self._set_borehole_controls_locked(True)
         self.drill_thread.start()
 
     def pause_drilling_round(self) -> None:
@@ -6407,6 +6862,7 @@ class CraniotomyWindow(QMainWindow):
         self.set_status("Pausing at verified idle and retracting to configured clearance.")
 
     def on_drill_round_finished(self, outcome: str) -> None:
+        self._set_borehole_controls_locked(False)
         self.drill_round_started_at = None
         self.drill_round_target_seconds = 0.0
         self.drill_completed_points = 0
@@ -6417,7 +6873,7 @@ class CraniotomyWindow(QMainWindow):
             return
         if outcome in ("stopped", "error"):
             self.drilling_paused = False
-            self.start_round_btn.setText("Start Drilling")
+            self.start_round_btn.setText("Start")
             self.redraw_views()
             return
         max_depth = max(0.0, self.drill_depth.value())
@@ -6425,7 +6881,7 @@ class CraniotomyWindow(QMainWindow):
         if completed_depth >= max_depth - 0.0005:
             self.current_target_depth_mm = max_depth
             self.drilling_paused = False
-            self.start_round_btn.setText("Start Drilling")
+            self.start_round_btn.setText("Start")
             self.update_current_target_depth_label()
             self.set_status("Drilling complete to max depth.")
             self.redraw_views()
@@ -6438,7 +6894,7 @@ class CraniotomyWindow(QMainWindow):
                 self.drilling_paused = False
                 self.start_round_btn.setText("Pause")
                 self.set_status(f"Starting next drilling round to {self.current_target_depth_mm:.3f} mm.")
-                QTimer.singleShot(100, lambda: self.start_drilling_round(drill_confirmed=True))
+                QTimer.singleShot(100, self.start_drilling_round)
             else:
                 self.drilling_paused = True
                 self.start_round_btn.setText("Continue")
@@ -6664,8 +7120,15 @@ class CraniotomyWindow(QMainWindow):
         return completed_substeps
 
     def _preflight_pulsed_drilling(self,surfaces,current_depths,target_depths,frozen,seconds,center):
-        plan=pulsed_protocol.drilling_plan(self.controller.get_current_axis_position(),surfaces,current_depths,
-            target_depths,frozen,self.drill_clearance_axis_dv,self.pulsed_clearance_mm,center,seconds,self.pulsed_drill_rate)
+        if self.drilling_mode_combo.currentData() == "boreholes":
+            holes = pulsed_protocol.sample_boreholes(surfaces, self.hole_spacing_mm.value(), self.frozen_points)
+            plan = pulsed_protocol.borehole_drilling_plan(
+                self.controller.get_current_axis_position(), holes, current_depths, target_depths,
+                self.drill_clearance_axis_dv, self.pulsed_clearance_mm, center, self.pulsed_drill_rate,
+            )
+        else:
+            plan=pulsed_protocol.drilling_plan(self.controller.get_current_axis_position(),surfaces,current_depths,
+                target_depths,frozen,self.drill_clearance_axis_dv,self.pulsed_clearance_mm,center,seconds,self.pulsed_drill_rate)
         checked=[]
         for event in plan:
             if event.target is None:continue
@@ -6682,13 +7145,55 @@ class CraniotomyWindow(QMainWindow):
         try:
             if not self.controller.supports_drilling_protocol:raise StereoDriveError('Pulsed workflow not enabled')
             if not self.controller.reported_drill_state():raise StereoDriveError('Reported drill power is OFF')
-            plan=self._preflight_pulsed_drilling(surfaces,current_depths,target_depths,frozen,seconds,center)
-            count=len(surfaces)-1
+            if self.drilling_mode_combo.currentData() == "boreholes":
+                holes = pulsed_protocol.sample_boreholes(surfaces, self.hole_spacing_mm.value(), self.frozen_points)
+                plan=self._preflight_pulsed_drilling(surfaces,current_depths,target_depths,frozen,seconds,center)
+                count = len(holes)
+                completion_phase = "borehole_complete"
+            else:
+                plan=self._preflight_pulsed_drilling(surfaces,current_depths,target_depths,frozen,seconds,center)
+                count=len(surfaces)-1
+                completion_phase = "point_complete"
             def on_event(event):
                 if event.surface_dv is not None:self.active_surface_dv=event.surface_dv
-                if event.point_index is not None:
+                if event.phase == "borehole_complete" and event.point_index is not None:
+                    index = event.point_index
+                    if index < len(self.borehole_depths):
+                        self.borehole_depths[index] = float(event.depth_mm or 0.0)
+                    self.active_depth_ratio = max(
+                        0.0,
+                        min(1.0, float(event.depth_mm or 0.0) / max(self.pulsed_drill_thickness_mm, 0.001)),
+                    )
+                    self.redraw_signal.emit()
+                    completed_holes[0] += 1
+                    self.drill_progress_signal.emit(completed_holes[0])
+                elif event.phase == completion_phase and event.point_index is not None:
                     self._mark_continuous_round_point(event.point_index,event.depth_mm,count)
-                self.status_signal.emit(f"Pulsed drilling: {event.phase}; verified serial microsteps, no catch-up")
+                phase_messages = {
+                    "approach": "Moving to the next craniotomy point…",
+                    "surface": "Moving to the skull surface…",
+                    "enter": "Drilling down at a craniotomy point…",
+                    "cut": "Drilling around the craniotomy…",
+                    "return_center": "Returning above the craniotomy center…",
+                }
+                borehole_verbs = {
+                    "borehole_approach": "Approaching",
+                    "borehole_drill": "Drilling",
+                    "borehole_complete": "Completed",
+                    "borehole_retract": "Retracting",
+                }
+                if event.phase in borehole_verbs and event.point_index is not None:
+                    circuit_position = min(99, event.point_index * 100 // max(1, count))
+                    status = (
+                        f"{borehole_verbs[event.phase]} borehole "
+                        f"{event.point_index + 1}/{count} {circuit_position}%"
+                    )
+                elif event.phase == "point_complete" and event.point_index is not None:
+                    status = f"Completed craniotomy point {event.point_index + 1} of {count}."
+                else:
+                    status = phase_messages.get(event.phase, "Drilling in progress…")
+                self.status_signal.emit(status)
+            completed_holes = [0]
             pulsed_protocol.execute(self.controller,plan,stop_requested=self.drill_stop_requested.is_set,
                 pause_requested=self.drill_pause_requested.is_set,retract_on_pause=True,on_event=on_event)
         except pulsed_protocol.PulsePaused:
@@ -6700,7 +7205,7 @@ class CraniotomyWindow(QMainWindow):
                 self.controller.move_axis_to_target('DV',target,step_mm=1,dwell_seconds=0,
                     stop_requested=self.drill_stop_requested.is_set)
                 self.controller.turn_drill_off()
-                self.status_signal.emit("Pulsed drilling paused, retracted and drill OFF. Turn drill on explicitly before Continue.")
+                self.status_signal.emit("Drilling paused. The tool is retracted and the drill is off; turn it on before continuing.")
             except Exception as exc:
                 outcome="error";self.status_signal.emit(str(exc))
         except Exception as exc:
@@ -6733,6 +7238,8 @@ class CraniotomyWindow(QMainWindow):
         try:
             if not getattr(self.controller, "supports_drilling_protocol", True):
                 raise StereoDriveError("Direct USB continuous drilling profiles are not validated.")
+            if not self.controller.reported_drill_state():
+                raise StereoDriveError("Drill power is no longer reported ON; stopping before drilling movement.")
             if point_count <= 0:
                 return
             needs_drilling = [
@@ -6751,9 +7258,7 @@ class CraniotomyWindow(QMainWindow):
             )
             planar_tolerance_mm = max(0.015, min(0.08, path_step_mm * 0.25))
             dv_tolerance_mm = max(0.02, min(0.05, path_step_mm * 0.25))
-            self.status_signal.emit(
-                f"Continuous tracing step {path_step_mm:.3f} mm, AP/ML tolerance {planar_tolerance_mm:.3f} mm."
-            )
+            self.status_signal.emit("Preparing the path around the craniotomy…")
             total_substeps = self._continuous_round_substep_count(
                 surface_targets,
                 frozen_points,
@@ -6773,7 +7278,7 @@ class CraniotomyWindow(QMainWindow):
                 target_depth = target_depths[index]
                 if frozen_points[index]:
                     if at_cutting_depth and self.active_surface_dv is not None:
-                        self.status_signal.emit("Frozen section: retracting before crossing gap.")
+                        self.status_signal.emit("Retracting before passing the frozen section…")
                         self.controller.move_axis_to_target(
                             "DV",
                             self.active_surface_dv - 2.0,
@@ -6796,7 +7301,7 @@ class CraniotomyWindow(QMainWindow):
                     )
                     self.redraw_signal.emit()
                     self.status_signal.emit(
-                        f"Moving to start continuous cut at {int(order_position / max(1, point_count) * 100)}%"
+                        f"Moving to the next craniotomy point ({int(order_position / max(1, point_count) * 100)}%)."
                     )
                     self._approach_axis_position((ap, ml, current_dv_target),
                         min(surface_dv - 2.0, self.drill_clearance_axis_dv), self._should_abort_drilling)
@@ -6809,7 +7314,7 @@ class CraniotomyWindow(QMainWindow):
                         poll_seconds=0.1,
                         stop_requested=self._should_abort_drilling,
                     )
-                    self.status_signal.emit(f"Entering continuous cut to DV {target_dv:.2f}")
+                    self.status_signal.emit("Drilling down to the planned depth…")
                     dwell_seconds = 0.005 / max(self.drill_rate_mm_per_s.value(), 0.001)
                     self.controller.move_axis_to_target(
                         "DV",
@@ -6922,6 +7427,14 @@ class CraniotomyWindow(QMainWindow):
         for seed in self.seeds if self.craniotomy_coordinate_system == "bregma" else []:
             display_ap, display_ml = self._project_map_position(seed.ap, seed.ml, self.craniotomy_coordinate_system)
             top_seeds.append((display_ml, display_ap, seed.dv is not None))
+        borehole_points = []
+        if self.drilling_mode_combo.currentData() == "boreholes":
+            borehole_pattern = self._ensure_borehole_state()
+            borehole_points = [
+                (display_ml, display_ap, self.borehole_depths[index], _frozen)
+                for index, (ap, ml, _surface_dv, _frozen) in enumerate(borehole_pattern)
+                for display_ap, display_ml in [self._project_map_position(ap, ml, self.craniotomy_coordinate_system)]
+            ]
         if current_point is None and (self.seeds or self.injection_sites or self.top_view.overlay_image is not None):
             try:
                 current_ap, current_ml, current_dv = self.controller.get_current_axis_position()
@@ -6950,10 +7463,19 @@ class CraniotomyWindow(QMainWindow):
             current_point=current_point,
             anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
-            selected_trajectory_index=self.selected_craniotomy_point_index,
+            selected_seed_index=self.selected_craniotomy_point_index,
+            borehole_points=borehole_points,
+            quick_locations=[
+                (name, display_ml, display_ap)
+                for name, location in self.quick_locations.items()
+                if location.coordinate_system == "bregma"
+                for display_ap, display_ml in [
+                    self._project_map_position(location.ap, location.ml, "bregma")
+                ]
+            ],
         )
         self.set_craniotomy_surface_btn.setEnabled(
-            bool(self.trajectory) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
+            bool(self.seeds) and self.bregma_axis is not None and self.craniotomy_coordinate_system == "bregma"
         )
         show_craniotomy = self.show_craniotomy_on_injection_map.isChecked()
         injection_site_points = []
@@ -6973,6 +7495,15 @@ class CraniotomyWindow(QMainWindow):
             injection_sites=injection_site_points,
             anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
+            borehole_points=borehole_points if show_craniotomy else [],
+            quick_locations=[
+                (name, display_ml, display_ap)
+                for name, location in self.quick_locations.items()
+                if location.coordinate_system == "bregma"
+                for display_ap, display_ml in [
+                    self._project_map_position(location.ap, location.ml, "bregma")
+                ]
+            ],
         )
         self.injection_sites_view.set_view_focus_points(focus_points or None)
         self.update_seed_selector_label()
@@ -6991,18 +7522,30 @@ class CraniotomyWindow(QMainWindow):
         return f"{minutes:02d}:{secs:02d}"
 
     def _update_round_status_labels(self) -> None:
-        if self.drill_round_started_at is None or self.drill_round_target_seconds <= 0:
-            self.round_elapsed_label.setText("Elapsed: --:--")
-            self.round_remaining_label.setText("Remaining: --:--")
-            self.round_percent_label.setText("Complete: --%")
+        is_boreholes = self.drilling_mode_combo.currentData() == "boreholes"
+        if self.drill_round_started_at is None:
+            if is_boreholes:
+                self.round_elapsed_label.setText("Elapsed: --:--")
+                self.round_percent_label.setText("Boreholes complete: --%")
+            else:
+                self.round_elapsed_label.setText("Circuit elapsed: --:--")
+                self.round_percent_label.setText("Circuit complete: --%")
             return
         elapsed = max(0.0, time.monotonic() - self.drill_round_started_at)
-        remaining = max(0.0, self.drill_round_target_seconds - elapsed)
+        if is_boreholes:
+            total_points = max(1, sum(not hole[3] for hole in self._ensure_borehole_state()))
+            percent = min(100.0, (self.drill_completed_points / total_points) * 100.0)
+            self.round_elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed)}")
+            self.round_percent_label.setText(f"Boreholes complete: {percent:.0f}%")
+            return
+        if self.drill_round_target_seconds <= 0:
+            self.round_elapsed_label.setText("Circuit elapsed: --:--")
+            self.round_percent_label.setText("Circuit complete: --%")
+            return
         total_points = max(1, len(self.trajectory))
         percent = min(100.0, (self.drill_completed_points / total_points) * 100.0)
-        self.round_elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed)}")
-        self.round_remaining_label.setText(f"Remaining: {self._format_duration(remaining)}")
-        self.round_percent_label.setText(f"Complete: {percent:.0f}%")
+        self.round_elapsed_label.setText(f"Circuit elapsed: {self._format_duration(elapsed)}")
+        self.round_percent_label.setText(f"Circuit complete: {percent:.0f}%")
 
 
 def main() -> None:

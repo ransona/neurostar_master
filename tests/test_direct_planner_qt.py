@@ -52,6 +52,20 @@ class PlannerTests(unittest.TestCase):
             self.app.processEvents();time.sleep(.01)
         self.assertFalse(self.window.controller.has_active_motion())
 
+    def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
+        self.window.resize(1440,900)
+        self.window.show();self.app.processEvents()
+        for index in (0,1):
+            tab=self.window.tabs.widget(index)
+            layout=tab.layout()
+            self.assertEqual(layout.count(),2)
+            left=layout.itemAt(0).widget()
+            right=layout.itemAt(1).widget()
+            self.assertGreater(left.width(),0)
+            self.assertGreater(right.width(),0)
+            self.assertLess(abs(left.width()-right.width()),max(left.width(),right.width())*.35)
+        self.assertEqual(self.window.injection_sites_view.parentWidget().title(),'Map')
+
     def test_disconnected_keyboard_does_not_move(self):
         with patch.object(self.window,'_focus_is_editable',return_value=False):
             self.window.keyboard_nudge('AP',True,'AP')

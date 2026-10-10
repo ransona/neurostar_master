@@ -131,6 +131,116 @@ def drilling_plan(start,surfaces,current_depths,target_depths,frozen,clearance_d
     return events
 
 
+def sample_boreholes(surfaces, spacing_mm, frozen):
+    """Sample a closed AP/ML perimeter at uniform arc-length intervals.
+
+    Returns (AP, ML, surface DV, frozen) entries. The requested spacing is a
+    maximum; the actual spacing is uniform and never larger than requested.
+    """
+    spacing = finite(spacing_mm, 'borehole spacing', 1e-6)
+    if len(surfaces) < 4 or len(frozen) != len(surfaces):
+        raise ValueError('Borehole perimeter and frozen-point arrays are inconsistent.')
+    if any(len(point) != 3 or any(not math.isfinite(float(value)) for value in point) for point in surfaces):
+        raise ValueError('Borehole perimeter contains an invalid surface coordinate.')
+    if math.dist(surfaces[0], surfaces[-1]) > 1e-6:
+        raise ValueError('Borehole perimeter must be closed.')
+    segments = []
+    total = 0.0
+    for index, (start, end) in enumerate(zip(surfaces[:-1], surfaces[1:])):
+        length = math.hypot(end[0] - start[0], end[1] - start[1])
+        segments.append((total, total + length, index, start, end))
+        total += length
+    if total <= 1e-9:
+        raise ValueError('Borehole perimeter has no measurable AP/ML length.')
+    count = max(1, math.ceil(total / spacing))
+    actual_spacing = total / count
+    holes = []
+    segment_index = 0
+    for hole_index in range(count):
+        distance = hole_index * actual_spacing
+        while segment_index + 1 < len(segments) and distance >= segments[segment_index][1] - 1e-12:
+            segment_index += 1
+        begin, end_distance, source_index, start, end = segments[segment_index]
+        fraction = 0.0 if end_distance <= begin else (distance - begin) / (end_distance - begin)
+        holes.append((
+            start[0] + (end[0] - start[0]) * fraction,
+            start[1] + (end[1] - start[1]) * fraction,
+            start[2] + (end[2] - start[2]) * fraction,
+            bool(frozen[source_index]),
+        ))
+    return holes
+
+
+def apply_borehole_freeze_overrides(holes, overrides):
+    """Apply per-hole True/False overrides; None retains inherited segment state."""
+    if len(overrides) != len(holes):
+        overrides = [None] * len(holes)
+    if any(value is not None and not isinstance(value, bool) for value in overrides):
+        raise ValueError('Borehole freeze overrides must be true, false, or unset.')
+    return [
+        (*hole[:3], bool(hole[3] if overrides[index] is None else overrides[index]))
+        for index, hole in enumerate(holes)
+    ]
+
+
+def borehole_drilling_plan(start, holes, current_depths, target_depths, clearance_dv,
+                           clearance_mm, center_above, depth_rate):
+    """Create a safe, sequential plan to deepen spaced perimeter boreholes.
+
+    Each hole is approached/retracted at clearance; only its own axis is
+    advanced to the requested incremental depth. No circuit pacing delay is
+    added; DV advance is paced only by the configured depth rate.
+    """
+    clearance_mm = finite(clearance_mm, 'clearance', 1e-6)
+    depth_rate = finite(depth_rate, 'depth rate', 1e-9)
+    if len(holes) == 0 or len(current_depths) != len(holes) or len(target_depths) != len(holes):
+        raise ValueError('Borehole depths must match the sampled perimeter.')
+    for values in (current_depths, target_depths):
+        for value in values:
+            finite(value, 'borehole depth')
+    if any(target + 1e-9 < current for current, target in zip(current_depths, target_depths, strict=True)):
+        raise ValueError('Borehole target depth cannot be shallower than the verified current depth.')
+    if any(len(hole) != 4 or any(not math.isfinite(float(value)) for value in hole[:3])
+           for hole in holes):
+        raise ValueError('Borehole list contains an invalid position.')
+    if len(center_above) != 3 or len(start) != 3:
+        raise ValueError('Three-axis start and return positions are required.')
+
+    selected = [i for i, hole in enumerate(holes)
+                if not hole[3] and current_depths[i] + 0.0005 < target_depths[i]]
+    if not selected:
+        return []
+    events = []
+    elapsed = 0.0
+    current = tuple(start)
+    for hole_index in selected:
+        ap, ml, surface_dv, _is_frozen = holes[hole_index]
+        current_depth = current_depths[hole_index]
+        target_depth = target_depths[hole_index]
+        safe_dv = min(clearance_dv, surface_dv - clearance_mm)
+        at_current_depth = (ap, ml, surface_dv + current_depth)
+        for target in clearance_path(current, at_current_depth, safe_dv):
+            events.append(Pulse(elapsed, 'borehole_approach', target=target,
+                                point_index=hole_index, surface_dv=surface_dv))
+            current = target
+        target_position = (ap, ml, surface_dv + target_depth)
+        for target in line(at_current_depth, target_position, .005):
+            elapsed += math.dist(current, target) / depth_rate
+            events.append(Pulse(elapsed, 'borehole_drill', target=target,
+                                point_index=hole_index, surface_dv=surface_dv))
+            current = target
+        events.append(Pulse(elapsed, 'borehole_complete', point_index=hole_index,
+                            depth_mm=target_depth, surface_dv=surface_dv))
+        retract = (ap, ml, safe_dv)
+        for target in line(current, retract, 1):
+            events.append(Pulse(elapsed, 'borehole_retract', target=target,
+                                point_index=hole_index, surface_dv=surface_dv))
+            current = target
+    events += [Pulse(elapsed, 'return_center', target=target)
+               for target in clearance_path(current, center_above, clearance_dv)]
+    return events
+
+
 def execute(controller,events,*,stop_requested=lambda:False,pause_requested=lambda:False,
             retract_on_pause=False,on_event=lambda e:None,on_delivered=lambda value:None,
             clock=time.monotonic,sleep=time.sleep):

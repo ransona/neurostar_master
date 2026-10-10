@@ -158,6 +158,7 @@ def window():
     w.injection_pause_requested = threading.Event()
     w.drill_stop_requested = threading.Event()
     w.drill_pause_requested = threading.Event()
+    w.drilling_progress_reset_requires_ack = False
     for name in ("injection_progress", "injection_site_progress", "start_injection_btn",
                  "pause_injection_btn", "injection_finished_signal", "sequence_step_signal",
                  "active_injection_site_signal", "status_signal", "injection_progress_signal"):
@@ -311,6 +312,35 @@ class MechanicalMovementTests(unittest.TestCase):
 class GuiCoordinateTests(unittest.TestCase):
     def setUp(self):
         self.w = window()
+
+    def test_plan_change_resets_drilling_progress_and_requires_restart(self):
+        self.w.trajectory = [(1.0, 2.0, 0.0)] * 3
+        self.w.drilled_depths = [0.1, 0.05, 0.02]
+        self.w.frozen_points = [False, True, False]
+        self.w.borehole_signature = [(1.0, 2.0, 0.0)]
+        self.w.borehole_depths = [0.1]
+        self.w.frozen_boreholes = [True]
+        self.w.drilling_paused = True
+        self.w.drill_completed_points = 2
+        self.w.depth_per_round = Mock(value=lambda: 0.05)
+        self.w.drill_depth = Mock(value=lambda: 0.5)
+        self.w.start_round_btn = Mock()
+        self.w.update_current_target_depth_label = Mock()
+        self.w._ensure_borehole_state = Mock()
+
+        Window._invalidate_drilling_progress(self.w)
+
+        self.assertEqual(self.w.drilled_depths, [0.0, 0.0, 0.0])
+        self.assertEqual(self.w.borehole_depths, [])
+        self.assertEqual(self.w.frozen_points, [False, False, False])
+        self.assertFalse(self.w.drilling_paused)
+        self.assertTrue(self.w.drilling_progress_reset_requires_ack)
+        self.w.start_round_btn.setText.assert_called_with("Start")
+
+    def test_status_banner_stops_at_clause_boundary(self):
+        self.w.action_status_label = Mock()
+        Window.set_status(self.w, "Drilling not started; the drill is off.")
+        self.w.action_status_label.setText.assert_called_with("Status: Drilling not started")
 
     def test_bregma_button_targets_origin_in_axis_display(self):
         self.w.coordinate_mode = "axis"
