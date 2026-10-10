@@ -1331,8 +1331,8 @@ class CraniotomyWindow(QMainWindow):
         config_actions_layout = QHBoxLayout()
         config_actions_layout.setContentsMargins(0, 0, 0, 0)
         config_actions_layout.setSpacing(6)
-        config_actions_layout.addWidget(self.craniotomy_load_btn)
         config_actions_layout.addWidget(self.set_center_btn)
+        config_actions_layout.addWidget(self.craniotomy_load_btn)
         config_actions_layout.addWidget(self.craniotomy_save_btn)
         setup_layout.addLayout(config_actions_layout, 0, 4, 1, 2)
 
@@ -1378,9 +1378,6 @@ class CraniotomyWindow(QMainWindow):
         self.move_seed_btn.clicked.connect(self.move_to_current_seed)
         self.capture_surface_btn = QPushButton("Set Surface")
         self.capture_surface_btn.setText("Set Seed Surfaces")
-        self.capture_surface_btn.setProperty("variant", "primary")
-        self.capture_surface_btn.style().unpolish(self.capture_surface_btn)
-        self.capture_surface_btn.style().polish(self.capture_surface_btn)
         self.capture_surface_btn.clicked.connect(self.capture_surface)
         self.clear_surfaces_btn = QPushButton("Clear Surface Measurements")
         self.clear_surfaces_btn.clicked.connect(self.clear_surface_measurements)
@@ -1404,11 +1401,13 @@ class CraniotomyWindow(QMainWindow):
         button_layout = QGridLayout()
         button_layout.setHorizontalSpacing(6)
         button_layout.setVerticalSpacing(3)
+        for column in range(3):
+            button_layout.setColumnStretch(column, 1)
         button_layout.addWidget(self.generate_seeds_btn, 0, 0)
         button_layout.addWidget(self.clear_surfaces_btn, 0, 1)
         button_layout.addWidget(self.clear_craniotomy_btn, 0, 2)
-        button_layout.addWidget(self.move_seed_btn, 1, 0)
-        button_layout.addWidget(self.capture_surface_btn, 1, 1, 1, 2)
+        button_layout.addWidget(self.capture_surface_btn, 1, 0)
+        button_layout.addWidget(self.move_seed_btn, 1, 1)
         button_layout.addWidget(self.freeze_draw_btn, 2, 0)
         button_layout.addWidget(self.clear_freeze_btn, 2, 1)
         button_layout.addWidget(self.unfreeze_draw_btn, 2, 2)
@@ -1461,6 +1460,7 @@ class CraniotomyWindow(QMainWindow):
         legend_layout.addWidget(self.current_target_depth_label)
         legend_layout.addWidget(self.change_target_depth_btn)
         surface_box = QGroupBox("Craniotomy Seed Points")
+        self.craniotomy_surface_box = surface_box
         surface_layout = QVBoxLayout(surface_box)
         self.craniotomy_points_list = QListWidget()
         # Leave enough room for the action button even when the window is
@@ -1472,7 +1472,6 @@ class CraniotomyWindow(QMainWindow):
         surface_layout.addWidget(self.set_craniotomy_surface_btn)
         surface_layout.addWidget(self.craniotomy_points_list, 1)
         legend_layout.addWidget(surface_box, 1)
-        legend_layout.addStretch(1)
         right_panel_layout.addWidget(details_panel, 1)
         left_layout.addWidget(right_panel, 1)
         self.update_current_target_depth_label()
@@ -6397,13 +6396,13 @@ class CraniotomyWindow(QMainWindow):
             )
         if hasattr(self, "drilling_mode_description"):
             if is_borehole:
-                self.drilling_mode_description.setText(
-                    "Spaced boreholes: surfaces are inferred from the seed profile. Holes drill as quickly as the DV rate allows; freeze selected holes and deepen the rest to Max Depth."
-                )
+                self.drilling_mode_description.clear()
+                self.drilling_mode_description.hide()
             else:
                 self.drilling_mode_description.setText(
                     "Continuous path: traces the perimeter at each depth increment until Max Depth."
                 )
+                self.drilling_mode_description.show()
         if hasattr(self, "top_view"):
             self._invalidate_drilling_progress()
             self.redraw_views()

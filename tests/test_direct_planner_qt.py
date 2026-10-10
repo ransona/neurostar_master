@@ -67,6 +67,17 @@ class PlannerTests(unittest.TestCase):
             self.assertGreater(right.width(),0)
             self.assertLess(abs(left.width()-right.width()),max(left.width(),right.width())*.35)
         self.assertEqual(self.window.injection_sites_view.parentWidget().title(),'Map')
+        self.assertEqual(self.window.capture_surface_btn.y(),self.window.move_seed_btn.y())
+        self.assertEqual(self.window.capture_surface_btn.x()<self.window.move_seed_btn.x(),True)
+        self.assertLess(abs(self.window.capture_surface_btn.width()-self.window.move_seed_btn.width()),4)
+        self.assertNotEqual(self.window.capture_surface_btn.property('variant'),'primary')
+        self.assertLess(self.window.set_center_btn.x(),self.window.craniotomy_load_btn.x())
+        self.assertLess(self.window.craniotomy_load_btn.x(),self.window.craniotomy_save_btn.x())
+        self.assertFalse(self.window.drilling_mode_description.isVisible())
+        self.assertGreaterEqual(
+            self.window.craniotomy_surface_box.geometry().bottom(),
+            self.window.craniotomy_surface_box.parentWidget().rect().bottom()-8,
+        )
 
     def test_freeze_modes_lock_craniotomy_edits_and_can_switch_or_exit(self):
         self.window.freeze_draw_btn.click()
