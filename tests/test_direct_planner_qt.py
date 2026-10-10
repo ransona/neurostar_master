@@ -144,6 +144,34 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.start_injection_btn.isEnabled())
         self.assertEqual(self.window.injection_sites_view.mode_label,'')
 
+    def test_running_injection_locks_setup_but_keeps_progress_pause_and_stop_active(self):
+        self.window.set_injection_sequence_controls_active(True)
+        for panel in (self.window.manual_control_box,self.window.injection_sites_box,self.window.injection_map_box):
+            self.assertFalse(panel.isEnabled())
+        for widget in (self.window.single_injection_volume_nl,self.window.insertion_injection_rate_nl_min,
+                       self.window.main_injection_rate_nl_min,self.window.block_test_volume_nl,
+                       self.window.sequence_steps_list,self.window.injection_save_btn):
+            self.assertFalse(widget.isEnabled())
+        for widget in (self.window.injection_progress_label,self.window.injection_progress,
+                       self.window.injection_site_progress_label,self.window.injection_site_progress,
+                       self.window.start_injection_btn,self.window.stop_injection_btn):
+            self.assertTrue(widget.isEnabled())
+        self.window.set_injection_sequence_controls_active(False)
+        self.assertTrue(self.window.manual_control_box.isEnabled())
+        self.assertTrue(self.window.injection_sites_box.isEnabled())
+        self.assertTrue(self.window.injection_map_box.isEnabled())
+        self.assertTrue(self.window.sequence_steps_list.isEnabled())
+
+    def test_keyboard_nudges_are_ignored_during_injection(self):
+        from unittest.mock import Mock
+        self.window.injection_thread=Mock()
+        self.window.injection_thread.is_alive.return_value=True
+        with patch.object(self.window.controller,'nudge_axis') as nudge, \
+             patch.object(self.window,'stop_motion') as stop:
+            self.window.keyboard_nudge('AP',False,'AP posterior')
+        nudge.assert_not_called()
+        stop.assert_not_called()
+
     def test_injection_validation_dialog_wraps_and_orders_equal_buttons(self):
         observed={}
         def inspect_and_close():

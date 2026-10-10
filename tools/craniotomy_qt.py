@@ -941,6 +941,7 @@ class CraniotomyWindow(QMainWindow):
         self.quick_locations: dict[str, StoredLocation] = {}
         self.named_locations: dict[str, StoredLocation] = {}
         self.injection_thread: threading.Thread | None = None
+        self._injection_sequence_saved_enabled: dict[QWidget, bool] | None = None
         self.injection_pause_requested = threading.Event()
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
@@ -1501,6 +1502,7 @@ class CraniotomyWindow(QMainWindow):
         self.tabs.addTab(injection_tab, "Injection")
 
         status_box = QGroupBox("Manual Control")
+        self.manual_control_box = status_box
         status_layout = QGridLayout(status_box)
         status_layout.setContentsMargins(7, 6, 7, 7)
         status_layout.setHorizontalSpacing(8)
@@ -1556,6 +1558,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.plunger_gauge, 0, 4, 8, 1)
 
         single_box = QGroupBox("Injection")
+        self.injection_recipe_box = single_box
         single_layout = QGridLayout(single_box)
         single_layout.setContentsMargins(7, 6, 7, 7)
         single_layout.setHorizontalSpacing(8)
@@ -1647,9 +1650,11 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(settings_note, 3, 0, 1, 6)
         single_layout.addWidget(QLabel("Program sequence"), 4, 0, 1, 6)
         single_layout.addWidget(self.sequence_steps_list, 5, 0, 1, 6)
-        single_layout.addWidget(QLabel("Overall sequence progress"), 6, 0)
+        self.injection_progress_label = QLabel("Overall sequence progress")
+        single_layout.addWidget(self.injection_progress_label, 6, 0)
         single_layout.addWidget(self.injection_progress, 6, 1, 1, 5)
-        single_layout.addWidget(QLabel("Current injection/movement"), 7, 0)
+        self.injection_site_progress_label = QLabel("Current injection/movement")
+        single_layout.addWidget(self.injection_site_progress_label, 7, 0)
         single_layout.addWidget(self.injection_site_progress, 7, 1, 1, 5)
         injection_actions_panel = QWidget()
         self.injection_actions_panel = injection_actions_panel
@@ -1672,6 +1677,7 @@ class CraniotomyWindow(QMainWindow):
     def _build_injection_sites_section(self, parent_layout: QVBoxLayout) -> None:
         """Build the Injection Sites panel below the injection settings."""
         sites_box = QGroupBox("Injection Sites")
+        self.injection_sites_box = sites_box
         sites_layout = QGridLayout(sites_box)
         self.injection_sites_layout = sites_layout
         sites_layout.setContentsMargins(7, 6, 7, 7)
@@ -1747,6 +1753,38 @@ class CraniotomyWindow(QMainWindow):
             self.start_injection_btn.setFixedWidth(width)
             self.stop_injection_btn.setFixedWidth(width)
 
+    def set_injection_sequence_controls_active(self, active: bool) -> None:
+        """Lock injection setup while running, preserving progress and emergency controls."""
+        if active:
+            if self._injection_sequence_saved_enabled is not None:
+                return
+            saved = {}
+            for widget in (self.manual_control_box, self.injection_sites_box, self.injection_map_box):
+                saved[widget] = widget.isEnabled()
+                widget.setEnabled(False)
+            keep_active = {
+                self.injection_progress_label,
+                self.injection_progress,
+                self.injection_site_progress_label,
+                self.injection_site_progress,
+                self.injection_actions_panel,
+                self.start_injection_btn,
+                self.stop_injection_btn,
+            }
+            for widget in self.injection_recipe_box.findChildren(QWidget):
+                if widget in keep_active:
+                    continue
+                saved[widget] = widget.isEnabled()
+                widget.setEnabled(False)
+            self._injection_sequence_saved_enabled = saved
+            return
+
+        if self._injection_sequence_saved_enabled is None:
+            return
+        for widget, was_enabled in self._injection_sequence_saved_enabled.items():
+            widget.setEnabled(was_enabled)
+        self._injection_sequence_saved_enabled = None
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         QTimer.singleShot(0, self._size_injection_action_buttons)
@@ -1754,6 +1792,7 @@ class CraniotomyWindow(QMainWindow):
     def _build_injection_map(self, parent_layout: QHBoxLayout) -> None:
         """Place the injection map in the full-height right-hand column."""
         map_box = QGroupBox("Map")
+        self.injection_map_box = map_box
         map_layout = QVBoxLayout(map_box)
         self.injection_sites_view = ProjectionWidget("ML", "AP")
         self.injection_sites_view.location_double_clicked.connect(self.move_to_map_location)
@@ -3086,6 +3125,20 @@ class CraniotomyWindow(QMainWindow):
             return super().eventFilter(watched, event)
         combined_key = int(key) | event.modifiers().value
         validation_active = self.validation_modal_active
+        injection_running = self.injection_thread is not None and self.injection_thread.is_alive()
+        if injection_running and not validation_active:
+            if self._key_matches_binding(self.syringe_key_bindings["stop_injection"], key, combined_key):
+                self.stop_injection()
+                return True
+            blocked_bindings = [
+                *self.movement_key_bindings.values(),
+                self.syringe_key_bindings["volume_down"],
+                self.syringe_key_bindings["volume_up"],
+                self.syringe_key_bindings["syringe_up"],
+                self.syringe_key_bindings["syringe_down"],
+            ]
+            if any(self._key_matches_binding(binding, key, combined_key) for binding in blocked_bindings):
+                return True
         if self.nudge_all_sites_active and not validation_active:
             for name in ("volume_down", "volume_up", "syringe_up", "syringe_down"):
                 if self._key_matches_binding(self.syringe_key_bindings[name], key, combined_key):
@@ -3158,6 +3211,8 @@ class CraniotomyWindow(QMainWindow):
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str, *, auto_repeat: bool = False) -> None:
         if getattr(self,"restart_required",False):return
+        if self.injection_thread is not None and self.injection_thread.is_alive() and not self.validation_modal_active:
+            return
         if self._focus_is_editable():
             return
         try:
@@ -5221,6 +5276,7 @@ class CraniotomyWindow(QMainWindow):
             daemon=True,
         )
         self.injection_thread.start()
+        self.set_injection_sequence_controls_active(True)
 
     def pause_resume_injection(self) -> None:
         if self.injection_thread is None or not self.injection_thread.is_alive():
@@ -5687,6 +5743,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_sites_list.setCurrentRow(-1)
 
     def finish_injection(self, message: str) -> None:
+        self.set_injection_sequence_controls_active(False)
         self.set_active_sequence_step(-1)
         self.set_active_injection_site(-1)
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
