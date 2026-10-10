@@ -554,6 +554,13 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.repeat_injection_site_result)
         self.assertTrue(self.window.repeat_injection_site_event.is_set())
 
+    def test_retraction_progress_keeps_the_current_bregma_dv_visible(self):
+        self.window.injection_status_site_count=3
+        self.window.injection_status_site_index=0
+        with patch.object(self.window,'set_status') as status:
+            self.window.set_injection_progress(40,'Retracting DV 12.34 mm (Bregma)')
+        status.assert_called_once_with('Injection 1/3: Retracting DV 12.34 mm (Bregma)')
+
     def test_benchmark_options_runs_and_displays_results(self):
         self.connect();timer=QTimer();timer.setInterval(50);started=[False];outputs=[]
         def automate():

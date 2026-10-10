@@ -5318,6 +5318,9 @@ class CraniotomyWindow(QMainWindow):
                         )
                     else:
                         detail=f"{event.phase.replace('_',' ').capitalize()}"
+                    if event.phase in ('overshoot_retract','surface_retract','return_above') and event.target is not None:
+                        position=self._injection_dv_position_label(event.target)
+                        detail = f"{detail}; retracting {position}" if event.phase == 'overshoot_retract' else f"Retracting {position}"
                     self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
                         detail)
                     planned_overshoot_dv=site.dv+settings.injection_depth_mm+settings.overshoot_mm
@@ -5689,6 +5692,17 @@ class CraniotomyWindow(QMainWindow):
             f"Retracting to surface at {settings.insert_retract_speed_um_s:.1f} um/sec for site {site_index}/{site_count}",
         )
         retract_step_mm, retract_dwell_s = self._slow_axis_step_and_dwell(settings)
+
+        def report_retraction_position(_message: str) -> None:
+            try:
+                position = self.controller.get_current_axis_position()
+                detail = f"Retracting {self._injection_dv_position_label(position)}"
+                self.injection_progress_signal.emit(
+                    int((site_index / max(1, site_count)) * 100), detail,
+                )
+            except Exception:
+                pass
+
         self.controller.move_axis_to_target(
             "DV",
             site.dv,
@@ -5696,6 +5710,7 @@ class CraniotomyWindow(QMainWindow):
             tolerance=0.003,
             stop_requested=self.injection_stop_requested.is_set,
             dwell_seconds=retract_dwell_s,
+            status_callback=report_retraction_position,
         )
         if self.injection_stop_requested.is_set():
             return
@@ -5959,6 +5974,11 @@ class CraniotomyWindow(QMainWindow):
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
+        if message.lower().startswith("retracting dv "):
+            site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
+            site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
+            self.set_status(f"Injection {site_index + 1}/{site_count}: {message}")
+            return
         if "µm" in message and "nL" in message:
             site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
             site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
@@ -5968,6 +5988,16 @@ class CraniotomyWindow(QMainWindow):
         site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
         site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
         self.set_status(f"Injection {site_index + 1}/{site_count}: {operation}")
+
+    def _injection_dv_position_label(self, axis_position: tuple[float, float, float]) -> str:
+        """Format the current DV location in the GUI's Bregma frame when available."""
+        try:
+            _ap, _ml, dv = self._axis_to_bregma(tuple(float(value) for value in axis_position))
+            frame = "Bregma"
+        except Exception:
+            dv = float(axis_position[2])
+            frame = "Axis"
+        return f"DV {dv:.2f} mm ({frame})"
 
     @staticmethod
     def _format_injection_metrics(
