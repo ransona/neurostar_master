@@ -240,6 +240,18 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(self.window.direct_operation_thread)
         self.assertFalse(self.window.validation_move_active)
 
+    def test_syringe_limit_confirmations_are_short(self):
+        from unittest.mock import Mock
+        drive=Mock();drive.travel_limits={'PISTON':(0,5000)}
+        self.window.controller._require=Mock(return_value=drive)
+        self.window.controller.read_injectomate_calibrate_scale_nl=Mock(return_value=2500)
+        self.dialogs.question.return_value=planner.QMessageBox.Cancel
+        with patch.object(self.window,'_require_idle',return_value=True):
+            self.window._direct_syringe_limit(False)
+            self.assertEqual(self.dialogs.question.call_args.args[2],"Do you want to empty the syringe?")
+            self.window._direct_syringe_limit(True)
+            self.assertEqual(self.dialogs.question.call_args.args[2],"Do you want to fill the syringe?")
+
     def test_direct_operation_can_cancel_before_any_motor_packet(self):
         self.connect();timer=QTimer();timer.setInterval(30)
         def cancel():

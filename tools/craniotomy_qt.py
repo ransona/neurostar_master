@@ -3407,11 +3407,15 @@ class CraniotomyWindow(QMainWindow):
                 if self.controller.busy: raise StereoDriveError('Controller busy')
                 drive.plan_piston_to(endpoint)
             start=self.controller.read_injectomate_calibrate_scale_nl()
-            if QMessageBox.warning(self,title,
-                    f"Move the calibrated piston toward {endpoint:g} nL using captured free steps? "
-                    "Remove the pipette from any specimen; verify safe fluid collection / aspiration and physical Stop. "
-                    "This is not controlled-rate delivery. A non-reachable endpoint leaves less than 10 nL remaining.",
-                    QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
+            action = "fill" if fill else "empty"
+            if QMessageBox.question(
+                self,
+                title,
+                f"Do you want to {action} the syringe?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            ) != QMessageBox.Yes:
+                return
             def operation(cancel,progress):
                 def completed(value):
                     self.syringe_position_signal.emit(value)
