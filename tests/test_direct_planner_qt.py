@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 HAS_QT=importlib.util.find_spec('PySide6') is not None
 if HAS_QT:
@@ -78,6 +78,15 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual((self.window.syringe_goto_target_nl.minimum(),self.window.syringe_goto_target_nl.maximum()),(500,4500))
         self.assertEqual(self.window.syringe_goto_btn.text(),'Go To')
         self.assertEqual(self.window.block_test_volume_nl.text(),'20')
+        self.assertTrue(self.window.confirm_insertion_check.isChecked())
+        checks_panel=self.window.injection_sites_layout.itemAtPosition(3,0).widget()
+        self.assertIs(checks_panel.layout().itemAt(0).widget(),self.window.block_check)
+        self.assertIs(checks_panel.layout().itemAt(1).widget(),self.window.confirm_insertion_check)
+        injection_config=self.window._injection_config_dict()
+        self.assertTrue(injection_config['confirm_insertion_enabled'])
+        self.window.confirm_insertion_check.setChecked(False)
+        self.assertFalse(self.window._injection_config_dict()['confirm_insertion_enabled'])
+        self.window.confirm_insertion_check.setChecked(True)
         self.assertNotEqual(self.window.validate_sites_btn.property('variant'),'primary')
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,0).widget(),self.window.load_site_set_btn)
         self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,1).widget(),self.window.save_site_set_btn)
@@ -499,6 +508,50 @@ class PlannerTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.current_syringe_position(),2980,delta=1/161.36)
         self.assertIsNone(self.window.controller.error)
         self.dialogs.warning.assert_not_called()
+
+    def test_insertion_confirmation_defaults_yes_and_reverses_extra_travel(self):
+        self.window.controller.move_axis_to_target=Mock()
+        self.window._wait_for_insertion_confirmation_choice=Mock(side_effect=["increase","confirm"])
+        keep_running,_paused=self.window._confirm_pipette_insertion(1.0,self.pulse_settings())
+        self.assertTrue(keep_running)
+        self.assertEqual(self.window._wait_for_insertion_confirmation_choice.call_count,2)
+        self.assertEqual(self.window.controller.move_axis_to_target.call_args_list[0].args[:2],('DV',1.05))
+        self.assertEqual(self.window.controller.move_axis_to_target.call_args_list[1].args[:2],('DV',1.0))
+
+    def test_insertion_confirmation_dialog_defaults_to_yes(self):
+        confirm_button,increase_button=object(),object()
+        box=self.dialogs.return_value
+        box.addButton.side_effect=[confirm_button,increase_button,object()]
+        box.clickedButton.return_value=confirm_button
+        self.window.insertion_confirmation_event=threading.Event()
+
+        self.window.show_insertion_confirmation()
+
+        self.assertEqual(self.window.insertion_confirmation_result,'confirm')
+        self.assertTrue(self.window.insertion_confirmation_event.is_set())
+        box.setDefaultButton.assert_called_once_with(confirm_button)
+
+    def test_cancel_insertion_confirmation_reverses_extra_travel_and_pauses(self):
+        self.window.controller.move_axis_to_target=Mock()
+        self.window.start_injection_btn=QPushButton()
+        self.window._wait_for_insertion_confirmation_choice=Mock(
+            side_effect=["increase","pause","confirm"]
+        )
+        self.window.injection_pause_requested.clear()
+        self.window.injection_stop_requested.clear()
+
+        def resume_after_pause(_seconds):
+            self.window.injection_pause_requested.clear()
+            self.window.set_injection_paused_ui(False)
+
+        with patch.object(planner.time,'sleep',side_effect=resume_after_pause):
+            keep_running,_paused=self.window._confirm_pipette_insertion(1.0,self.pulse_settings())
+
+        self.assertTrue(keep_running)
+        self.assertEqual(self.window.controller.move_axis_to_target.call_args_list[0].args[:2],('DV',1.05))
+        self.assertEqual(self.window.controller.move_axis_to_target.call_args_list[1].args[:2],('DV',1.0))
+        self.assertFalse(self.window.injection_pause_requested.is_set())
+        self.assertEqual(self.window.start_injection_btn.text(),'Pause')
 
     def test_pulsed_workflow_preflight_rejects_later_site_and_whole_dose(self):
         self.connect(allow_pulsed=True);self.window.injection_clearance_axis_dv=-.02

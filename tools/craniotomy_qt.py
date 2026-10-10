@@ -862,6 +862,8 @@ class CraniotomyWindow(QMainWindow):
     syringe_position_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
+    insertion_confirmation_signal = Signal()
+    injection_pause_state_signal = Signal(bool)
     beep_signal = Signal()
     usb_probe_log_signal = Signal(str)
     usb_probe_finished_signal = Signal(str)
@@ -946,6 +948,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_stop_requested = threading.Event()
         self.block_prompt_event: threading.Event | None = None
         self.block_prompt_result = "clear"
+        self.insertion_confirmation_event: threading.Event | None = None
+        self.insertion_confirmation_result = "pause"
         self.warning_auto_confirm_stop = threading.Event()
         self.setWindowTitle("Craniotomy Planner")
         self.setFocusPolicy(Qt.StrongFocus)
@@ -963,6 +967,8 @@ class CraniotomyWindow(QMainWindow):
         self.syringe_position_signal.connect(self.set_syringe_position)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
+        self.insertion_confirmation_signal.connect(self.show_insertion_confirmation)
+        self.injection_pause_state_signal.connect(self.set_injection_paused_ui)
         self.beep_signal.connect(self._beep)
         self.usb_probe_log_signal.connect(self._append_usb_probe_log)
         self.usb_probe_finished_signal.connect(self._finish_usb_probe)
@@ -1724,6 +1730,18 @@ class CraniotomyWindow(QMainWindow):
         self.block_check = QCheckBox("Check blockage after each site")
         self.block_check.setChecked(True)
         self.block_check.toggled.connect(self.refresh_injection_sequence_summary)
+        self.confirm_insertion_check = QCheckBox("Confirm pipette insertion")
+        self.confirm_insertion_check.setChecked(True)
+        self.confirm_insertion_check.setToolTip(
+            "Pause at the planned insertion depth to confirm the pipette is visibly inserted. "
+            "Increase overshoot in 50 µm steps if needed; added travel is reversed before continuing."
+        )
+        injection_checks = QWidget()
+        injection_checks_layout = QHBoxLayout(injection_checks)
+        injection_checks_layout.setContentsMargins(0, 0, 0, 0)
+        injection_checks_layout.addWidget(self.block_check)
+        injection_checks_layout.addWidget(self.confirm_insertion_check)
+        injection_checks_layout.addStretch(1)
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(add_grid_btn, 0, 1)
         sites_layout.addWidget(remove_site_btn, 0, 2)
@@ -1733,7 +1751,7 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(self.validate_sites_btn, 2, 0)
         sites_layout.addWidget(clear_sites_btn, 2, 1)
         sites_layout.addWidget(resume_selected_btn, 2, 2)
-        sites_layout.addWidget(self.block_check, 3, 0, 1, 3)
+        sites_layout.addWidget(injection_checks, 3, 0, 1, 3)
         self.validation_clearance_edit = self._double_spinbox(self.validation_clearance_mm, minimum=0.0, maximum=20.0)
         self.validation_clearance_edit.setToolTip("Validation starts this far above GUI Bregma. Pulsed bench workflows also use this clearance above surfaces and Bregma; complete paths are preflighted.")
         self.validation_clearance_edit.editingFinished.connect(self.save_validation_clearance)
@@ -2862,6 +2880,8 @@ class CraniotomyWindow(QMainWindow):
             "post_inject_pause_s": settings.post_inject_pause_s,
             "block_test_volume_nl": self._rounded_test_volume(),
             "block_check_enabled": bool(self.block_check.isChecked()),
+            "confirm_insertion_enabled": bool(self.confirm_insertion_check.isChecked()),
+            "confirm_insertion_enabled": bool(self.confirm_insertion_check.isChecked()),
         }
 
     def _apply_injection_config_dict(self, config: dict[str, object]) -> None:
@@ -2874,6 +2894,8 @@ class CraniotomyWindow(QMainWindow):
         self._set_number_edit(self.post_inject_pause_s, float(config.get("post_inject_pause_s", 5.0)))
         self._set_number_edit(self.block_test_volume_nl, int(round(float(config.get("block_test_volume_nl", 20)))))
         self.block_check.setChecked(bool(config.get("block_check_enabled", True)))
+        self.confirm_insertion_check.setChecked(bool(config.get("confirm_insertion_enabled", True)))
+        self.confirm_insertion_check.setChecked(bool(config.get("confirm_insertion_enabled", True)))
         self.round_single_injection_volume_up()
         self.round_test_volume_to_supported()
         self.update_injection_rate_label()
@@ -5266,6 +5288,12 @@ class CraniotomyWindow(QMainWindow):
                     detail=f"{event.phase.replace('_',' ').capitalize()}"
                 self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
                     detail)
+                planned_overshoot_dv=site.dv+settings.injection_depth_mm+settings.overshoot_mm
+                if (self._confirm_insertion_enabled() and event.phase=='insert' and event.target is not None
+                        and abs(event.target[2]-planned_overshoot_dv)<1e-6):
+                    keep_running,_paused_s=self._confirm_pipette_insertion(planned_overshoot_dv,settings)
+                    if not keep_running:
+                        raise pulsed_protocol.PulseCancelled('Sequence stopped during insertion confirmation')
             pulsed_protocol.execute(self.controller,plan,stop_requested=self.injection_stop_requested.is_set,
                 pause_requested=self.injection_pause_requested.is_set,on_event=on_event,
                 on_delivered=self.syringe_position_signal.emit)
@@ -5489,11 +5517,19 @@ class CraniotomyWindow(QMainWindow):
             # Do not skip overshoot/depth endpoints when a UI/syringe call
             # takes longer than a sampling interval.
             while next_movement_endpoint < len(movement_targets) and elapsed >= movement_targets[next_movement_endpoint][0]:
+                endpoint_index = next_movement_endpoint
                 self.controller.move_axis_to_target(
                     "DV", movement_targets[next_movement_endpoint][1], step_mm=endpoint_step_mm,
                     stop_requested=self.injection_stop_requested.is_set, dwell_seconds=endpoint_dwell_s,
                 )
                 next_movement_endpoint += 1
+                if endpoint_index == 1 and self._confirm_insertion_enabled():
+                    keep_running, paused_s = self._confirm_pipette_insertion(
+                        movement_targets[endpoint_index][1], settings,
+                    )
+                    start_time += paused_s
+                    if not keep_running:
+                        return
             if elapsed >= protocol_duration_s and event_index >= len(injection_events):
                 break
             while event_index < len(injection_events) and elapsed >= injection_events[event_index][0]:
@@ -5701,6 +5737,68 @@ class CraniotomyWindow(QMainWindow):
             time.sleep(0.05)
         return time.monotonic() - paused_at
 
+    def _confirm_insertion_enabled(self) -> bool:
+        checkbox = getattr(self, "confirm_insertion_check", None)
+        return bool(checkbox is not None and checkbox.isChecked())
+
+    def _wait_for_insertion_confirmation_choice(self) -> str:
+        self.insertion_confirmation_event = threading.Event()
+        self.insertion_confirmation_result = "pause"
+        self.insertion_confirmation_signal.emit()
+        while not self.insertion_confirmation_event.wait(timeout=0.1):
+            if self.injection_stop_requested.is_set():
+                return "stop"
+        return self.insertion_confirmation_result
+
+    def _confirm_pipette_insertion(self, planned_target_dv: float, settings: InjectionProtocolSettings) -> tuple[bool, float]:
+        """Confirm visible insertion, optionally probing deeper in 50 µm steps."""
+        started = time.monotonic()
+        extra_mm = 0.0
+        step_mm, dwell_s = self._slow_axis_step_and_dwell(settings)
+        while not self.injection_stop_requested.is_set():
+            result = self._wait_for_insertion_confirmation_choice()
+            if result == "stop":
+                break
+            if result == "increase":
+                extra_mm += 0.05
+                self.injection_progress_signal.emit(
+                    0, f"Inserting pipette an extra {extra_mm * 1000:.0f} µm",
+                )
+                self.controller.move_axis_to_target(
+                    "DV", planned_target_dv + extra_mm,
+                    step_mm=step_mm, stop_requested=self.injection_stop_requested.is_set,
+                    dwell_seconds=dwell_s,
+                )
+                continue
+            if result == "confirm":
+                if extra_mm:
+                    self.injection_progress_signal.emit(0, "Retracting extra insertion")
+                    self.controller.move_axis_to_target(
+                        "DV", planned_target_dv, step_mm=step_mm,
+                        stop_requested=self.injection_stop_requested.is_set, dwell_seconds=dwell_s,
+                    )
+                return not self.injection_stop_requested.is_set(), time.monotonic() - started
+            if extra_mm:
+                self.injection_progress_signal.emit(0, "Retracting extra insertion before pause")
+                self.controller.move_axis_to_target(
+                    "DV", planned_target_dv, step_mm=step_mm,
+                    stop_requested=self.injection_stop_requested.is_set, dwell_seconds=dwell_s,
+                )
+                extra_mm = 0.0
+            if self.injection_stop_requested.is_set():
+                break
+            self.injection_pause_requested.set()
+            self.injection_pause_state_signal.emit(True)
+            while self.injection_pause_requested.is_set() and not self.injection_stop_requested.is_set():
+                time.sleep(0.05)
+        return False, time.monotonic() - started
+
+    def set_injection_paused_ui(self, paused: bool) -> None:
+        if not hasattr(self, "start_injection_btn"):
+            return
+        self.start_injection_btn.setText("Resume" if paused else "Pause")
+        self.set_status("Injection paused" if paused else "Injection resumed")
+
     def _run_block_test(
         self,
         site: InjectionSite,
@@ -5894,6 +5992,24 @@ class CraniotomyWindow(QMainWindow):
         self.block_prompt_result = result
         if self.block_prompt_event is not None:
             self.block_prompt_event.set()
+
+    def show_insertion_confirmation(self) -> None:
+        result = "pause"
+        box = QMessageBox(self)
+        box.setWindowTitle("Confirm Pipette Insertion")
+        box.setText("Is the pipette visibly inserted at the planned depth?")
+        confirm_button = box.addButton("Yes", QMessageBox.AcceptRole)
+        increase_button = box.addButton("Increase overshoot by 50 µm", QMessageBox.ActionRole)
+        box.addButton("Cancel / Pause", QMessageBox.RejectRole)
+        box.setDefaultButton(confirm_button)
+        box.exec()
+        if box.clickedButton() == confirm_button:
+            result = "confirm"
+        elif box.clickedButton() == increase_button:
+            result = "increase"
+        self.insertion_confirmation_result = result
+        if self.insertion_confirmation_event is not None:
+            self.insertion_confirmation_event.set()
 
     def _is_blue_plunger_pixel(self, image: QImage, x: int, y: int) -> bool:
         color = image.pixelColor(x, y)
