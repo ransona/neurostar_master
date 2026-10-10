@@ -7214,6 +7214,16 @@ class CraniotomyWindow(QMainWindow):
                 self.controller.wait_until_stopped()
         return str(result["action"])
 
+    def _confirm_start_drilling_after_surfaces(self) -> bool:
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Seed Surfaces Complete")
+        prompt.setText("All seed surfaces have been set. Would you like to start drilling now?")
+        yes_button = prompt.addButton("Yes", QMessageBox.AcceptRole)
+        prompt.addButton("No", QMessageBox.RejectRole)
+        prompt.setDefaultButton(yes_button)
+        prompt.exec()
+        return prompt.clickedButton() is yes_button
+
     def set_selected_craniotomy_surface(self) -> None:
         if not self._require_idle("Set Craniotomy Surface"):
             return
@@ -7261,14 +7271,7 @@ class CraniotomyWindow(QMainWindow):
                 self.refresh_craniotomy_points_list()
             self.set_status("Seed-surface workflow complete.")
             if self.seeds and all(seed.dv is not None for seed in self.seeds):
-                response = QMessageBox.question(
-                    self,
-                    "Seed Surfaces Complete",
-                    "All seed surfaces have been set. Would you like to start drilling now?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if response == QMessageBox.Yes:
+                if self._confirm_start_drilling_after_surfaces():
                     self.start_drilling_round()
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy Surface", str(exc))

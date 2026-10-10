@@ -13,7 +13,7 @@ HAS_QT=importlib.util.find_spec('PySide6') is not None
 if HAS_QT:
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
     from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog,QComboBox
+    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog,QComboBox,QMessageBox
     import craniotomy_qt as planner
     from direct_api_controller import StereoDriveController
     from stereodrive_api import Calibration
@@ -238,6 +238,22 @@ class PlannerTests(unittest.TestCase):
                          ['Set and Move to Next','Move to Next','Cancel'])
         self.assertEqual(len(observed['widths']),1)
         self.assertEqual(observed['default'],['Set and Move to Next'])
+
+    def test_start_drilling_prompt_defaults_yes_and_places_it_first(self):
+        observed={}
+        def inspect_and_choose_yes():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QMessageBox)
+            buttons=dialog.buttons()
+            observed['labels']=[button.text() for button in buttons]
+            observed['default']=dialog.defaultButton().text()
+            buttons[0].click()
+        with patch.object(planner,'QMessageBox',QMessageBox):
+            QTimer.singleShot(0,inspect_and_choose_yes)
+            accepted=self.window._confirm_start_drilling_after_surfaces()
+        self.assertTrue(accepted)
+        self.assertEqual(observed['labels'],['Yes','No'])
+        self.assertEqual(observed['default'],'Yes')
         self.assertTrue(observed['default'])
 
     def test_disconnected_keyboard_does_not_move(self):
