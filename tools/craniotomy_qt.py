@@ -5084,6 +5084,28 @@ class CraniotomyWindow(QMainWindow):
         ap, ml, dv = self.get_bregma_position()
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
 
+    def _offer_validation_before_injection(self, start_index: int = 0) -> bool:
+        """Offer surface validation instead of silently refusing unvalidated sites."""
+        unvalidated = [
+            index for index in range(max(0, start_index), len(self.injection_sites))
+            if self.injection_sites[index].dv is None
+        ]
+        if not unvalidated:
+            return False
+        numbers = ", ".join(str(index + 1) for index in unvalidated)
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Injection Sites Need Validation")
+        prompt.setText(f"Injection site(s) {numbers} need surface validation. Validate before starting?")
+        validate_button = prompt.addButton("Validate Sites", QMessageBox.AcceptRole)
+        prompt.addButton(QMessageBox.Cancel)
+        prompt.exec()
+        if prompt.clickedButton() == validate_button:
+            if start_index:
+                self._run_injection_site_validation(start_index, validate_all_sites=False)
+            else:
+                self.start_injection_site_validation()
+        return True
+
     def start_single_injection(self) -> None:
         if self.injection_thread is not None and self.injection_thread.is_alive():
             self.pause_resume_injection()
@@ -5094,6 +5116,8 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Injection"):
             return
         try:
+            if self._offer_validation_before_injection():
+                return
             sites = self._active_injection_sites()
             settings = self._injection_protocol_settings()
             self._set_number_edit(self.single_injection_volume_nl, settings.main_volume_nl)
@@ -5146,11 +5170,7 @@ class CraniotomyWindow(QMainWindow):
             return
         unvalidated = [index + 1 for index, site in enumerate(self.injection_sites[row:], start=row) if site.dv is None]
         if unvalidated:
-            QMessageBox.warning(
-                self,
-                "Injection",
-                f"Validate injection site(s) {', '.join(str(index) for index in unvalidated)} before resuming.",
-            )
+            self._offer_validation_before_injection(row)
             return
         try:
             self._require_project_coordinates("injection_sites")
