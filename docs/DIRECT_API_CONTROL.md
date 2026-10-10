@@ -29,6 +29,14 @@ conservatively clears tool references, captured surfaces and quick targets for
 physical reverification. Home/Work persist only with identical Axis calibration;
 changed/unknown calibration clears them. Simulation/live settings are separate.
 
+Direct setup is stored in a dedicated `direct-control.json` in each mode's config
+folder, not general `settings.json` or the API motion journal. It atomically saves
+calibration, speed profile, enable preferences and calibrated Home/Work metadata.
+Previously shared Home/Work/fingerprint fields migrate automatically. Restoring
+preferences never connects, verifies physical setup, chooses current direction
+history or enables New Reference automatically. Invalid/wrong-mode files are
+ignored for control and retained until the user explicitly saves new setup.
+
 ## Reviewed physical entry points
 
 | Entry point | Direct behavior / safety guard |
@@ -93,7 +101,7 @@ multi-leg cancellation, Stop/OFF, API adapter routes, actual Qt setup/progress/
 keyboard/piston/reference/disconnect behavior, and HTTP behavior. Run both root README
 test commands. Original capture evidence is not end-to-end validation of this branch.
 
-Final local verification: 118 application tests and 22 API/GUI tests passed with
+Final local verification: 121 application tests and 22 API/GUI tests passed with
 PySide6 and Tkinter available (no skips); 14 changed Python sources compiled and
 `git diff --check` passed. All test connections used simulators, not hardware.
 

@@ -813,6 +813,8 @@ class CraniotomyWindow(QMainWindow):
         self.home_axis: tuple[float, float, float] | None = None
         self.work_axis: tuple[float, float, float] | None = None
         self.axis_zero_reference = None
+        self.direct_control_settings = {}
+        self._direct_control_settings_loaded = False
         self._cancelled_nudge_direction: tuple[str, bool] | None = None
         self.bregma_axis: tuple[float, float, float] | None = None
         self.anchor_axis: tuple[float, float, float] | None = None
@@ -853,6 +855,7 @@ class CraniotomyWindow(QMainWindow):
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
+        self._load_direct_control_settings()
         self._offer_project_session_restore()
         self.restore_saved_window_geometry()
         QApplication.instance().installEventFilter(self)
@@ -1668,8 +1671,11 @@ class CraniotomyWindow(QMainWindow):
         mode="LIVE HARDWARE" if self.controller.live else "SIMULATION (no hardware)"
         intro=QLabel(mode+"\nClose StereoDrive and every other controller. Load measured AP/ML/DV zero counts and piston 3000 nL anchor before moving. GUI Bregma is a separate reference, not API zero. No automatic homing.")
         intro.setWordWrap(True); layout.addWidget(intro)
-        calibration={"value":None}
+        saved=self.direct_control_settings
+        calibration={"value":Calibration(**saved["calibration"]) if saved.get("calibration") else None}
         filename_label=QLabel("No zero calibration loaded — movement unavailable")
+        if calibration["value"] is not None:
+            filename_label.setText("Saved measured zero calibration — verify before connecting")
         load=QPushButton("Load measured zero calibration JSON")
         def choose_calibration():
             filename,_=QFileDialog.getOpenFileName(dialog,"Measured zero anchors","","JSON (*.json)")
@@ -1678,6 +1684,7 @@ class CraniotomyWindow(QMainWindow):
                 value=Calibration(**json.loads(Path(filename).read_text(encoding="utf-8")))
                 value.reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
                 calibration["value"]=value; filename_label.setText(filename)
+                persist_setup()
             except Exception as exc:
                 calibration["value"]=None; filename_label.setText("Invalid calibration")
                 QMessageBox.warning(dialog,"Calibration",str(exc))
@@ -1697,14 +1704,30 @@ class CraniotomyWindow(QMainWindow):
                                                   dict(AP=0,ML=261,DV=0,PISTON=0))
                 filename_label.setText("Synthetic simulator calibration — never use on hardware")
                 for axis,combo in choices.items():combo.setCurrentIndex(2 if axis=="PISTON" else 1)
+                persist_setup()
             sample.clicked.connect(simulation_anchors); layout.addWidget(sample)
-        allow_dv=QCheckBox("DV clearance independently verified")
-        allow_piston=QCheckBox("Nano 5 µL piston setup independently verified (10–100 nL free steps only)")
+        allow_dv=QCheckBox("Enable DV (reverify clearance each connection)")
+        allow_piston=QCheckBox("Enable Nano 5 µL piston (reverify setup each connection; 10–100 nL free steps only)")
         allow_drill=QCheckBox("Enable supervised drill ON (not an automated drilling protocol)")
+        for name,widget in (("allow_dv",allow_dv),("allow_piston",allow_piston),("allow_drill",allow_drill)):
+            widget.setChecked(saved.get(name,False))
         verified=QCheckBox("Measured zero/anchor calibration and current direction history verified; workspace clear and physical Stop accessible")
         verified.setChecked(False)
         for widget in (allow_dv,allow_piston,allow_drill,verified):layout.addWidget(widget)
         speed=QComboBox();speed.addItems(["1","2"]);layout.addWidget(QLabel("Captured Axis speed profile (mm/s)"));layout.addWidget(speed)
+        speed.setCurrentText(str(saved.get("speed_mm_s",1)))
+        def persist_setup():
+            self._direct_control_settings_loaded=True
+            value=calibration["value"]
+            self.direct_control_settings.update(dict(
+                calibration=dict(axis_zero_counts=value.axis_zero_counts,piston_3000_count=value.piston_3000_count,
+                                 anchor_backlash=value.anchor_backlash) if value else None,
+                speed_mm_s=int(speed.currentText()),allow_dv=allow_dv.isChecked(),
+                allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked()))
+            try:self._save_direct_control_settings()
+            except OSError as exc:QMessageBox.warning(dialog,"Save direct settings",str(exc))
+        speed.currentTextChanged.connect(persist_setup)
+        for widget in (allow_dv,allow_piston,allow_drill):widget.toggled.connect(persist_setup)
         new_reference=QCheckBox("Establish independently verified new reference (not recovery from an unknown fault)");layout.addWidget(new_reference)
         status=QLabel("Disconnected; loading calibration does not move or reset the controller.");status.setWordWrap(True);layout.addWidget(status)
         row=QHBoxLayout(); connect=QPushButton("Connect / restore calibrated state");disconnect=QPushButton("Disconnect / Stop");row.addWidget(connect);row.addWidget(disconnect);layout.addLayout(row)
@@ -2002,6 +2025,62 @@ class CraniotomyWindow(QMainWindow):
     def _general_settings_path(self) -> Path:
         return self._config_root_dir() / "settings.json"
 
+    def _direct_control_settings_path(self) -> Path:
+        return self._config_root_dir() / "direct-control.json"
+
+    def _save_direct_control_settings(self) -> None:
+        if not getattr(self.controller,"direct_api",False) or not self._direct_control_settings_loaded:return
+        import os
+        path=self._direct_control_settings_path()
+        path.parent.mkdir(parents=True,exist_ok=True)
+        payload=dict(self.direct_control_settings,version=1,live=self.controller.live,
+                     axis_zero_reference=self.axis_zero_reference,home_axis=self.home_axis,work_axis=self.work_axis)
+        # Never store verification, current direction history, or auto-connect intent.
+        payload={k:v for k,v in payload.items() if k in ("version","live","calibration","speed_mm_s",
+                 "allow_dv","allow_piston","allow_drill","axis_zero_reference","home_axis","work_axis")}
+        temporary=path.with_suffix(".tmp")
+        with temporary.open("w",encoding="utf-8") as handle:
+            handle.write(json.dumps(payload,indent=2,allow_nan=False))
+            handle.flush();os.fsync(handle.fileno())
+        temporary.replace(path)
+
+    def _load_direct_control_settings(self) -> None:
+        if not getattr(self.controller,"direct_api",False):return
+        self._direct_control_settings_loaded=True
+        path=self._direct_control_settings_path()
+        if not path.exists():
+            # Home/Work and fingerprint were previously stored in settings.json.
+            try:self._save_direct_control_settings()
+            except OSError as exc:
+                self._direct_control_settings_loaded=False
+                self.set_status(f"Could not create direct-control settings: {exc}")
+            return
+        try:
+            from stereodrive_api import Calibration
+            payload=self._read_config_file(path)
+            if not isinstance(payload,dict) or payload.get("version")!=1 or type(payload.get("live")) is not bool or payload["live"]!=self.controller.live:
+                raise ValueError("Direct settings version/mode mismatch")
+            if payload.get("calibration"):
+                Calibration(**payload["calibration"]).reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
+            speed=payload.get("speed_mm_s",1)
+            if isinstance(speed,bool) or speed not in (1,2):raise ValueError("Invalid captured speed profile")
+            if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill")):
+                raise ValueError("Invalid direct-control preferences")
+            reference=payload.get("axis_zero_reference")
+            if reference is not None and (not isinstance(reference,dict) or set(reference)!={"AP","ML","DV"}
+                    or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in reference.values())):
+                raise ValueError("Invalid saved Axis-zero fingerprint")
+            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill") if k in payload}
+            self.axis_zero_reference=reference
+            self.home_axis=self._session_axis(payload.get("home_axis"))
+            self.work_axis=self._session_axis(payload.get("work_axis"))
+        except (OSError,ValueError,TypeError,KeyError,json.JSONDecodeError) as exc:
+            self._direct_control_settings_loaded=False
+            self.direct_control_settings={}
+            self.axis_zero_reference=self.home_axis=self.work_axis=None
+            self.set_status(f"Direct-control settings ignored: {exc}. Reverify setup before connecting.")
+        self._update_persistent_axis_location_labels()
+
     def _project_session_path(self) -> Path:
         return self._config_root_dir() / "project_session.json"
 
@@ -2238,6 +2317,9 @@ class CraniotomyWindow(QMainWindow):
             "axis_zero_reference": getattr(self, "axis_zero_reference", None),
             "window_geometry": getattr(self, "window_geometry", None),
         }
+        if getattr(self.controller,"direct_api",False):
+            for name in ("home_axis","work_axis","axis_zero_reference"):payload.pop(name,None)
+            self._save_direct_control_settings()
         self._write_config_file(self._general_settings_path(), payload)
 
     def _load_general_settings(self) -> None:

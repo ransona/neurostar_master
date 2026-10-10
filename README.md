@@ -71,6 +71,12 @@ targets for reverification. Home/Work persist with identical Axis calibration,
 but are cleared when it changes or is unknown; verify clearance before using them.
 Live and simulation settings/state are separated
 under `Documents\Neurostar_Master\Configs\DirectUSB`, outside the repository.
+Each mode has a dedicated `direct-control.json` for measured calibration, captured
+speed profile, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
+These are separate from general `settings.json` and the API motion journal
+`api-state.json`. Setup preferences save immediately; existing Home/Work metadata
+migrates automatically. Startup stays disconnected, with safety confirmation and
+current direction history requiring fresh verification each connection.
 
 Stop/Esc/close cancel movement, stop all four channels and attempt drill OFF even
 without ON permission. Software Stop depends on the connection/process; use physical

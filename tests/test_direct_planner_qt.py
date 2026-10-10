@@ -1,5 +1,6 @@
 """Real Qt integration checks, simulation only; skip if PySide6 unavailable."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -12,7 +13,7 @@ HAS_QT=importlib.util.find_spec('PySide6') is not None
 if HAS_QT:
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
     from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog
+    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog,QComboBox
     import craniotomy_qt as planner
     from direct_api_controller import StereoDriveController
     from stereodrive_api import Calibration
@@ -51,7 +52,8 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(self.window.controller.has_active_motion())
 
     def test_disconnected_keyboard_does_not_move(self):
-        self.window.keyboard_nudge('AP',True,'AP')
+        with patch.object(self.window,'_focus_is_editable',return_value=False):
+            self.window.keyboard_nudge('AP',True,'AP')
         self.assertIsNone(self.window.controller.drive)
         self.dialogs.critical.assert_called()
 
@@ -87,6 +89,45 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(self.window.top_view.current_point)
         self.assertIsNone(self.window.injection_sites_view.current_point)
 
+    def test_direct_settings_separate_and_survive_startup(self):
+        self.window.direct_control_settings=dict(calibration=dict(axis_zero_counts=dict(AP=105280,ML=75864,DV=41767),
+            piston_3000_count=-8572,anchor_backlash=dict(AP=0,ML=261,DV=0,PISTON=0)),speed_mm_s=2,
+            allow_dv=True,allow_piston=True,allow_drill=False,verified=True,new_reference=True)
+        self.window.home_axis=(.1,.2,.3)
+        self.window._save_general_settings()
+        saved=json.loads((self.root/'direct-control.json').read_text())
+        general=json.loads(self.window._general_settings_path().read_text())
+        self.assertEqual(saved['speed_mm_s'],2)
+        self.assertNotIn('verified',saved);self.assertNotIn('new_reference',saved)
+        self.assertNotIn('home_axis',general);self.assertNotIn('axis_zero_reference',general)
+        self.window.close();self.app.processEvents()
+        self.window=planner.CraniotomyWindow(StereoDriveController())
+        self.assertEqual(self.window.direct_control_settings['speed_mm_s'],2)
+        self.assertEqual(self.window.home_axis,(.1,.2,.3))
+        self.assertIsNone(self.window.controller.drive)
+
+    def test_legacy_direct_fields_migrate_without_loss(self):
+        path=self.window._direct_control_settings_path()
+        self.window.close();self.app.processEvents()
+        path.unlink() # Test-owned temporary file only.
+        self.window._general_settings_path().write_text(json.dumps(dict(home_axis=[.1,.2,.3],work_axis=[0,0,0],
+            axis_zero_reference=dict(AP=105280,ML=75603,DV=41767))))
+        self.window=planner.CraniotomyWindow(StereoDriveController())
+        saved=json.loads(path.read_text())
+        self.assertEqual(saved['home_axis'],[.1,.2,.3])
+        self.assertEqual(saved['axis_zero_reference']['ML'],75603)
+
+    def test_wrong_mode_direct_settings_fail_closed_and_are_preserved(self):
+        path=self.window._direct_control_settings_path()
+        payload=json.loads(path.read_text());payload['live']=True
+        original=json.dumps(payload)
+        path.write_text(original)
+        self.window._load_direct_control_settings()
+        self.window._save_general_settings()
+        self.assertEqual(self.window.direct_control_settings,{})
+        self.assertIsNone(self.window.home_axis)
+        self.assertEqual(path.read_text(),original)
+
     def test_manual_piston_uses_worker_and_verified_position(self):
         self.connect();self.window.set_syringe_position(3000)
         self.window.manual_injection_volume_nl=10
@@ -110,6 +151,8 @@ class PlannerTests(unittest.TestCase):
             if not invoked[0]:
                 buttons=dialog.findChildren(QPushButton)
                 next(b for b in buttons if b.text().startswith('Use SIMULATION')).click()
+                next(c for c in dialog.findChildren(QComboBox) if c.count()==2 and c.itemText(0)=='1').setCurrentText('2')
+                next(c for c in dialog.findChildren(QCheckBox) if c.text().startswith('Enable DV')).setChecked(True)
                 next(c for c in dialog.findChildren(QCheckBox) if c.text().startswith('Measured zero/anchor')).setChecked(True)
                 next(b for b in buttons if b.text().startswith('Connect / restore')).click()
                 invoked[0]=True
@@ -121,6 +164,11 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(invoked[0]);self.assertIsNotNone(self.window.controller.drive)
         self.assertTrue(self.window.controller.drive.position()['calibrated'])
         self.assertEqual(self.window.home_axis,(.1,0,0))
+        saved=json.loads(self.window._direct_control_settings_path().read_text())
+        self.assertIn('calibration',saved)
+        self.assertEqual(saved['speed_mm_s'],2)
+        self.assertTrue(saved['allow_dv'])
+        self.assertNotIn('verified_backlash',saved)
 
 
 if __name__=='__main__':unittest.main()
