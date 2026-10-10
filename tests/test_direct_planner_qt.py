@@ -132,8 +132,8 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.mid_ap.isEnabled())
         self.assertTrue(self.window.start_round_btn.isEnabled())
         self.assertEqual(self.window.top_view.mode_label,'')
-        self.assertEqual(self.window.freeze_draw_btn.text(),'Freeze Holes')
-        self.assertEqual(self.window.unfreeze_draw_btn.text(),'Unfreeze Holes')
+        self.assertEqual(self.window.freeze_draw_btn.text(),'Freeze Burr Holes')
+        self.assertEqual(self.window.unfreeze_draw_btn.text(),'Unfreeze Burr Holes')
 
     def test_nudge_sites_mode_locks_injection_panel_and_labels_map(self):
         self.window.injection_sites=[planner.InjectionSite(0,0,0)]

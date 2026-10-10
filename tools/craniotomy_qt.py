@@ -1325,15 +1325,15 @@ class CraniotomyWindow(QMainWindow):
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
         self.drill_rate_mm_per_s.setToolTip("Configured depth advance rate used by the pulsed drilling workflow.")
         self.drilling_mode_combo = QComboBox()
-        self.drilling_mode_combo.addItem("Spaced boreholes", "boreholes")
+        self.drilling_mode_combo.addItem("Spaced burr holes", "boreholes")
         self.drilling_mode_combo.addItem("Continuous path", "continuous")
         self.drilling_mode_combo.setCurrentIndex(0)
         self.drilling_mode_combo.currentIndexChanged.connect(self._on_drilling_mode_changed)
         self.drilling_mode_combo.setToolTip(
-            "Spaced boreholes makes separate holes around the perimeter. Continuous path traces the perimeter."
+            "Spaced burr-hole mode creates separate holes around the perimeter. Continuous path traces the perimeter."
         )
         self.hole_spacing_mm = self._double_spinbox(value=0.5, minimum=0.1, maximum=10.0)
-        self.hole_spacing_mm.setToolTip("Maximum center-to-center distance along the perimeter between boreholes.")
+        self.hole_spacing_mm.setToolTip("Maximum center-to-center distance along the perimeter between burr holes.")
         self.hole_spacing_mm.setEnabled(False)
         self.hole_spacing_mm.valueChanged.connect(self._on_hole_spacing_changed)
         # Geometry edits invalidate the current drilling pass. A paused pass
@@ -1347,7 +1347,7 @@ class CraniotomyWindow(QMainWindow):
         self.auto_start_rounds = QCheckBox("Auto start next round")
         self.auto_start_rounds.setChecked(True)
         self.drilling_mode_description = QLabel(
-            "Spaced boreholes: set all seed surfaces first; each hole's surface is inferred from the interpolated seed profile."
+            "Spaced burr holes: set all seed surfaces first; each hole's surface is inferred from the interpolated seed profile."
         )
         self.drilling_mode_description.setProperty("role", "muted")
         self.drilling_mode_description.setWordWrap(True)
@@ -7004,11 +7004,11 @@ class CraniotomyWindow(QMainWindow):
             self._update_freeze_mode_button_labels(is_borehole)
             self.clear_freeze_btn.setText("Clear Freezes")
             self.freeze_draw_btn.setToolTip(
-                "Draw across individual borehole markers to freeze them."
+                "Draw across individual burr-hole markers to freeze them."
                 if is_borehole else "Draw along the perimeter to freeze sections."
             )
             self.unfreeze_draw_btn.setToolTip(
-                "Draw across borehole markers to allow those holes to deepen again."
+                "Draw across burr-hole markers to allow those holes to deepen again."
                 if is_borehole else "Draw along frozen perimeter sections to unfreeze them."
             )
         if hasattr(self, "drilling_mode_description"):
@@ -7318,8 +7318,8 @@ class CraniotomyWindow(QMainWindow):
     def _update_freeze_mode_button_labels(self, is_borehole: bool | None = None) -> None:
         if is_borehole is None:
             is_borehole = self.drilling_mode_combo.currentData() == "boreholes"
-        freeze_label = "Freeze Holes" if is_borehole else "Draw Freeze"
-        unfreeze_label = "Unfreeze Holes" if is_borehole else "Draw Unfreeze"
+        freeze_label = "Freeze Burr Holes" if is_borehole else "Draw Freeze"
+        unfreeze_label = "Unfreeze Burr Holes" if is_borehole else "Draw Unfreeze"
         self.freeze_draw_btn.setText("Inactivate freeze mode" if self.freeze_draw_btn.isChecked() else freeze_label)
         self.unfreeze_draw_btn.setText("Inactivate unfreeze mode" if self.unfreeze_draw_btn.isChecked() else unfreeze_label)
 
@@ -7347,7 +7347,7 @@ class CraniotomyWindow(QMainWindow):
         self.frozen_points = [False] * len(self.frozen_points)
         self.frozen_boreholes = [None] * len(self.frozen_boreholes)
         self.redraw_views()
-        self.set_status("Cleared all frozen perimeter points and boreholes.")
+        self.set_status("Cleared frozen perimeter points and burr holes.")
 
     def mark_frozen_point(self, index: int) -> None:
         if self.drilling_mode_combo.currentData() == "boreholes":
@@ -7448,7 +7448,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Craniotomy Seed Surfaces Required",
-                "Set the surface for every craniotomy seed first. The surface at each spaced borehole is then inferred from the interpolated seed-surface profile.",
+                "Set the surface for every craniotomy seed first. The surface at each spaced burr hole is then inferred from the interpolated seed-surface profile.",
             )
             return
         if not self.trajectory or not (seed_surfaces_ready or (not spaced_boreholes and perimeter_surfaces_ready)):
@@ -7479,7 +7479,7 @@ class CraniotomyWindow(QMainWindow):
         self.drilling_paused = False
         self.drill_completed_points = 0
         if spaced_boreholes and not getattr(self.controller, "pulsed_protocol", False):
-            QMessageBox.warning(self, "Spaced Boreholes", "Spaced-borehole drilling requires the verified pulsed controller workflow.")
+            QMessageBox.warning(self, "Spaced Burr Holes", "Spaced burr-hole drilling requires the verified pulsed controller workflow.")
             return
         if spaced_boreholes:
             hole_pattern = self._ensure_borehole_state()
@@ -7867,7 +7867,7 @@ class CraniotomyWindow(QMainWindow):
                 if event.phase in borehole_verbs and event.point_index is not None:
                     circuit_position = min(99, event.point_index * 100 // max(1, count))
                     status = (
-                        f"{borehole_verbs[event.phase]} borehole "
+                        f"{borehole_verbs[event.phase]} burr hole "
                         f"{event.point_index + 1}/{count} {circuit_position}%"
                     )
                 elif event.phase == "point_complete" and event.point_index is not None:
@@ -8208,7 +8208,7 @@ class CraniotomyWindow(QMainWindow):
         if self.drill_round_started_at is None:
             if is_boreholes:
                 self.round_elapsed_label.setText("Elapsed: --:--")
-                self.round_percent_label.setText("Boreholes complete: --%")
+                self.round_percent_label.setText("Burr holes complete: --%")
             else:
                 self.round_elapsed_label.setText("Circuit elapsed: --:--")
                 self.round_percent_label.setText("Circuit complete: --%")
@@ -8218,7 +8218,7 @@ class CraniotomyWindow(QMainWindow):
             total_points = max(1, sum(not hole[3] for hole in self._ensure_borehole_state()))
             percent = min(100.0, (self.drill_completed_points / total_points) * 100.0)
             self.round_elapsed_label.setText(f"Elapsed: {self._format_duration(elapsed)}")
-            self.round_percent_label.setText(f"Boreholes complete: {percent:.0f}%")
+            self.round_percent_label.setText(f"Burr holes complete: {percent:.0f}%")
             return
         if self.drill_round_target_seconds <= 0:
             self.round_elapsed_label.setText("Circuit elapsed: --:--")

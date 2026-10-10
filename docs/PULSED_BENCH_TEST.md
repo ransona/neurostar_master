@@ -57,18 +57,18 @@ nonzero insertion depth on an independently measured fixture, not tissue.
 ## Drilling behavior
 
 - **Continuous path** follows the perimeter with serial microsteps. **Spaced
-  boreholes** samples uniformly along the closed perimeter using the configured
+  burr holes** samples uniformly along the closed perimeter using the configured
   maximum hole spacing. Capture all seed surfaces first; each hole's surface is
   inferred from the interpolated seed-surface profile. Each hole advances by the depth increment per round up to
   Max Depth and retracts to clearance before the next hole. Frozen perimeter
-  sections suppress holes on those segments. Borehole depths are saved only for
+  sections suppress holes on those segments. Burr-hole depths are saved only for
   the matching sampled surface/spacing plan.
 - Time per circuit is a pacing target for visits around the perimeter, not a
   hard deadline. Each USB move must finish and verify before the next; command,
   depth-entry and settling overhead can extend actual time. No overdue movement
   is skipped or caught up.
-- In Spaced Boreholes mode, use **Freeze Holes**/**Unfreeze Holes** and draw over
-  individual map markers. Frozen holes are visibly gray and excluded from deeper
+- In Spaced Burr Holes mode, use **Freeze Holes**/**Unfreeze Holes** and draw over
+  individual map markers. Frozen burr holes are visibly gray and excluded from deeper
   rounds. Raising Max Depth after reaching the former limit enables the next depth
   increment for the remaining holes. Confirm the displayed target and all clearances
   before continuing.

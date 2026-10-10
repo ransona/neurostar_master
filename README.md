@@ -77,18 +77,18 @@ are preflighted. Limits are not collision protection; verify the full path indep
 Piston free steps remain 10/20/50/100 nL; configured limits cannot exceed 500–4500 nL
 for the Nano 5 µL syringe. Empty/Fill move only to the configured lower/upper limit.
 Signed motor-count overflow remains rejected.
-Craniotomy **Drilling pattern and timing → Mode** defaults to **Spaced boreholes**;
-select **Continuous path** for the existing perimeter-tracing behavior. Boreholes are placed
+Craniotomy **Drilling pattern and timing → Mode** defaults to **Spaced burr holes**;
+select **Continuous path** for the existing perimeter-tracing behavior. Burr holes are placed
 uniformly along the closed perimeter at no more than the selected center-to-center
-spacing. Set every craniotomy seed surface first; the surface at each borehole is
+spacing. Set every craniotomy seed surface first; the surface at each burr hole is
 inferred from the interpolated seed-surface profile, so individual hole surfaces do
 not need separate capture. Each advances by **Depth increment / round** until **Max Depth**, retracting
 to clearance before moving to the next hole. Hole progress is retained only while
-the sampled surface plan and spacing still match. Spaced-borehole execution requires
+the sampled surface plan and spacing still match. Spaced burr-hole drilling requires
 the verified pulsed controller workflow. **Time per circuit** paces visits around the
 perimeter; serial movement and settling overhead can make actual time longer.
 In this mode, **Freeze Holes** and **Unfreeze Holes** let you draw over individual
-hole markers on the map; frozen holes are gray and are skipped on deeper rounds.
+burr-hole markers on the map; frozen holes are gray and are skipped on deeper rounds.
 Increase **Max Depth** to continue deepening the remaining unfrozen holes; the next
 depth increment becomes available when the previous maximum had already been reached.
 The same draw controls freeze/unfreeze perimeter sections in Continuous path mode.
