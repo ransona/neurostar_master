@@ -160,7 +160,7 @@ def window():
     w.drill_pause_requested = threading.Event()
     w.drilling_progress_reset_requires_ack = False
     for name in ("injection_progress", "injection_site_progress", "start_injection_btn",
-                 "pause_injection_btn", "injection_finished_signal", "sequence_step_signal",
+                 "injection_finished_signal", "sequence_step_signal",
                  "active_injection_site_signal", "status_signal", "injection_progress_signal"):
         setattr(w, name, Mock())
     w.set_status = Mock()

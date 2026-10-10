@@ -153,7 +153,7 @@ class App:
             ttk.Label(row, text='Step (mm)').pack(side='left', padx=(0, 7))
             ttk.Combobox(row, textvariable=self.steps[axis], values=[f'{s:g}' for s in STEPS],
                          width=6, state='readonly').pack(side='left')
-        ttk.Label(outer, text='± signs mean increasing/decreasing mechanical coordinates. Axis travel: 0–40 mm; piston: 0–5000 nL.').pack(anchor='w')
+        ttk.Label(outer, text='± signs mean increasing/decreasing mechanical coordinates. Axis travel: 0–40 mm; piston operating range: 500–4500 nL (nominal capacity 0–5000 nL).').pack(anchor='w')
         extra=ttk.LabelFrame(outer,text='Injection / piston steps and drill',padding=8);extra.pack(fill='x',pady=8)
         ttk.Label(extra,textvariable=self.piston_position).grid(row=0,column=0,padx=5)
         ttk.Combobox(extra,textvariable=self.piston_step,values=['10','20','50','100'],state='readonly',width=6).grid(row=0,column=1)

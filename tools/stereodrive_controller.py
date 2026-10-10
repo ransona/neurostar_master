@@ -794,7 +794,7 @@ class StereoDriveController:
     def empty_syringe(self) -> None:
         self.show_injectomate()
         hwnd = self._control_handle(INJECTION_GOTO_TEXT_ID)
-        self._set_text(hwnd, "0")
+        self._set_text(hwnd, "500")
         time.sleep(0.1)
         self._click(INJECTION_GOTO_BUTTON_ID)
         self.wait_for_injectomate_motion_complete(INJECTION_GOTO_BUTTON_ID, timeout_seconds=180.0)

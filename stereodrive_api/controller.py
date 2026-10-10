@@ -125,9 +125,13 @@ class Session:
         old = dict(self.raw); normal = self.command_normal[axis]
         next_normal = normal + SIGNS[axis] * direction * step * self.scales[axis]
         if axis=='PISTON':
+            low, high = self.travel_limits['PISTON']
+            current = (normal-self.reference[axis])/self.scales[axis]
+            if not low-1e-7 <= current <= high+1e-7:
+                raise ValueError(f'Current piston position is outside configured {low:g}–{high:g} nL travel range.')
             estimate=(next_normal-self.reference[axis])/self.scales[axis]
-            if not -1e-7 <= estimate <= 5000+1e-7:
-                raise ValueError('Nano 5 µL piston target exceeds 0–5000 nL travel range.')
+            if not low-1e-7 <= estimate <= high+1e-7:
+                raise ValueError(f'Piston target exceeds configured {low:g}–{high:g} nL travel range.')
         estimate = (next_normal-self.reference[axis])/(SIGNS[axis]*self.scales[axis])
         # Relative-only simulation is a protocol test mode, not calibrated travel.
         if axis != 'PISTON' or self.absolute_calibration or self.simulated:

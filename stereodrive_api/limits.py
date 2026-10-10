@@ -1,7 +1,9 @@
 """Configured travel ranges in calibrated mechanical Axis mm / piston nL."""
 import math
 
-DEFAULT_LIMITS = dict(AP=(0., 40.), ML=(0., 40.), DV=(0., 40.), PISTON=(0., 5000.))
+PISTON_MIN_NL = 500.0
+PISTON_MAX_NL = 4500.0
+DEFAULT_LIMITS = dict(AP=(0., 40.), ML=(0., 40.), DV=(0., 40.), PISTON=(PISTON_MIN_NL, PISTON_MAX_NL))
 
 
 def validate_limits(limits=None):
@@ -14,8 +16,8 @@ def validate_limits(limits=None):
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pair)
                 or pair[0] >= pair[1]):
             raise ValueError(f'{axis}: finite minimum must be less than maximum')
-        if axis == 'PISTON' and not 0 <= pair[0] < pair[1] <= 5000:
-            raise ValueError('Nano 5 µL piston limits must stay within 0–5000 nL')
+        if axis == 'PISTON' and not PISTON_MIN_NL <= pair[0] < pair[1] <= PISTON_MAX_NL:
+            raise ValueError(f'Piston limits must stay within {PISTON_MIN_NL:g}–{PISTON_MAX_NL:g} nL')
         result[axis] = tuple(float(v) for v in pair)
     return result
 

@@ -39,10 +39,10 @@ class StereoDrive:
         if not self.simulate and not self.persist_simulation:
             raise ValueError('Live API state must remain persistent and recoverable.')
         if simulation_start_position is None:
-            # Keep explicitly state-pathed legacy protocol fixtures at zero, while
-            # the normal throwaway simulator starts at useful nonzero coordinates.
+            # Keep axis fixtures at zero; initialize the simulated syringe at
+            # its calibrated 3000 nL anchor, inside the configured safe range.
             simulation_start_position = (
-                dict(AP=0.0, ML=0.0, DV=0.0, PISTON=0.0) if self.persist_simulation
+                dict(AP=0.0, ML=0.0, DV=0.0, PISTON=3000.0) if self.persist_simulation
                 else dict(AP=30.0, ML=30.0, DV=30.0, PISTON=2500.0)
             )
         if not isinstance(simulation_start_position, dict) or set(simulation_start_position) != set(AXES):
@@ -283,12 +283,16 @@ class StereoDrive:
 
     def _piston_plan(self, session, steps):
         normal=session.command_normal['PISTON']
+        low,high=session.travel_limits['PISTON']
+        current=(normal-session.reference['PISTON'])/session.scales['PISTON']
+        if not low-1e-7<=current<=high+1e-7:
+            raise ValueError('Current piston estimate is outside configured syringe travel; verify calibration')
         for step in steps:
             if isinstance(step,bool) or step not in (-100,-50,-20,-10,10,20,50,100):
                 raise ValueError('Use signed 10/20/50/100 nL free steps')
             normal+=step*session.scales['PISTON']
             estimate=(normal-session.reference['PISTON'])/session.scales['PISTON']
-            if not -1e-7<=estimate<=5000+1e-7:raise ValueError('Piston capacity exceeded')
+            if not low-1e-7<=estimate<=high+1e-7:raise ValueError(f'Piston target exceeds configured {low:g}–{high:g} nL travel range')
             check_target(session.travel_limits, 'PISTON', estimate)
             raw=round(normal+(BACKLASH['PISTON'] if step>0 else 0))
             if not -(2**31)<=raw<2**31:raise ValueError('Piston raw target overflow')
@@ -310,8 +314,9 @@ class StereoDrive:
             check_target(s.travel_limits,'PISTON',position_nl)
             s.refresh()
             current=(s.command_normal['PISTON']-s.reference['PISTON'])/s.scales['PISTON']
-            if not -1e-7<=current<=5000+1e-7:
-                raise ValueError('Current piston estimate is outside syringe capacity; verify calibration')
+            low,high=s.travel_limits['PISTON']
+            if not low-1e-7<=current<=high+1e-7:
+                raise ValueError('Current piston estimate is outside configured syringe travel; verify calibration')
             remaining=10*math.floor(abs(position_nl-current)/10+1e-9)
             sign=1 if position_nl>=current else -1
             steps=[]

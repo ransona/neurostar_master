@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess,
 from PySide6.QtGui import QColor, QCursor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractButton,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -153,8 +154,8 @@ MOVE_SPEED_OPTIONS_MM = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0
 DEFAULT_MOVE_SPEED_MM = 0.05
 INJECTION_VOLUME_OPTIONS_NL = [10, 20, 50, 100, 200, 500, 1000, 2000]
 DEFAULT_INJECTION_VOLUME_NL = 100
-SYRINGE_MIN_NL = 0.0
-SYRINGE_MAX_NL = 5000.0
+SYRINGE_MIN_NL = 500.0
+SYRINGE_MAX_NL = 4500.0
 
 
 @dataclass
@@ -933,6 +934,7 @@ class CraniotomyWindow(QMainWindow):
         self.injection_sites: list[InjectionSite] = []
         self.recent_injection_grid_configs: list[dict[str, object]] = []
         self.nudge_all_sites_active = False
+        self._nudge_mode_saved_enabled: dict[QWidget, bool] | None = None
         self.validation_modal_active = False
         self.validation_move_active = False
         self.validation_move_cancel_callback = None
@@ -1490,6 +1492,7 @@ class CraniotomyWindow(QMainWindow):
         outer_layout.setContentsMargins(7, 6, 7, 7)
         outer_layout.setSpacing(6)
         left_panel = QWidget()
+        self.injection_controls_panel = left_panel
         layout = QVBoxLayout(left_panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -1514,9 +1517,9 @@ class CraniotomyWindow(QMainWindow):
             self.manual_volume_combo.addItem(f"{volume} nl", volume)
         self.manual_volume_combo.setCurrentIndex(INJECTION_VOLUME_OPTIONS_NL.index(self.manual_injection_volume_nl))
         self.manual_volume_combo.currentIndexChanged.connect(self.on_manual_volume_combo_changed)
-        self.inject_up_btn = QPushButton("Step Syringe Up (F3)")
+        self.inject_up_btn = QPushButton("Step Syringe Up")
         self.inject_up_btn.clicked.connect(lambda: self.manual_syringe_step(up=True))
-        self.inject_down_btn = QPushButton("Step Syringe Down (F4)")
+        self.inject_down_btn = QPushButton("Step Syringe Down")
         self.inject_down_btn.clicked.connect(lambda: self.manual_syringe_step(up=False))
         self.manual_stop_btn = QPushButton("Stop")
         self.manual_stop_btn.setProperty("variant", "danger")
@@ -1527,8 +1530,6 @@ class CraniotomyWindow(QMainWindow):
         self.empty_syringe_btn.clicked.connect(self.empty_syringe)
         self.fill_syringe_btn = QPushButton("Fill Syringe")
         self.fill_syringe_btn.clicked.connect(self.fill_syringe)
-        update_syringe_position_btn = QPushButton("Update Syringe Position")
-        update_syringe_position_btn.clicked.connect(self.update_syringe_position_from_scale)
         test_blockage_btn = QPushButton("Test for Blockage")
         test_blockage_btn.clicked.connect(self.test_for_blockage)
 
@@ -1541,8 +1542,7 @@ class CraniotomyWindow(QMainWindow):
         status_layout.addWidget(self.inject_down_btn, 4, 1)
         status_layout.addWidget(self.manual_stop_btn, 4, 2)
         status_layout.addWidget(self.empty_syringe_btn, 4, 3)
-        status_layout.addWidget(update_syringe_position_btn, 5, 0, 1, 2)
-        status_layout.addWidget(test_blockage_btn, 5, 2, 1, 2)
+        status_layout.addWidget(test_blockage_btn, 5, 0, 1, 4)
         status_layout.addWidget(self.fill_syringe_btn, 6, 3)
         status_layout.addWidget(self.plunger_gauge, 0, 4, 7, 1)
 
@@ -1588,8 +1588,6 @@ class CraniotomyWindow(QMainWindow):
         self.start_injection_btn.style().unpolish(self.start_injection_btn)
         self.start_injection_btn.style().polish(self.start_injection_btn)
         self.start_injection_btn.clicked.connect(self.start_single_injection)
-        self.pause_injection_btn = QPushButton("Pause")
-        self.pause_injection_btn.clicked.connect(self.pause_resume_injection)
         self.stop_injection_btn = QPushButton("Stop")
         self.stop_injection_btn.setProperty("variant", "danger")
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
@@ -1603,7 +1601,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_load_btn.clicked.connect(self.load_injection_config)
         self.sequence_steps_list = QListWidget()
         self.sequence_steps_list.setSpacing(0)
-        self.sequence_steps_list.setUniformItemSizes(True)
+        self.sequence_steps_list.setUniformItemSizes(False)
+        self.sequence_steps_list.setWordWrap(True)
         self.sequence_steps_list.setStyleSheet(
             """
             QListWidget {
@@ -1643,9 +1642,17 @@ class CraniotomyWindow(QMainWindow):
         single_layout.addWidget(self.injection_progress, 6, 1, 1, 5)
         single_layout.addWidget(QLabel("Current injection/movement"), 7, 0)
         single_layout.addWidget(self.injection_site_progress, 7, 1, 1, 5)
-        single_layout.addWidget(self.start_injection_btn, 8, 0)
-        single_layout.addWidget(self.pause_injection_btn, 8, 1)
-        single_layout.addWidget(self.stop_injection_btn, 8, 2, 1, 4)
+        injection_actions_panel = QWidget()
+        self.injection_actions_panel = injection_actions_panel
+        injection_actions = QHBoxLayout(injection_actions_panel)
+        injection_actions.setContentsMargins(0, 0, 0, 0)
+        injection_actions.setSpacing(0)
+        injection_actions.addWidget(self.start_injection_btn)
+        injection_actions.addSpacing(8)
+        injection_actions.addWidget(self.stop_injection_btn)
+        injection_actions.addStretch(1)
+        single_layout.addWidget(injection_actions_panel, 8, 0, 1, 6)
+        QTimer.singleShot(0, self._size_injection_action_buttons)
 
         self._build_injection_sites_section(layout)
         self._build_injection_map(outer_layout)
@@ -1657,6 +1664,7 @@ class CraniotomyWindow(QMainWindow):
         """Build the Injection Sites panel below the injection settings."""
         sites_box = QGroupBox("Injection Sites")
         sites_layout = QGridLayout(sites_box)
+        self.injection_sites_layout = sites_layout
         sites_layout.setContentsMargins(7, 6, 7, 7)
         sites_layout.setHorizontalSpacing(8)
         sites_layout.setVerticalSpacing(3)
@@ -1671,17 +1679,14 @@ class CraniotomyWindow(QMainWindow):
         add_grid_btn.clicked.connect(self.add_injection_site_grid)
         remove_site_btn = QPushButton("Remove Selected Site")
         remove_site_btn.clicked.connect(self.remove_selected_injection_site)
-        validate_sites_btn = QPushButton("Validate Sites")
-        validate_sites_btn.setProperty("variant", "primary")
-        validate_sites_btn.style().unpolish(validate_sites_btn)
-        validate_sites_btn.style().polish(validate_sites_btn)
-        validate_sites_btn.clicked.connect(self.start_injection_site_validation)
+        self.validate_sites_btn = QPushButton("Validate Sites")
+        self.validate_sites_btn.clicked.connect(self.start_injection_site_validation)
         clear_sites_btn = QPushButton("Clear Sites")
         clear_sites_btn.clicked.connect(self.clear_injection_sites)
-        save_site_set_btn = QPushButton("Save Site Set")
-        save_site_set_btn.clicked.connect(self.save_injection_site_set)
-        load_site_set_btn = QPushButton("Load Site Set")
-        load_site_set_btn.clicked.connect(self.load_injection_site_set)
+        self.save_site_set_btn = QPushButton("Save Site Set")
+        self.save_site_set_btn.clicked.connect(self.save_injection_site_set)
+        self.load_site_set_btn = QPushButton("Load Site Set")
+        self.load_site_set_btn.clicked.connect(self.load_injection_site_set)
         self.nudge_all_sites_btn = QPushButton("Nudge All Sites")
         self.nudge_all_sites_btn.setCheckable(True)
         self.nudge_all_sites_btn.setToolTip(
@@ -1700,10 +1705,10 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(add_site_btn, 0, 0)
         sites_layout.addWidget(add_grid_btn, 0, 1)
         sites_layout.addWidget(remove_site_btn, 0, 2)
-        sites_layout.addWidget(save_site_set_btn, 1, 0)
-        sites_layout.addWidget(load_site_set_btn, 1, 1)
+        sites_layout.addWidget(self.load_site_set_btn, 1, 0)
+        sites_layout.addWidget(self.save_site_set_btn, 1, 1)
         sites_layout.addWidget(self.nudge_all_sites_btn, 1, 2)
-        sites_layout.addWidget(validate_sites_btn, 2, 0)
+        sites_layout.addWidget(self.validate_sites_btn, 2, 0)
         sites_layout.addWidget(clear_sites_btn, 2, 1)
         sites_layout.addWidget(resume_selected_btn, 2, 2)
         sites_layout.addWidget(self.block_check, 3, 0, 1, 3)
@@ -1713,6 +1718,19 @@ class CraniotomyWindow(QMainWindow):
         sites_layout.addWidget(QLabel("Validation / pulsed clearance (mm)"), 4, 0, 1, 2)
         sites_layout.addWidget(self.validation_clearance_edit, 4, 2)
         sites_layout.addWidget(self.injection_sites_list, 5, 0, 1, 3)
+
+    def _size_injection_action_buttons(self) -> None:
+        if not hasattr(self, "injection_actions_panel"):
+            return
+        available = max(0, self.injection_actions_panel.contentsRect().width() - 8)
+        width = available // 2
+        if width:
+            self.start_injection_btn.setFixedWidth(width)
+            self.stop_injection_btn.setFixedWidth(width)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._size_injection_action_buttons)
 
     def _build_injection_map(self, parent_layout: QHBoxLayout) -> None:
         """Place the injection map in the full-height right-hand column."""
@@ -1780,7 +1798,7 @@ class CraniotomyWindow(QMainWindow):
             for column in (1, 2):
                 edit = QDoubleSpinBox()
                 edit.setDecimals(3)
-                edit.setRange(0 if axis == "PISTON" else -100000, 5000 if axis == "PISTON" else 100000)
+                edit.setRange(500 if axis == "PISTON" else -100000, 4500 if axis == "PISTON" else 100000)
                 motion_grid.addWidget(edit, row, column)
                 pair.append(edit)
             self.direct_limit_edits[axis] = pair
@@ -2353,16 +2371,27 @@ class CraniotomyWindow(QMainWindow):
                 self._direct_control_settings_loaded=False
                 self.set_status(f"Could not create direct-control settings: {exc}")
             return
+        limits_migrated = False
         try:
             from stereodrive_api import Calibration
+            from stereodrive_api.limits import PISTON_MAX_NL, PISTON_MIN_NL, validate_limits
             payload=self._read_config_file(path)
             if not isinstance(payload,dict) or payload.get("version")!=1 or type(payload.get("live")) is not bool or payload["live"]!=self.controller.live:
                 raise ValueError("Direct settings version/mode mismatch")
             if payload.get("calibration"):
                 Calibration(**payload["calibration"]).reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
             speed=payload.get("speed_mm_s",1)
-            from stereodrive_api.limits import validate_limits
-            validate_limits(payload.get("travel_limits"))
+            stored_limits = payload.get("travel_limits")
+            if isinstance(stored_limits, dict) and isinstance(stored_limits.get("PISTON"), (list, tuple)):
+                low, high = stored_limits["PISTON"]
+                clamped = (max(PISTON_MIN_NL, float(low)), min(PISTON_MAX_NL, float(high)))
+                if clamped[0] >= clamped[1]:
+                    clamped = (PISTON_MIN_NL, PISTON_MAX_NL)
+                if tuple(float(v) for v in (low, high)) != clamped:
+                    stored_limits = dict(stored_limits, PISTON=clamped)
+                    payload["travel_limits"] = stored_limits
+                    limits_migrated = True
+            normalized_limits = validate_limits(stored_limits)
             if isinstance(speed,bool) or speed not in (1,2):raise ValueError("Invalid captured speed profile")
             if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill","allow_pulsed")):
                 raise ValueError("Invalid direct-control preferences")
@@ -2371,6 +2400,7 @@ class CraniotomyWindow(QMainWindow):
                     or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in reference.values())):
                 raise ValueError("Invalid saved Axis-zero fingerprint")
             self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill","allow_pulsed","travel_limits") if k in payload}
+            self.direct_control_settings["travel_limits"] = normalized_limits
             self.axis_zero_reference=reference
             self.home_axis=self._session_axis(payload.get("home_axis"))
             self.work_axis=self._session_axis(payload.get("work_axis"))
@@ -2381,6 +2411,8 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(f"Direct-control settings ignored: {exc}. Reverify setup before connecting.")
         self._update_persistent_axis_location_labels()
         self._sync_direct_motion_options()
+        if limits_migrated and self._direct_control_settings_loaded:
+            self._save_direct_control_settings()
 
     def _project_session_path(self) -> Path:
         return self._config_root_dir() / "project_session.json"
@@ -3035,6 +3067,10 @@ class CraniotomyWindow(QMainWindow):
             return super().eventFilter(watched, event)
         combined_key = int(key) | event.modifiers().value
         validation_active = self.validation_modal_active
+        if self.nudge_all_sites_active and not validation_active:
+            for name in ("volume_down", "volume_up", "syringe_up", "syringe_down"):
+                if self._key_matches_binding(self.syringe_key_bindings[name], key, combined_key):
+                    return True
         if not validation_active and self._key_matches_binding(self.syringe_key_bindings["volume_down"], key, combined_key):
             self.adjust_manual_injection_volume(-1)
             return True
@@ -3147,10 +3183,35 @@ class CraniotomyWindow(QMainWindow):
             self.nudge_all_sites_btn.setChecked(False)
             self.nudge_all_sites_btn.blockSignals(False)
             return
+        if active and self.add_sites_on_map_checkbox.isChecked():
+            self.add_sites_on_map_checkbox.setChecked(False)
         self.nudge_all_sites_active = active
+        if active:
+            controls = [
+                widget for widget in self.injection_controls_panel.findChildren(QWidget)
+                if isinstance(widget, (QAbstractButton, QComboBox, QLineEdit, QDoubleSpinBox, QSpinBox, QListWidget))
+                and widget is not self.nudge_all_sites_btn
+            ]
+            if hasattr(self, "add_sites_on_map_checkbox"):
+                controls.append(self.add_sites_on_map_checkbox)
+            if self._nudge_mode_saved_enabled is None:
+                self._nudge_mode_saved_enabled = {widget: widget.isEnabled() for widget in controls}
+            for widget in controls:
+                widget.setEnabled(False)
+            self.nudge_all_sites_btn.setEnabled(True)
+            self.nudge_all_sites_btn.setText("Disable Nudge of Sites")
+            self.injection_sites_view.mode_label = "Nudge Sites Mode"
+        else:
+            if self._nudge_mode_saved_enabled is not None:
+                for widget, was_enabled in self._nudge_mode_saved_enabled.items():
+                    widget.setEnabled(was_enabled)
+            self._nudge_mode_saved_enabled = None
+            self.nudge_all_sites_btn.setText("Nudge All Sites")
+            self.injection_sites_view.mode_label = ""
         self.nudge_all_sites_btn.setProperty("variant", "quick-green" if active else None)
         self.nudge_all_sites_btn.style().unpolish(self.nudge_all_sites_btn)
         self.nudge_all_sites_btn.style().polish(self.nudge_all_sites_btn)
+        self.injection_sites_view.update()
         if active:
             self.set_status(
                 "Nudge All Sites enabled: AP/ML arrows shift all sites; the manipulator will not move."
@@ -3296,7 +3357,12 @@ class CraniotomyWindow(QMainWindow):
             self.sync_syringe_position_before_injection()
             position_nl = self.current_syringe_position()
         if position_nl is None:
-            raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
+            raise StereoDriveError("Syringe position is unknown. Reconnect or verify the current piston position.")
+        if not SYRINGE_MIN_NL <= position_nl <= SYRINGE_MAX_NL:
+            raise StereoDriveError(
+                f"Current syringe position {position_nl:.1f} nL is outside the allowed "
+                f"{SYRINGE_MIN_NL:g}–{SYRINGE_MAX_NL:g} nL range. No syringe movement was requested."
+            )
         message = self.syringe_limit_message(requested_nl, up, position_nl)
         if message:
             raise StereoDriveError(message)
@@ -3307,7 +3373,7 @@ class CraniotomyWindow(QMainWindow):
             self.sync_syringe_position_before_injection()
             position_nl = self.current_syringe_position()
         if position_nl is None:
-            raise StereoDriveError("Syringe position is unknown. Click Update Syringe Position and try again.")
+            raise StereoDriveError("Syringe position is unknown. Reconnect or verify the current piston position.")
         minimum = self.controller._require().travel_limits['PISTON'][0] if getattr(self.controller,"direct_api",False) else SYRINGE_MIN_NL
         remaining_capacity_nl = position_nl - minimum
         if requested_total_nl > remaining_capacity_nl + 1e-6:
@@ -3360,7 +3426,7 @@ class CraniotomyWindow(QMainWindow):
         self.adjust_tracked_syringe_position(-volume_nl)
 
     def track_syringe_empty(self) -> None:
-        self.set_syringe_position(0.0)
+        self.set_syringe_position(SYRINGE_MIN_NL)
 
     def test_for_blockage(self) -> None:
         if not self._require_idle("Test Volume"):
@@ -3388,9 +3454,15 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Empty Syringe"):
             return
         try:
+            position_nl = self.current_syringe_position()
+            if position_nl is None:
+                self.sync_syringe_position_before_injection()
+                position_nl = self.current_syringe_position()
+            if position_nl is None or not SYRINGE_MIN_NL <= position_nl <= SYRINGE_MAX_NL:
+                raise StereoDriveError("Verify syringe position is within 500–4500 nL before emptying. No movement was requested.")
             self.controller.empty_syringe()
             self.track_syringe_empty()
-            self.set_status("Emptying syringe to 0")
+            self.set_status(f"Emptying syringe to {SYRINGE_MIN_NL:g} nL")
         except Exception as exc:
             QMessageBox.critical(self, "Injectomate", str(exc))
 
@@ -4108,7 +4180,6 @@ class CraniotomyWindow(QMainWindow):
             )
         for index, text in enumerate(steps, start=1):
             item = QListWidgetItem(f"{index}. {text}")
-            item.setSizeHint(QSize(0, 15))
             self.sequence_steps_list.addItem(item)
 
     def _estimated_total_syringe_volume_nl(
@@ -4845,12 +4916,13 @@ class CraniotomyWindow(QMainWindow):
         return [InjectionSite(ap=ap, ml=ml, dv=dv)]
 
     def start_single_injection(self) -> None:
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            self.pause_resume_injection()
+            return
         if not getattr(self.controller,"supports_injection_protocol",True):
             QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous flow is not implemented.")
             return
         if not self._require_idle("Injection"):
-            return
-        if self.injection_thread is not None and self.injection_thread.is_alive():
             return
         try:
             sites = self._active_injection_sites()
@@ -5020,8 +5092,8 @@ class CraniotomyWindow(QMainWindow):
         self.injection_progress.setValue(int((start_site_offset / max(1, total_site_count)) * 100))
         self.injection_site_progress.setValue(0)
         self.set_status(initial_status)
-        self.start_injection_btn.setEnabled(False)
-        self.pause_injection_btn.setText("Pause")
+        self.start_injection_btn.setEnabled(True)
+        self.start_injection_btn.setText("Pause")
         self.injection_thread = threading.Thread(
             target=self._run_injection_protocol,
             args=(
@@ -5042,11 +5114,11 @@ class CraniotomyWindow(QMainWindow):
             return
         if self.injection_pause_requested.is_set():
             self.injection_pause_requested.clear()
-            self.pause_injection_btn.setText("Pause")
+            self.start_injection_btn.setText("Pause")
             self.set_status("Injection resumed")
         else:
             self.injection_pause_requested.set()
-            self.pause_injection_btn.setText("Resume")
+            self.start_injection_btn.setText("Go")
             self.set_status("Injection paused")
 
     def stop_injection(self) -> None:
@@ -5507,7 +5579,7 @@ class CraniotomyWindow(QMainWindow):
         display_message = "Sequence complete" if message == "Injection protocol complete" else message
         self.set_status(display_message)
         self.start_injection_btn.setEnabled(True)
-        self.pause_injection_btn.setText("Pause")
+        self.start_injection_btn.setText("Go")
         if message in ("Injection complete", "Injection protocol complete"):
             self.injection_progress.setValue(100)
             self.injection_site_progress.setValue(100)
@@ -5975,6 +6047,9 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def move_to_map_location(self, ml: float, ap: float) -> None:
+        if self.nudge_all_sites_active:
+            self.set_status("Disable Nudge Sites mode before moving the manipulator from the map.")
+            return
         if not self._require_idle("Map Move"):
             return
         answer = QMessageBox.question(

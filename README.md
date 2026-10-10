@@ -66,15 +66,17 @@ Reported piston volume is an estimate for the tested Nano 5 µL syringe, not del
 
 **Options → Direct control — speed and travel limits** provides independent minimum
 and maximum ranges for AP, ML and DV in mechanical Axis mm (defaults **0–40 mm**)
-and piston in nL (default **0–5000 nL**). These are Axis coordinates even in Bregma
+and piston in nL (default **500–4500 nL**). Piston travel is hard-limited to this
+safe operating band; the syringe's nominal capacity is 0–5000 nL. These are Axis coordinates even in Bregma
 mode. Click **Apply and save speed / limits** while idle; settings persist in the
 mode-specific `direct-control.json` and also apply to an already connected controller.
 Axis speed selects the captured **1 or 2 mm/s** profile, separate from keyboard step
 size and pulsed average rates. The previous ±1 mm/±100 nL connection envelopes and
 1 mm combined-distance cap are removed. Complete approach paths and workflow doses
 are preflighted. Limits are not collision protection; verify the full path independently.
-Piston free steps remain 10/20/50/100 nL; configured limits cannot exceed 0–5000 nL
-for the Nano 5 µL syringe. Signed motor-count overflow remains rejected.
+Piston free steps remain 10/20/50/100 nL; configured limits cannot exceed 500–4500 nL
+for the Nano 5 µL syringe. Empty/Fill move only to the configured lower/upper limit.
+Signed motor-count overflow remains rejected.
 Craniotomy **Drilling pattern and timing → Mode** defaults to **Spaced boreholes**;
 select **Continuous path** for the existing perimeter-tracing behavior. Boreholes are placed
 uniformly along the closed perimeter at no more than the selected center-to-center

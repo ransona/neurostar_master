@@ -41,7 +41,7 @@ class PlannerTests(unittest.TestCase):
 
     def connect(self,**kwargs):
         c=self.window.controller
-        options=dict(allow_dv=True,allow_piston=True,travel_limits=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(0,5000)));options.update(kwargs)
+        options=dict(allow_dv=True,allow_piston=True,travel_limits=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(500,4500)));options.update(kwargs)
         c.connect(Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,dict(AP=0,ML=261,DV=0,PISTON=0)),
                   dict(AP=0,ML=261,DV=0,PISTON=0),self.root/'api.json',**options)
         self.window.refresh_live_position()
@@ -54,6 +54,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.window.resize(1440,900)
+        self.window.tabs.setCurrentIndex(1)
         self.window.show();self.app.processEvents()
         self.assertEqual(self.window.craniotomy_load_btn.text(),'Load')
         self.assertEqual(self.window.craniotomy_save_btn.text(),'Save')
@@ -67,6 +68,17 @@ class PlannerTests(unittest.TestCase):
             self.assertGreater(right.width(),0)
             self.assertLess(abs(left.width()-right.width()),max(left.width(),right.width())*.35)
         self.assertEqual(self.window.injection_sites_view.parentWidget().title(),'Map')
+        self.assertEqual(self.window.inject_up_btn.text(),'Step Syringe Up')
+        self.assertEqual(self.window.inject_down_btn.text(),'Step Syringe Down')
+        self.assertFalse(hasattr(self.window,'pause_injection_btn'))
+        self.assertEqual(self.window.start_injection_btn.text(),'Go')
+        self.assertTrue(self.window.sequence_steps_list.wordWrap())
+        self.assertEqual(self.window.direct_limit_edits['PISTON'][0].value(),500)
+        self.assertEqual(self.window.direct_limit_edits['PISTON'][1].value(),4500)
+        self.assertNotEqual(self.window.validate_sites_btn.property('variant'),'primary')
+        self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,0).widget(),self.window.load_site_set_btn)
+        self.assertIs(self.window.injection_sites_layout.itemAtPosition(1,1).widget(),self.window.save_site_set_btn)
+        self.assertEqual(self.window.start_injection_btn.width(),self.window.stop_injection_btn.width())
         self.assertEqual(self.window.capture_surface_btn.y(),self.window.move_seed_btn.y())
         self.assertEqual(self.window.capture_surface_btn.x()<self.window.move_seed_btn.x(),True)
         self.assertLess(abs(self.window.capture_surface_btn.width()-self.window.move_seed_btn.width()),4)
@@ -107,6 +119,24 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.freeze_draw_btn.text(),'Freeze Holes')
         self.assertEqual(self.window.unfreeze_draw_btn.text(),'Unfreeze Holes')
 
+    def test_nudge_sites_mode_locks_injection_panel_and_labels_map(self):
+        self.window.injection_sites=[planner.InjectionSite(0,0,0)]
+        self.window.refresh_injection_sites_list()
+        self.window.nudge_all_sites_btn.click()
+        self.assertTrue(self.window.nudge_all_sites_active)
+        self.assertEqual(self.window.nudge_all_sites_btn.text(),'Disable Nudge of Sites')
+        self.assertFalse(self.window.manual_volume_combo.isEnabled())
+        self.assertFalse(self.window.start_injection_btn.isEnabled())
+        self.assertFalse(self.window.validate_sites_btn.isEnabled())
+        self.assertTrue(self.window.nudge_all_sites_btn.isEnabled())
+        self.assertEqual(self.window.injection_sites_view.mode_label,'Nudge Sites Mode')
+        self.window.nudge_all_sites_btn.click()
+        self.assertFalse(self.window.nudge_all_sites_active)
+        self.assertEqual(self.window.nudge_all_sites_btn.text(),'Nudge All Sites')
+        self.assertTrue(self.window.manual_volume_combo.isEnabled())
+        self.assertTrue(self.window.start_injection_btn.isEnabled())
+        self.assertEqual(self.window.injection_sites_view.mode_label,'')
+
     def test_disconnected_keyboard_does_not_move(self):
         with patch.object(self.window,'_focus_is_editable',return_value=False):
             self.window.keyboard_nudge('AP',True,'AP')
@@ -115,7 +145,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_motion_options_defaults_apply_persist_and_busy_guard(self):
         for axis, edits in self.window.direct_limit_edits.items():
-            self.assertEqual([e.value() for e in edits],[0,5000 if axis=='PISTON' else 40])
+            self.assertEqual([e.value() for e in edits],[500 if axis=='PISTON' else 0,4500 if axis=='PISTON' else 40])
         self.window.direct_limit_edits['AP'][1].setValue(25)
         self.window.direct_speed_combo.setCurrentText('2')
         self.window._apply_direct_motion_options()
@@ -197,6 +227,16 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(saved['home_axis'],[.1,.2,.3])
         self.assertEqual(saved['axis_zero_reference']['ML'],75603)
 
+    def test_legacy_full_syringe_limits_migrate_to_safe_band(self):
+        path=self.window._direct_control_settings_path()
+        path.write_text(json.dumps(dict(version=1,live=False,speed_mm_s=1,
+            allow_dv=True,allow_piston=True,allow_drill=True,allow_pulsed=True,
+            travel_limits=dict(AP=[0,40],ML=[0,40],DV=[0,40],PISTON=[0,5000]))))
+        self.window._load_direct_control_settings()
+        limits=self.window.direct_control_settings['travel_limits']
+        self.assertEqual(limits['PISTON'],(500.0,4500.0))
+        self.assertEqual(json.loads(path.read_text())['travel_limits']['PISTON'],[500.0,4500.0])
+
     def test_wrong_mode_direct_settings_fail_closed_and_are_preserved(self):
         path=self.window._direct_control_settings_path()
         payload=json.loads(path.read_text());payload['live']=True
@@ -242,7 +282,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_syringe_limit_confirmations_are_short(self):
         from unittest.mock import Mock
-        drive=Mock();drive.travel_limits={'PISTON':(0,5000)}
+        drive=Mock();drive.travel_limits={'PISTON':(500,4500)}
         self.window.controller._require=Mock(return_value=drive)
         self.window.controller.read_injectomate_calibrate_scale_nl=Mock(return_value=2500)
         self.dialogs.question.return_value=planner.QMessageBox.Cancel

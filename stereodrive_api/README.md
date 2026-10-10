@@ -121,8 +121,9 @@ validation before changing the transport identity.
 
 Constructor `travel_limits` accepts a mapping with `AP`, `ML`, `DV` and `PISTON`
 minimum/maximum pairs. Default axes are **0–40 mm** in calibrated mechanical Axis
-coordinates; default piston is **0–5000 nL**. Configured piston ranges must remain
-within the Nano 5 µL capacity. Limits are not collision protection and are not
+coordinates; default piston operating range is **500–4500 nL**. Piston ranges are
+hard-limited to that band even though nominal syringe capacity is 0–5000 nL.
+Limits are not collision protection and are not
 relative to connection or GUI Bregma. The main planner saves these in Options.
 Absolute multi-axis moves are sequential: requested DV retraction first, then AP/ML;
 otherwise AP/ML/DV. Stop cancels remaining legs. There is no collision planning or

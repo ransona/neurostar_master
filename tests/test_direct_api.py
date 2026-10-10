@@ -13,7 +13,7 @@ from stereodrive_api import StereoDrive, Calibration
 
 STATES=dict(AP=0,ML=261,DV=0,PISTON=0)
 CAL=Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,STATES)
-LIMITS=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(0,5000))
+LIMITS=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(500,4500))
 
 
 class DirectTests(unittest.TestCase):
@@ -144,8 +144,8 @@ class DirectTests(unittest.TestCase):
         with self.assertRaises(ValueError):StereoDrive(speed_mm_s=True)
 
     def test_piston_capacity_guard_before_target(self):
-        cal=Calibration(CAL.axis_zero_counts,-8572-round(1995*161.36),STATES)
-        d=StereoDrive(state_path=self.path,calibration=cal,allow_piston=True)
+        d=StereoDrive(state_path=self.path,calibration=CAL,allow_piston=True,
+                      simulation_start_position=dict(AP=0,ML=0,DV=0,PISTON=4495))
         d.connect(verified_backlash=STATES);self.addCleanup(d.close)
         with self.assertRaisesRegex(ValueError,'travel range'):
             d.piston_step('up',10)
@@ -154,6 +154,7 @@ class DirectTests(unittest.TestCase):
     def test_default_ranges_larger_moves_and_custom_limits(self):
         d=self.drive(travel_limits=None,allow_piston=True)
         self.assertEqual(d.travel_limits['AP'],(0,40))
+        self.assertEqual(d.travel_limits['PISTON'],(500,4500))
         d.move_axes_to(dict(AP=2,ML=3))
         d.move_mm('AP',2)
         for direction in ('up','up','down','down'): d.piston_step(direction,100)
@@ -173,7 +174,8 @@ class DirectTests(unittest.TestCase):
         from stereodrive_api.limits import DEFAULT_LIMITS
         for pair in ((2,1),(0,float('nan')),(False,40)):
             with self.assertRaises(ValueError):StereoDrive(travel_limits=dict(DEFAULT_LIMITS,AP=pair))
-        with self.assertRaises(ValueError):StereoDrive(travel_limits=dict(DEFAULT_LIMITS,PISTON=(0,5001)))
+        for pair in ((0,4500),(500,5000)):
+            with self.assertRaises(ValueError):StereoDrive(travel_limits=dict(DEFAULT_LIMITS,PISTON=pair))
         d=self.drive()
         with d._lock:
             with self.assertRaises(RuntimeError):d.configure_motion(speed_mm_s=1,travel_limits=DEFAULT_LIMITS)
@@ -205,11 +207,21 @@ class DirectTests(unittest.TestCase):
     def test_piston_plan_uses_commanded_fractional_counts_not_rounded_readout(self):
         d=self.drive(allow_piston=True)
         d.piston_step('up',20)
-        steps=d.plan_piston_to(0)
-        self.assertEqual(sum(steps),-3020)
+        steps=d.plan_piston_to(500)
+        self.assertEqual(sum(steps),-2520)
         d.validate_piston_steps(steps)
-        self.assertEqual(sum(d.plan_piston_to(5000)),1980)
-        with self.assertRaises(ValueError):d.plan_piston_to(5001)
+        self.assertEqual(sum(d.plan_piston_to(4500)),1480)
+        for target in (499,4501):
+            with self.assertRaises(ValueError):d.plan_piston_to(target)
+
+    def test_syringe_cannot_move_outside_safe_operating_band(self):
+        for start, forbidden_step in ((500,-10),(4500,10)):
+            c=StereoDriveController();self.addCleanup(c.close)
+            c.connect(CAL,STATES,self.path,allow_piston=True,travel_limits=LIMITS,
+                      new_reference=True,simulation_start_position=dict(AP=0,ML=0,DV=0,PISTON=start))
+            self.assertEqual(c.drive.plan_piston_to(start),[])
+            with self.assertRaises(ValueError):c.validate_piston_steps([forbidden_step])
+            self.assertFalse(any(packet[1]==0x0c for packet in c.drive._session.transport.packets))
 
     def test_benchmark_preflights_all_axes_and_stops_without_reversal(self):
         c=StereoDriveController();self.addCleanup(c.close)
