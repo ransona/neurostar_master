@@ -4860,23 +4860,33 @@ class CraniotomyWindow(QMainWindow):
         dialog.setWindowTitle("Validate Injection Site")
         dialog.setProperty("allow_motor_shortcuts",True)
         dialog.setModal(True)
+        dialog.setFixedWidth(max(640, self.width() // 2))
         layout = QVBoxLayout(dialog)
         state = "unvalidated" if site.dv is None else f"surface DV {site.dv:.2f} mm"
-        layout.addWidget(QLabel(
+        message_label = QLabel(
             f"Site {index + 1} of {total}: AP {site.ap:.2f}, ML {site.ml:.2f} ({state})\n\n"
             f"The manipulator is at this site, {self.validation_clearance_mm:g} mm above Bregma DV zero. Use the normal keyboard nudges "
             "to refine AP/ML and lower DV until the tool touches surface."
-        ))
-        buttons = QDialogButtonBox()
-        validate_button = buttons.addButton("Validate" if single_site else "Validate and Next", QDialogButtonBox.AcceptRole)
-        next_button = buttons.addButton("Skip" if single_site else "Next Without Validating", QDialogButtonBox.ActionRole)
-        delete_button = buttons.addButton("Delete Point", QDialogButtonBox.DestructiveRole)
-        cancel_button = buttons.addButton(QDialogButtonBox.Cancel)
-        action_buttons = (next_button, delete_button, cancel_button, validate_button)
-        button_width = max(button.sizeHint().width() for button in action_buttons)
+        )
+        message_label.setWordWrap(True)
+        dialog.validation_message_label = message_label
+        layout.addWidget(message_label)
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(8)
+        validate_button = QPushButton("Validate" if single_site else "Validate and Next")
+        next_button = QPushButton("Skip" if single_site else "Next Without Validating")
+        delete_button = QPushButton("Delete Point")
+        cancel_button = QPushButton("Cancel")
+        action_buttons = (validate_button, next_button, delete_button, cancel_button)
+        button_minimum_width = max(button.sizeHint().width() for button in action_buttons)
         for button in action_buttons:
-            button.setFixedWidth(button_width)
-        layout.addWidget(buttons)
+            button.setMinimumWidth(button_minimum_width)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            buttons_layout.addWidget(button, 1)
+        validate_button.setDefault(True)
+        validate_button.setAutoDefault(True)
+        dialog.validation_action_buttons = action_buttons
+        layout.addLayout(buttons_layout)
         result = {"action": "cancel"}
 
         def choose(action: str) -> None:

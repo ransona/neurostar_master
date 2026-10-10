@@ -144,6 +144,29 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.start_injection_btn.isEnabled())
         self.assertEqual(self.window.injection_sites_view.mode_label,'')
 
+    def test_injection_validation_dialog_wraps_and_orders_equal_buttons(self):
+        observed={}
+        def inspect_and_close():
+            dialog=self.app.activeModalWidget()
+            self.assertIsNotNone(dialog)
+            observed['width']=dialog.width()
+            observed['wrap']=dialog.validation_message_label.wordWrap()
+            observed['buttons']=dialog.validation_action_buttons
+            observed['sizes']={(button.width(),button.height()) for button in dialog.validation_action_buttons}
+            observed['default']=dialog.validation_action_buttons[0].isDefault()
+            dialog.validation_action_buttons[-1].click()
+        QTimer.singleShot(0,inspect_and_close)
+        action,_dialog=self.window._validation_dialog(
+            0,1,planner.InjectionSite(ap=0,ml=0,dv=None)
+        )
+        self.assertEqual(action,'cancel')
+        self.assertEqual(observed['width'],max(640,self.window.width()//2))
+        self.assertTrue(observed['wrap'])
+        self.assertEqual([button.text() for button in observed['buttons']],
+                         ['Validate and Next','Next Without Validating','Delete Point','Cancel'])
+        self.assertEqual(len(observed['sizes']),1)
+        self.assertTrue(observed['default'])
+
     def test_disconnected_keyboard_does_not_move(self):
         with patch.object(self.window,'_focus_is_editable',return_value=False):
             self.window.keyboard_nudge('AP',True,'AP')
