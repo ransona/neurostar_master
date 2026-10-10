@@ -3057,16 +3057,21 @@ class CraniotomyWindow(QMainWindow):
         if hasattr(self, "action_status_label"):
             brief_source = " ".join(self.current_action.split())
             is_injection_summary = brief_source.startswith("Injection ") and ":" in brief_source
+            is_injection_metrics = is_injection_summary and "µm" in brief_source and "nL" in brief_source
             if brief_source.split() and brief_source.split()[0].rstrip(":").lower() == "status":
                 brief_source = (
                     brief_source.partition(":")[2].strip()
                     if ":" in brief_source
                     else " ".join(brief_source.split()[1:])
                 )
-            for separator in ((";", "!", "?") if is_injection_summary else (";", ":", "!", "?")):
-                brief_source = brief_source.partition(separator)[0]
+            if not is_injection_metrics:
+                for separator in ((";", "!", "?") if is_injection_summary else (";", ":", "!", "?")):
+                    brief_source = brief_source.partition(separator)[0]
             words = brief_source.split()
-            brief_message = " ".join(words[:5 if is_injection_summary else 4]) if words else "Ready now"
+            brief_message = (
+                brief_source if is_injection_metrics
+                else " ".join(words[:5 if is_injection_summary else 4]) if words else "Ready now"
+            )
             if len(words) == 1:
                 brief_message = f"{brief_message} now"
             self.action_status_label.setText(f"Status: {brief_message}")
@@ -5230,13 +5235,27 @@ class CraniotomyWindow(QMainWindow):
             site_index=start_offset+relative
             self.active_injection_site_signal.emit(site_index)
             completed=[0]
+            inserted_mm=[0.0]
+            delivered_dose_nl=[0]
+            insertion_depth=max(0.0,settings.injection_depth_mm)
+            site_volume_nl=settings.main_volume_nl+pulsed_protocol.insertion_volume(settings)
             def on_event(event):
                 self.sequence_step_signal.emit(steps.get(phase_index[event.phase],steps['approach']))
                 completed[0]+=1
                 fraction=completed[0]/max(1,len(plan))
                 self.injection_site_progress_signal.emit(int(fraction*100))
+                if event.phase in ('insert','overshoot_retract') and event.target is not None:
+                    inserted_mm[0]=max(inserted_mm[0],min(insertion_depth,event.target[2]-site.dv))
+                if event.phase in ('insertion_dose','main_dose'):
+                    delivered_dose_nl[0]+=event.volume_nl
+                if event.phase in ('insert','overshoot_retract','insertion_dose','main_dose'):
+                    detail=self._format_injection_metrics(
+                        inserted_mm[0],insertion_depth,delivered_dose_nl[0],site_volume_nl
+                    )
+                else:
+                    detail=f"{event.phase.replace('_',' ').capitalize()}"
                 self.injection_progress_signal.emit(int((site_index+fraction)/max(1,total_count)*100),
-                    f"Pulsed {event.phase}: site {site_index+1}/{total_count}; verified serial commands, duration may exceed estimate")
+                    detail)
             pulsed_protocol.execute(self.controller,plan,stop_requested=self.injection_stop_requested.is_set,
                 pause_requested=self.injection_pause_requested.is_set,on_event=on_event,
                 on_delivered=self.syringe_position_signal.emit)
@@ -5478,6 +5497,7 @@ class CraniotomyWindow(QMainWindow):
                 self.track_injection_delivery(step_nl)
                 delivered += step_nl
                 event_index += 1
+            target_axis_dv = site.dv
             if movement_targets and elapsed - last_move_at >= 0.05:
                 target_axis_dv = self._interpolated_movement_dv(movement_targets, elapsed)
                 self.controller.move_axis_to_target(
@@ -5496,13 +5516,22 @@ class CraniotomyWindow(QMainWindow):
             in_retraction_phase = movement_targets and insertion_time_s <= elapsed < movement_total_s
             if in_insertion_phase and current_volume < settings.main_volume_nl:
                 self.sequence_step_signal.emit(step_indexes["advance"])
-                message = f"Inserting pipette while injecting (current volume = {current_volume} nl)"
+                message = self._format_injection_metrics(
+                    max(0.0, min(settings.injection_depth_mm, target_axis_dv-site.dv)), settings.injection_depth_mm,
+                    current_volume, settings.main_volume_nl,
+                )
             elif in_retraction_phase and current_volume < settings.main_volume_nl:
                 self.sequence_step_signal.emit(step_indexes["retract"])
-                message = f"Retracting overshoot while injecting (current volume = {current_volume} nl)"
+                message = self._format_injection_metrics(
+                    max(0.0, min(settings.injection_depth_mm, target_axis_dv-site.dv)), settings.injection_depth_mm,
+                    current_volume, settings.main_volume_nl,
+                )
             elif current_volume < settings.main_volume_nl:
                 self.sequence_step_signal.emit(step_indexes.get("main_injection", step_indexes["retract"]))
-                message = f"Injecting (current volume = {current_volume} nl)"
+                message = self._format_injection_metrics(
+                    settings.injection_depth_mm, settings.injection_depth_mm,
+                    current_volume, settings.main_volume_nl,
+                )
             elif in_insertion_phase:
                 self.sequence_step_signal.emit(step_indexes["advance"])
                 message = "Inserting pipette"
@@ -5723,10 +5752,30 @@ class CraniotomyWindow(QMainWindow):
 
     def set_injection_progress(self, percent: int, message: str) -> None:
         self.injection_progress.setValue(max(0, min(100, percent)))
+        if "µm" in message and "nL" in message:
+            site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
+            site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
+            self.set_status(f"Injection {site_index + 1}/{site_count}: {message}")
+            return
         operation = self._injection_operation_label(message)
         site_count = max(1, int(getattr(self, "injection_status_site_count", 1)))
         site_index = max(0, min(site_count - 1, int(getattr(self, "injection_status_site_index", 0))))
         self.set_status(f"Injection {site_index + 1}/{site_count}: {operation}")
+
+    @staticmethod
+    def _format_injection_metrics(
+        inserted_mm: float, insertion_target_mm: float, delivered_nl: int, target_nl: int
+    ) -> str:
+        depth_um = max(0.0, float(inserted_mm) * 1000.0)
+        depth_percent = min(
+            100.0,
+            max(0.0, float(inserted_mm) / max(0.000001, float(insertion_target_mm)) * 100.0),
+        )
+        volume_percent = min(100.0, max(0.0, int(delivered_nl) / max(1, int(target_nl)) * 100.0))
+        return (
+            f"Insert {depth_um:.0f} µm ({depth_percent:.0f}%); "
+            f"dose {int(delivered_nl)}/{int(target_nl)} nL ({volume_percent:.0f}%)"
+        )
 
     @staticmethod
     def _injection_operation_label(message: str) -> str:

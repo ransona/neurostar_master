@@ -360,6 +360,20 @@ class GuiCoordinateTests(unittest.TestCase):
             "Status: Injection 2/5: Moving to site"
         )
 
+    def test_injection_status_preserves_depth_and_dose_percentages(self):
+        self.w.action_status_label = Mock()
+        self.w.injection_progress = Mock()
+        self.w.injection_status_site_index = 0
+        self.w.injection_status_site_count = 3
+        self.w.set_status = lambda message: Window.set_status(self.w, message)
+        detail = Window._format_injection_metrics(0.25, 0.5, 40, 100)
+
+        Window.set_injection_progress(self.w, 35, detail)
+
+        self.w.action_status_label.setText.assert_called_with(
+            "Status: Injection 1/3: Insert 250 µm (50%); dose 40/100 nL (40%)"
+        )
+
     def test_injection_run_button_says_resume_while_paused(self):
         self.w.injection_thread = Mock(is_alive=lambda: True)
         self.w.start_injection_btn = Mock()
