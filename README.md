@@ -61,16 +61,24 @@ import/export and project autosave remain available through the direct adapter.
 Manual piston steps are free-piston requests, **not controlled-rate injections**.
 Reported piston volume is an estimate for the tested Nano 5 µL syringe, not delivery.
 
-Axis limits: 1 mm per command, ±1 mm per axis from connection, and 1 mm combined
-distance per absolute multi-axis request. Complete approach paths are preflighted.
-Piston limits: 10/20/50/100 nL, ±100 nL from connection, estimated 0–5000 nL capacity.
-These limits do not prove clearance. Reconnecting to expand travel is not a workaround.
+**Options → Direct control — speed and travel limits** provides independent minimum
+and maximum ranges for AP, ML and DV in mechanical Axis mm (defaults **0–40 mm**)
+and piston in nL (default **0–5000 nL**). These are Axis coordinates even in Bregma
+mode. Click **Apply and save speed / limits** while idle; settings persist in the
+mode-specific `direct-control.json` and also apply to an already connected controller.
+Axis speed selects the captured **1 or 2 mm/s** profile, separate from keyboard step
+size and pulsed average rates. The previous ±1 mm/±100 nL connection envelopes and
+1 mm combined-distance cap are removed. Complete approach paths and workflow doses
+are preflighted. Limits are not collision protection; verify the full path independently.
+Piston free steps remain 10/20/50/100 nL; configured limits cannot exceed 0–5000 nL
+for the Nano 5 µL syringe. Signed motor-count overflow remains rejected.
 Pulsed drilling includes frozen sections, pause/retract/Continue and round progression.
 Pulsed injection includes Start/Resume, insertion and main doses, overshoot,
 post-injection hold, Pause/Resume, surface return and blockage tests.
 Continuous firmware rate control, empty/fill and native benchmarks remain unsupported.
-Use small bench plans fitting existing envelopes: larger default/site-grid
-protocols may be rejected in full before movement. No limits were widened.
+Begin with small supervised bench plans. Larger site grids are allowed only if
+their entire path and dose fit the configured travel ranges and available volume.
+The dedicated network probe retains its independent experiment radius/command limits.
 
 Connecting conservatively clears tool references, captured surfaces and quick
 targets for reverification. Home/Work persist with identical Axis calibration,
@@ -78,7 +86,7 @@ but are cleared when it changes or is unknown; verify clearance before using the
 Live and simulation settings/state are separated
 under `Documents\Neurostar_Master\Configs\DirectUSB`, outside the repository.
 Each mode has a dedicated `direct-control.json` for measured calibration, captured
-speed profile, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
+speed profile, travel ranges, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
 The `allow_pulsed` preference is saved there too; it is off by default.
 These are separate from general `settings.json` and the API motion journal
 `api-state.json`. Setup preferences save immediately; existing Home/Work metadata

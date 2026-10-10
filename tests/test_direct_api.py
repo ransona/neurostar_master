@@ -13,6 +13,7 @@ from stereodrive_api import StereoDrive, Calibration
 
 STATES=dict(AP=0,ML=261,DV=0,PISTON=0)
 CAL=Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,STATES)
+LIMITS=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(0,5000))
 
 
 class DirectTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class DirectTests(unittest.TestCase):
         self.path=Path(self.tmp.name)/"state.json"
 
     def drive(self,**kwargs):
+        kwargs.setdefault('travel_limits',LIMITS)
         d=StereoDrive(state_path=self.path,calibration=CAL,**kwargs)
         d.connect(verified_backlash=STATES);self.addCleanup(d.close)
         return d
@@ -41,15 +43,15 @@ class DirectTests(unittest.TestCase):
         p=d.position()['axes_mm']
         for a,t in dict(AP=.1,ML=.2,DV=-.1).items():self.assertAlmostEqual(p[a],t,delta=1/5225)
         packets=len(d._session.transport.packets)
-        with self.assertRaises(ValueError):d.move_axes_to(dict(AP=.2,ML=1.1))
+        with self.assertRaises(ValueError):d.move_axes_to(dict(AP=.2,ML=40.1))
         self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets[packets:]))
         packets=len(d._session.transport.packets)
-        with self.assertRaises(ValueError):d.validate_axis_path([dict(DV=-.2),dict(AP=1.2)])
+        with self.assertRaises(ValueError):d.validate_axis_path([dict(DV=-.2),dict(AP=40.1)])
         self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets[packets:]))
 
     def test_absolute_dv_opt_in_nonfinite_and_combined_distance(self):
         d=self.drive()
-        for target in (dict(DV=.01),dict(AP=float('nan')),dict(AP=True),dict(AP=.8,ML=.8),dict(PISTON=10)):
+        for target in (dict(DV=.01),dict(AP=float('nan')),dict(AP=True),dict(AP=40.1,ML=.8),dict(PISTON=10)):
             with self.assertRaises(ValueError):d.move_axes_to(target)
         self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets))
 
@@ -59,7 +61,7 @@ class DirectTests(unittest.TestCase):
         self.assertAlmostEqual(d.position()['axes_mm']['AP'],.005,delta=1/5225)
 
     def test_rounded_held_axis_at_envelope_edge_is_not_a_new_target(self):
-        d=self.drive()
+        d=self.drive(travel_limits=dict(LIMITS,AP=(0,1.0001)))
         d.move_axis_to('AP',.0001);d.close();d.connect() # Simulator-only restoration test.
         d.move_axis_to('AP',1.0001)
         p=d.position()['axes_mm']
@@ -70,7 +72,7 @@ class DirectTests(unittest.TestCase):
     def test_adapter_menu_keyboard_injector_and_stop_routes_api(self):
         c=StereoDriveController();self.addCleanup(c.close)
         with self.assertRaises(StereoDriveError):c.prepare_motion()
-        c.connect(CAL,STATES,self.path,allow_dv=True,allow_piston=True)
+        c.connect(CAL,STATES,self.path,allow_dv=True,allow_piston=True,travel_limits=LIMITS)
         c.prepare_motion();c.goto_axis_position(.02,.01,-.01)
         c.wait_for_axis_position(.02,.01,-.01)
         c.prepare_motion();c.set_nudge_step('AP',.01);c.nudge_axis('AP',True)
@@ -132,7 +134,7 @@ class DirectTests(unittest.TestCase):
     def test_verified_history_must_match_restore_and_rejects_boolean(self):
         d=self.drive()
         d.move_mm('AP',-.01);d.close()
-        other=StereoDrive(state_path=self.path,calibration=CAL)
+        other=StereoDrive(state_path=self.path,calibration=CAL,travel_limits=LIMITS)
         self.addCleanup(other.close)
         with self.assertRaisesRegex(ValueError,'differs'):
             other.connect(verified_backlash=STATES)
@@ -149,6 +151,34 @@ class DirectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'travel range'):
             d.piston_step('up',10)
         self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets))
+
+    def test_default_ranges_larger_moves_and_custom_limits(self):
+        d=self.drive(travel_limits=None,allow_piston=True)
+        self.assertEqual(d.travel_limits['AP'],(0,40))
+        d.move_axes_to(dict(AP=2,ML=3))
+        d.move_mm('AP',2)
+        for direction in ('up','up','down','down'): d.piston_step(direction,100)
+        d.validate_piston_steps([-10]*200) # No connection-relative volume cap.
+        before=len(d._session.transport.packets)
+        for action in (lambda:d.move_axis_to('AP',-.01),lambda:d.move_axis_to('ML',40.01)):
+            with self.assertRaises(ValueError):action()
+        self.assertFalse(any(p[1]==0x0c for p in d._session.transport.packets[before:]))
+        d.configure_motion(speed_mm_s=1,travel_limits=dict(d.travel_limits,AP=(3,5),PISTON=(2995,3005)))
+        self.assertEqual(d._session.speed_mm_s,1)
+        with self.assertRaises(ValueError):d.move_mm('AP',2)
+        with self.assertRaises(ValueError):d.piston_step('up',10)
+        with self.assertRaises(ValueError):d.validate_piston_steps([-10])
+        d.move_axis_to('AP',5)
+
+    def test_invalid_limits_rejected_and_busy_settings_unchanged(self):
+        from stereodrive_api.limits import DEFAULT_LIMITS
+        for pair in ((2,1),(0,float('nan')),(False,40)):
+            with self.assertRaises(ValueError):StereoDrive(travel_limits=dict(DEFAULT_LIMITS,AP=pair))
+        with self.assertRaises(ValueError):StereoDrive(travel_limits=dict(DEFAULT_LIMITS,PISTON=(0,5001)))
+        d=self.drive()
+        with d._lock:
+            with self.assertRaises(RuntimeError):d.configure_motion(speed_mm_s=1,travel_limits=DEFAULT_LIMITS)
+        self.assertEqual(d.speed_mm_s,2)
 
 
 if __name__=='__main__':unittest.main()

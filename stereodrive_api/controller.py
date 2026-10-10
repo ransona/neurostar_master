@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from .protocol import AXES, BACKLASH, SIGNS, STEPS, poll, stop, target, decode_status, validate_ack
+from .limits import validate_limits, check_target
 
 class StateStore:
     def __init__(self, path):
@@ -26,10 +27,11 @@ class StateStore:
         tmp.replace(self.path)
 
 class Session:
-    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False):
+    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False, travel_limits=None):
         self.transport, self.store, self.log = transport, store, log
         self.io_lock = threading.RLock()
         self.speed_mm_s = speed_mm_s
+        self.travel_limits = validate_limits(travel_limits)
         self.drill_enabled = drill_enabled
         self.cancel = threading.Event(); self.fault = None; self.busy = False
         self.scales = {a: float(scales[a]) for a in AXES}
@@ -106,7 +108,7 @@ class Session:
 
     def move(self, axis, direction, step, publish=lambda readings: None):
         if self.fault: raise RuntimeError('Faulted session; reconnect with verified state.')
-        if axis not in AXES or direction not in (-1, 1) or not math.isfinite(step) or not 0 < step <= (100 if axis == 'PISTON' else 1): raise ValueError('Invalid movement.')
+        if axis not in AXES or direction not in (-1, 1) or not math.isfinite(step) or step <= 0 or (axis == 'PISTON' and step not in (10,20,50,100)): raise ValueError('Invalid movement.')
         self.refresh()
         old = dict(self.raw); normal = self.command_normal[axis]
         next_normal = normal + SIGNS[axis] * direction * step * self.scales[axis]
@@ -114,8 +116,10 @@ class Session:
             estimate=(next_normal-self.reference[axis])/self.scales[axis]
             if not -1e-7 <= estimate <= 5000+1e-7:
                 raise ValueError('Calibrated Nano 5 µL piston target exceeds 0–5000 nL travel range.')
-        if abs(next_normal - self.connection_normal[axis]) / self.scales[axis] > (100.0000001 if axis == 'PISTON' else 1.0000001):
-            raise ValueError('Move exceeds the connection envelope (axes +/-1 mm; piston +/-100 nL).')
+        estimate = (next_normal-self.reference[axis])/(SIGNS[axis]*self.scales[axis])
+        # Relative-only simulation is a protocol test mode, not calibrated travel.
+        if axis != 'PISTON' or self.absolute_calibration:
+            check_target(self.travel_limits, axis, estimate)
         new_state = BACKLASH[axis] if SIGNS[axis]*direction > 0 else 0
         requested = round(next_normal + new_state)
         if not -(2**31) <= requested < 2**31:
@@ -129,7 +133,7 @@ class Session:
             with self.io_lock:
                 reply = self.transport.exchange(target(axis, requested, direction, self.speed_mm_s), 9)
             validate_ack(axis, reply, old[axis], requested)
-            deadline = time.monotonic() + 10; settled = None
+            deadline = time.monotonic() + (10 if axis == 'PISTON' else max(10, step/self.speed_mm_s*2+5)); settled = None
             while time.monotonic() < deadline:
                 if self.cancel.is_set(): raise InterruptedError('Stop requested.')
                 readings = self.snapshot()

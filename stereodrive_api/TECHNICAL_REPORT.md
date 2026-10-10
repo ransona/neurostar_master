@@ -253,9 +253,12 @@ steps use the captured motor profile and explicit unit limits.
 The new API uses exclusive serial ownership, a serial I/O lock for concurrent
 motion queries, strict reply shape/opcode/channel checks, no guessed resynchronizing,
 one target per move, and exact raw-target/idle settling for 200 ms. It rejects
-busy commands and bounds each axis action to 1 mm, piston action to 100 nL, with
-cumulative connection envelopes of +/-1 mm and +/-100 nL respectively. These are
-software limits, not a safe collision path. No automatic recovery or reversal.
+busy commands and uses configured calibrated travel ranges: defaults 0–40 mm
+per mechanical Axis and 0–5000 nL piston. The former connection-relative +/-1 mm
+and +/-100 nL bench envelopes are removed. Individual piston free steps remain
+10/20/50/100 nL. Planner Options saves travel ranges and captured 1/2 mm/s speed;
+changes apply only while idle. These are software limits, not a safe collision
+path. No automatic recovery or reversal.
 State is invalidated and atomically flushed before a target; interrupted or faulty
 sessions cannot silently restore position/backlash. Simulation and live state are
 separate. Stop requires working software/transport; physical Stop remains essential.

@@ -34,7 +34,7 @@ class StereoDriveController:
         self.last_rejection = None
 
     def connect(self, calibration, states, state_path, *, new_reference=False,
-                allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False):
+                allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False,travel_limits=None):
         if type(allow_pulsed) is not bool:raise StereoDriveError('Pulsed workflow opt-in must be an explicit boolean')
         if self.drive is not None:
             raise StereoDriveError("Disconnect first; calibration cannot change while connected.")
@@ -42,7 +42,7 @@ class StereoDriveController:
             raise StereoDriveError("Load measured zero calibration before connecting.")
         drive = StereoDrive(simulate=not self.live, calibration=calibration,
             state_path=state_path, allow_dv=allow_dv, allow_piston=allow_piston,
-            allow_drill=allow_drill, speed_mm_s=speed)
+            allow_drill=allow_drill, speed_mm_s=speed, travel_limits=travel_limits)
         try:
             drive.connect(verified_backlash=states, new_reference=new_reference)
             position = drive.position()["axes_mm"]
@@ -132,9 +132,14 @@ class StereoDriveController:
         return self.busy
 
     def set_nudge_step(self, axis, step_mm):
-        if axis not in self.steps or not math.isfinite(step_mm) or not 0 < step_mm <= 1:
-            raise StereoDriveError("Direct API supports steps >0 and <=1 mm.")
+        if axis not in self.steps or not math.isfinite(step_mm) or not 0 < step_mm:
+            raise StereoDriveError("Direct API steps must be finite and positive.")
         self.steps[axis]=step_mm
+
+    def configure_motion(self, speed, limits):
+        with self.lock:
+            if self.busy: raise StereoDriveError('Controller busy; settings unchanged')
+            self._require().configure_motion(speed_mm_s=speed, travel_limits=limits)
 
     def nudge_axis(self, axis, positive, **kwargs):
         axis=axis.upper()

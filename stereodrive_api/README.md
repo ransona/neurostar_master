@@ -106,21 +106,22 @@ validation before changing the transport identity.
 |---|---|
 | `connect(verified_backlash=None, new_reference=False)` | Restore matching saved state, or establish verified calibrated reference; supplied current history must match saved state |
 | `position()` | Fresh idle verification; returns `axes_mm`, `piston_nl_estimate`, `raw_counts`, `backlash_counts`, `simulated` |
-| `move_mm("AP"/"ML"/"DV", signed_delta)` | Blocking single-axis relative move, max 1 mm, axes default captured 2 mm/s profile |
+| `move_mm("AP"/"ML"/"DV", signed_delta)` | Blocking single-axis relative move within configured Axis ranges; default captured 2 mm/s profile |
 | `move_axis_to(axis, position_mm)` | Blocking calibrated absolute Axis target |
-| `move_axes_to(targets)` | Preflight AP/ML/DV mapping, then sequential moves; omitted axes hold; combined distance <=1 mm |
+| `move_axes_to(targets)` | Preflight AP/ML/DV mapping, then sequential moves; omitted axes hold |
 | `validate_axis_path(waypoints)` | Validate complete absolute path/envelope before sending any target |
-| `validate_piston_steps(signed_steps)` | Preflight signed 10/20/50/100 nL doses, connection/capacity/raw limits; no target writes |
+| `validate_piston_steps(signed_steps)` | Preflight signed 10/20/50/100 nL doses, configured travel/capacity/raw limits; no target writes |
+| `configure_motion(speed_mm_s=1, travel_limits=...)` | Change future targets while verified idle; no movement sent |
 | `live_position()` | Motor-derived moving telemetry with `verified_idle`, not encoder feedback |
 | `piston_step("up"/"down", volume_nl)` | Blocking free-piston step; supported 10,20,50,100 nL; captured fixed profile |
 | `stop()` | Request cancellation from another thread, then send Stop to all four channels |
 | `close()` / context-manager exit | Stop, preserve valid idle state or retain invalid state, release port |
 
-All movements must remain within **±1 mm per axis and ±100 nL estimated piston
-position from the connection position**, including cumulative moves. Calibrated piston
-targets must also stay within the tested Nano 5 µL estimated 0–5000 nL capacity. The envelope
-is a software limit, not collision protection. A reconnect establishes a new
-connection envelope; do not reconnect to expand travel without reviewing clearance.
+Constructor `travel_limits` accepts a mapping with `AP`, `ML`, `DV` and `PISTON`
+minimum/maximum pairs. Default axes are **0–40 mm** in calibrated mechanical Axis
+coordinates; default piston is **0–5000 nL**. Configured piston ranges must remain
+within the Nano 5 µL capacity. Limits are not collision protection and are not
+relative to connection or GUI Bregma. The main planner saves these in Options.
 Absolute multi-axis moves are sequential: requested DV retraction first, then AP/ML;
 otherwise AP/ML/DV. Stop cancels remaining legs. There is no collision planning or
 combined out-and-back command. A new move is rejected
@@ -198,7 +199,7 @@ Axis reference is `zero_count - anchor_backlash`; piston reference is
 piston native up is positive. Calibration changes coordinate interpretation only;
 it sends no zeroing or movement command. Reuse the same calibration when restoring
 state. Changed anchors are rejected unless an independently verified new reference
-is explicitly established. Travel envelopes stay relative to connection position.
+is explicitly established. Travel ranges use the calibrated mechanical coordinates.
 
 ## Moving and drill state
 

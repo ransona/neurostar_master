@@ -90,11 +90,13 @@ Pulsed workflow clearance uses **Options → Validation / pulsed clearance (mm)*
 clearance for the entire tool path; do not lower it just to fit software bounds.
 Changing it affects future workflows, not a running plan's frozen configuration.
 
-Existing limits are unchanged: ±1 mm per Axis from connection, ≤1 mm combined
-distance per individual command; piston ±100 nL from connection and estimated
-0–5000 nL capacity. Preflight starts from actual verified counts, so previous manual
-piston movement changes available budget. Larger default clinical plans/grids can
-be refused. Do not reconnect/reset/edit state to enlarge an envelope or evade faults.
+Options provides AP/ML/DV minimum and maximum mechanical Axis coordinates in mm
+(default 0–40 each), piston minimum and maximum nL (default 0–5000), and captured
+Axis speed 1/2 mm/s. Apply and save while idle; these settings persist separately
+for live and simulation. Old connection-relative ±1 mm/±100 nL limits are removed.
+Whole paths and doses are checked against the configured ranges, signed count
+capacity and the Nano 5 µL capacity. Preflight starts from verified counts, so previous
+manual piston movement changes available budget. Do not edit state to evade faults.
 
 Unexpected position/history, serial faults, timeout, external movement or uncertain
 acknowledgement stop the workflow. There is no automatic recovery movement. Establish

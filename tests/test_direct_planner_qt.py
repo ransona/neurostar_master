@@ -41,7 +41,7 @@ class PlannerTests(unittest.TestCase):
 
     def connect(self,**kwargs):
         c=self.window.controller
-        options=dict(allow_dv=True,allow_piston=True);options.update(kwargs)
+        options=dict(allow_dv=True,allow_piston=True,travel_limits=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(0,5000)));options.update(kwargs)
         c.connect(Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,dict(AP=0,ML=261,DV=0,PISTON=0)),
                   dict(AP=0,ML=261,DV=0,PISTON=0),self.root/'api.json',**options)
         self.window.refresh_live_position()
@@ -58,6 +58,30 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(self.window.controller.drive)
         self.dialogs.critical.assert_called()
 
+    def test_motion_options_defaults_apply_persist_and_busy_guard(self):
+        for axis, edits in self.window.direct_limit_edits.items():
+            self.assertEqual([e.value() for e in edits],[0,5000 if axis=='PISTON' else 40])
+        self.window.direct_limit_edits['AP'][1].setValue(25)
+        self.window.direct_speed_combo.setCurrentText('2')
+        self.window._apply_direct_motion_options()
+        self.assertEqual(json.loads((self.root/'direct-control.json').read_text())['travel_limits']['AP'],[0,25])
+        self.window.close();self.app.processEvents()
+        self.window=planner.CraniotomyWindow(StereoDriveController())
+        self.assertEqual(self.window.direct_limit_edits['AP'][1].value(),25)
+        self.assertEqual(self.window.direct_speed_combo.currentText(),'2')
+        self.connect()
+        self.window._apply_direct_motion_options()
+        self.assertEqual(self.window.controller.drive.travel_limits['AP'],(0,25))
+        self.assertEqual(self.window.controller.drive.speed_mm_s,2)
+        self.window.direct_speed_combo.setCurrentText('1')
+        with patch.object(self.window,'_motion_is_active',return_value=True):
+            self.window._apply_direct_motion_options()
+        self.assertEqual(self.window.controller.drive.speed_mm_s,2)
+        self.window.direct_limit_edits['AP'][0].setValue(30)
+        self.window._apply_direct_motion_options()
+        self.dialogs.warning.assert_called()
+        self.assertEqual(self.window.controller.drive.travel_limits['AP'],(0,25))
+
     def test_keyboard_absolute_progress_and_internal_bregma(self):
         self.connect()
         self.window.set_local_bregma()
@@ -72,7 +96,7 @@ class PlannerTests(unittest.TestCase):
         drive=self.window.controller.drive
         before=len(drive._session.transport.packets)
         with self.assertRaises(ValueError):
-            self.window._move_through_axis_positions_with_progress([(0,0,-.1),(1.1,0,-.1)],title='test',message='test')
+            self.window._move_through_axis_positions_with_progress([(0,0,-.1),(40.1,0,-.1)],title='test',message='test')
         self.assertFalse(any(p[1]==0x0c for p in drive._session.transport.packets[before:]))
 
     def test_protocols_blocked_before_any_hardware_target(self):
@@ -164,9 +188,11 @@ class PlannerTests(unittest.TestCase):
         self.connect(allow_pulsed=True);self.window.injection_clearance_axis_dv=-.02
         self.window.pulsed_clearance_mm=.02
         with self.assertRaises(ValueError):
-            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0),planner.InjectionSite(2,0,0)],self.pulse_settings(),False,10)
+            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0),planner.InjectionSite(40.1,0,0)],self.pulse_settings(),False,10)
         with self.assertRaises(Exception):
-            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0)]*6,self.pulse_settings(),False,10)
+            self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0)]*251,self.pulse_settings(),False,10)
+
+        self.window._preflight_pulsed_injections([planner.InjectionSite(0,0,0)]*6,self.pulse_settings(),False,10)
         self.assertFalse(any(p[1]==0x0c for p in self.window.controller.drive._session.transport.packets))
 
     def test_resume_selected_routes_remaining_sites_to_pulsed_sequence(self):

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
     QProgressBar,
     QPushButton,
     QKeySequenceEdit,
@@ -1559,10 +1561,41 @@ class CraniotomyWindow(QMainWindow):
         self.options_dialog = QDialog(self)
         self.options_dialog.setWindowTitle("Options")
         self.options_dialog.resize(760, 860)
-        options_layout = QVBoxLayout(self.options_dialog)
-        direct_label=QLabel("Direct USB: zero calibration required; native StereoDrive must be closed. Optional supervised bench workflows use timed pulses, not continuous speed/flow. Existing travel and volume limits remain enforced.")
+        outer_options_layout = QVBoxLayout(self.options_dialog)
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_content = QWidget()
+        options_scroll.setWidget(options_content)
+        outer_options_layout.addWidget(options_scroll)
+        options_layout = QVBoxLayout(options_content)
+        direct_label=QLabel("Direct USB: zero calibration required; native StereoDrive must be closed. Optional supervised bench workflows use timed pulses, not continuous speed/flow. Travel limits use mechanical Axis coordinates, not GUI Bregma.")
         direct_label.setWordWrap(True)
         options_layout.addWidget(direct_label)
+        motion_box = QGroupBox("Direct control — speed and travel limits")
+        motion_grid = QGridLayout(motion_box)
+        self.direct_speed_combo = QComboBox()
+        self.direct_speed_combo.addItems(["1", "2"])
+        motion_grid.addWidget(QLabel("Axis speed (mm/s; not keyboard step size)"), 0, 0, 1, 2)
+        motion_grid.addWidget(self.direct_speed_combo, 0, 2)
+        motion_grid.addWidget(QLabel("Minimum"), 1, 1)
+        motion_grid.addWidget(QLabel("Maximum"), 1, 2)
+        self.direct_limit_edits = {}
+        for row, axis in enumerate(("AP", "ML", "DV", "PISTON"), 2):
+            unit = "nL" if axis == "PISTON" else "mm"
+            pair = []
+            for column in (1, 2):
+                edit = QDoubleSpinBox()
+                edit.setDecimals(3)
+                edit.setRange(0 if axis == "PISTON" else -100000, 5000 if axis == "PISTON" else 100000)
+                motion_grid.addWidget(edit, row, column)
+                pair.append(edit)
+            self.direct_limit_edits[axis] = pair
+            motion_grid.addWidget(QLabel(f"{axis} ({unit})"), row, 0)
+        apply_motion = QPushButton("Apply and save speed / limits")
+        apply_motion.clicked.connect(self._apply_direct_motion_options)
+        motion_grid.addWidget(apply_motion, 6, 0, 1, 3)
+        options_layout.addWidget(motion_box)
+        self._sync_direct_motion_options()
         positions_box = QGroupBox("Home / Work — mechanical Axis coordinates")
         positions_layout = QGridLayout(positions_box)
         self.home_axis_label = QLabel()
@@ -1726,6 +1759,7 @@ class CraniotomyWindow(QMainWindow):
                                  anchor_backlash=value.anchor_backlash) if value else None,
                 speed_mm_s=int(speed.currentText()),allow_dv=allow_dv.isChecked(),
                 allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),allow_pulsed=allow_pulsed.isChecked()))
+            self._sync_direct_motion_options()
             try:self._save_direct_control_settings()
             except OSError as exc:QMessageBox.warning(dialog,"Save direct settings",str(exc))
         speed.currentTextChanged.connect(persist_setup)
@@ -1743,7 +1777,8 @@ class CraniotomyWindow(QMainWindow):
                     "Only proceed after independent physical reference and direction verification. This must not bypass an unresolved fault.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
             states={a:c.currentData() for a,c in choices.items()}
             cfg=dict(new_reference=new_reference.isChecked(),allow_dv=allow_dv.isChecked(),
-                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()),allow_pulsed=allow_pulsed.isChecked())
+                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()),allow_pulsed=allow_pulsed.isChecked(),
+                     travel_limits=self.direct_control_settings.get("travel_limits"))
             value=calibration["value"]
             finished.clear();result.clear();timer.start(100)
             connecting[0]=True;connect.setEnabled(False);disconnect.setEnabled(False)
@@ -1803,6 +1838,27 @@ class CraniotomyWindow(QMainWindow):
             or self.validation_modal_active
             or self.controller.has_active_motion()
         )
+
+    def _sync_direct_motion_options(self):
+        from stereodrive_api.limits import validate_limits
+        limits = validate_limits(self.direct_control_settings.get("travel_limits"))
+        self.direct_speed_combo.setCurrentText(str(self.direct_control_settings.get("speed_mm_s", 1)))
+        for axis, pair in self.direct_limit_edits.items():
+            for edit, value in zip(pair, limits[axis]): edit.setValue(value)
+
+    def _apply_direct_motion_options(self):
+        if not self._require_idle("Direct control settings"): return
+        from stereodrive_api.limits import validate_limits
+        try:
+            limits = validate_limits({axis: [edit.value() for edit in pair] for axis, pair in self.direct_limit_edits.items()})
+            speed = int(self.direct_speed_combo.currentText())
+            if self.controller.drive is not None: self.controller.configure_motion(speed, limits)
+            self._direct_control_settings_loaded = True
+            self.direct_control_settings.update(speed_mm_s=speed, travel_limits=limits)
+            self._save_direct_control_settings()
+            self.set_status("Direct speed and mechanical Axis / piston limits applied and saved.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Direct control settings", str(exc))
 
     def _require_idle(self, title: str = "Movement") -> bool:
         if self._motion_is_active():
@@ -2037,9 +2093,12 @@ class CraniotomyWindow(QMainWindow):
         path.parent.mkdir(parents=True,exist_ok=True)
         payload=dict(self.direct_control_settings,version=1,live=self.controller.live,
                      axis_zero_reference=self.axis_zero_reference,home_axis=self.home_axis,work_axis=self.work_axis)
+        from stereodrive_api.limits import validate_limits
+        payload["travel_limits"] = validate_limits(payload.get("travel_limits"))
+        payload.setdefault("speed_mm_s", 1)
         # Never store verification, current direction history, or auto-connect intent.
         payload={k:v for k,v in payload.items() if k in ("version","live","calibration","speed_mm_s",
-                 "allow_dv","allow_piston","allow_drill","allow_pulsed","axis_zero_reference","home_axis","work_axis")}
+                 "allow_dv","allow_piston","allow_drill","allow_pulsed","travel_limits","axis_zero_reference","home_axis","work_axis")}
         temporary=path.with_suffix(".tmp")
         with temporary.open("w",encoding="utf-8") as handle:
             handle.write(json.dumps(payload,indent=2,allow_nan=False))
@@ -2065,6 +2124,8 @@ class CraniotomyWindow(QMainWindow):
             if payload.get("calibration"):
                 Calibration(**payload["calibration"]).reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
             speed=payload.get("speed_mm_s",1)
+            from stereodrive_api.limits import validate_limits
+            validate_limits(payload.get("travel_limits"))
             if isinstance(speed,bool) or speed not in (1,2):raise ValueError("Invalid captured speed profile")
             if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill","allow_pulsed")):
                 raise ValueError("Invalid direct-control preferences")
@@ -2072,7 +2133,7 @@ class CraniotomyWindow(QMainWindow):
             if reference is not None and (not isinstance(reference,dict) or set(reference)!={"AP","ML","DV"}
                     or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in reference.values())):
                 raise ValueError("Invalid saved Axis-zero fingerprint")
-            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill","allow_pulsed") if k in payload}
+            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill","allow_pulsed","travel_limits") if k in payload}
             self.axis_zero_reference=reference
             self.home_axis=self._session_axis(payload.get("home_axis"))
             self.work_axis=self._session_axis(payload.get("work_axis"))
@@ -2082,6 +2143,7 @@ class CraniotomyWindow(QMainWindow):
             self.axis_zero_reference=self.home_axis=self.work_axis=None
             self.set_status(f"Direct-control settings ignored: {exc}. Reverify setup before connecting.")
         self._update_persistent_axis_location_labels()
+        self._sync_direct_motion_options()
 
     def _project_session_path(self) -> Path:
         return self._config_root_dir() / "project_session.json"
@@ -4403,7 +4465,7 @@ class CraniotomyWindow(QMainWindow):
         clearance=getattr(self,"pulsed_clearance_mm",self.validation_clearance_mm)
         count=len(sites)*(settings.main_volume_nl+pulsed_protocol.insertion_volume(settings)
                           +(2*test_volume_nl if check_blocked else 0))//10
-        if count>20:raise StereoDriveError("Entire workflow, including insertion and two tests/site, cannot fit the API's +/-100 nL connection window. Choose a smaller bench-test plan; do not reconnect to bypass limits.")
+        if count>500:raise StereoDriveError("Entire workflow exceeds the Nano 5 µL syringe capacity, including insertion and two tests/site.")
         self.controller.validate_piston_steps([-10]*int(count))
         current=self.controller.get_current_axis_position();plans=[]
         for site in sites:

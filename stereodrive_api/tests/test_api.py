@@ -61,10 +61,10 @@ class APITests(unittest.TestCase):
         d=self.drive()
         with self.assertRaises(ValueError): d.move_mm('DV',.01)
         with self.assertRaises(ValueError): d.piston_step('up',10)
-        for v in (float('nan'),float('inf'),0,1.01):
+        for v in (float('nan'),float('inf'),0,40.01):
             with self.assertRaises(ValueError): d.move_mm('AP',v)
         d.move_mm('AP',.8)
-        with self.assertRaises(ValueError): d.move_mm('AP',.3)
+        with self.assertRaises(ValueError): d.move_mm('AP',40)
         self.assertAlmostEqual(d.position()['axes_mm']['AP'],.8,delta=1/5225)
 
     def test_persistence_restores_nonzero_reference_position(self):

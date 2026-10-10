@@ -9,6 +9,7 @@ from .controller import Session, StateStore
 from .protocol import AXES, BACKLASH, SIGNS, drill_power, drill_query, decode_drill
 from .calibration import Calibration
 from .transport import Simulator, WindowsSerial
+from .limits import validate_limits, check_target
 
 class StereoDrive:
     """Use connect(), move_mm(), piston_step(), position(), stop(), close().
@@ -18,7 +19,7 @@ class StereoDrive:
     """
     def __init__(self, *, simulate=True, state_path=None, allow_dv=False,
                  allow_piston=False, allow_drill=False, speed_mm_s=2, calibration=None,
-                 counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True):
+                 counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True, travel_limits=None):
         if not require_calibration and not simulate:
             raise ValueError('Live movement always requires measured zero calibration.')
         self.require_calibration = bool(require_calibration)
@@ -27,6 +28,7 @@ class StereoDrive:
             raise TypeError('calibration must be a Calibration object')
         self.calibration = calibration
         self.speed_mm_s = int(speed_mm_s)
+        self.travel_limits = validate_limits(travel_limits)
         self.allow_drill = bool(allow_drill)
         self.simulate = bool(simulate)
         self.allow_dv, self.allow_piston = bool(allow_dv), bool(allow_piston)
@@ -70,7 +72,7 @@ class StereoDrive:
                 self._session = Session(transport, StateStore(self.path), self.scales,
                                         verified_backlash or {}, self._log, new_reference,
                                         self.calibration.reference(self.scales) if self.calibration else None,
-                                        self.speed_mm_s, True)
+                                        self.speed_mm_s, True, self.travel_limits)
             except Exception:
                 transport.close()
                 raise
@@ -79,6 +81,24 @@ class StereoDrive:
     def _require(self):
         if self._session is None: raise RuntimeError('Not connected')
         return self._session
+
+    def configure_motion(self, *, speed_mm_s, travel_limits):
+        """Change future command profiles/ranges only while verified idle."""
+        if isinstance(speed_mm_s, bool) or speed_mm_s not in (1, 2):
+            raise ValueError('Axis speed must be 1 or 2 mm/s')
+        limits = validate_limits(travel_limits)
+        if not self._lock.acquire(blocking=False): raise RuntimeError('Controller busy')
+        try:
+            s = self._require()
+            if s.fault: raise RuntimeError('Session fault: ' + s.fault)
+            try: s.refresh()
+            except Exception as exc:
+                try: s.invalidate(exc)
+                finally: s.emergency_stop()
+                raise
+            self.speed_mm_s = s.speed_mm_s = int(speed_mm_s)
+            self.travel_limits = s.travel_limits = limits
+        finally: self._lock.release()
 
     def _require_zero_calibration(self, session):
         if self.require_calibration and not session.absolute_calibration:
@@ -124,7 +144,7 @@ class StereoDrive:
         finally: self._lock.release()
 
     def move_mm(self, axis, delta_mm):
-        """One axis; <=1 mm/action and within +/-1 mm of connection position.
+        """One axis, constrained by configured mechanical Axis travel ranges.
 
         Uses captured 2 mm/s profile by default (optional 1 mm/s). No automatic speed zones or collision path.
         """
@@ -134,7 +154,7 @@ class StereoDrive:
         return self._move(axis, delta_mm)
 
     def piston_step(self, direction, volume_nl):
-        """Native up/down labels; <=100 nL and within +/-100 nL of connection.
+        """Native up/down labels; captured steps within configured piston range.
 
         Supported volumes: 10,20,50,100. Reversal may aspirate fluid/air.
         This uses the captured free-piston profile, not controlled injection rate.
@@ -163,15 +183,12 @@ class StereoDrive:
             delta = planned[axis] - start[axis]
             if axis == 'DV' and abs(delta) > .5/session.scales[axis] and not self.allow_dv:
                 raise ValueError('DV disabled')
-            origin = (session.connection_normal[axis]-session.reference[axis])/(SIGNS[axis]*session.scales[axis])
-            if abs(delta) > 1.0000001 or abs(planned[axis]-origin) > 1.0000001:
-                raise ValueError('Absolute target exceeds 1 mm move/connection envelope')
+            if abs(delta) > .5/session.scales[axis]:
+                check_target(session.travel_limits, axis, planned[axis])
             normal=session.reference[axis]+SIGNS[axis]*session.scales[axis]*planned[axis]
             backlash=BACKLASH[axis] if SIGNS[axis]*delta>0 else 0
             if abs(delta)>.5/session.scales[axis] and not -(2**31)<=round(normal+backlash)<2**31:
                 raise ValueError('Absolute target exceeds signed 32-bit motor count range')
-        if math.dist(tuple(start.values()),tuple(planned.values())) > 1.0000001:
-            raise ValueError('Combined Axis movement exceeds 1 mm total distance')
         return planned
 
     def validate_axis_path(self, waypoints):
@@ -201,10 +218,9 @@ class StereoDrive:
                 if isinstance(step,bool) or step not in (-100,-50,-20,-10,10,20,50,100):
                     raise ValueError('Use signed 10/20/50/100 nL free steps')
                 normal+=step*s.scales['PISTON']
-                if abs(normal-s.connection_normal['PISTON'])/s.scales['PISTON']>100.0000001:
-                    raise ValueError('Pulsed workflow exceeds piston +/-100 nL connection envelope')
                 estimate=(normal-s.reference['PISTON'])/s.scales['PISTON']
                 if not -1e-7<=estimate<=5000+1e-7:raise ValueError('Piston capacity exceeded')
+                check_target(s.travel_limits, 'PISTON', estimate)
                 raw=round(normal+(BACKLASH['PISTON'] if step>0 else 0))
                 if not -(2**31)<=raw<2**31:raise ValueError('Piston raw target overflow')
         except ValueError:raise

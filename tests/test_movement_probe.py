@@ -379,7 +379,7 @@ class ProbeTests(unittest.TestCase):
                 controller=probe.real_controller(setup,allow_dv=True,allow_piston=True,simulate=True)
             try:
                 controller.prepare_motion()
-                controller.goto_axis_position(.01,.01,-.01)
+                controller.goto_axis_position(.01,.01,.01)
                 position=controller.get_current_axis_position()
                 self.assertAlmostEqual(position[0],.01,delta=1/5225)
                 controller.probe_injector_action('up',10,lambda:False,5)

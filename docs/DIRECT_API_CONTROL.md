@@ -79,7 +79,8 @@ requested; otherwise AP/ML/DV), **not collision planning or simultaneous traject
   External changes/faults refuse motion; no automatic recovery or reversal.
 - Disconnected simulation startup; live requires flag plus verified setup. Separate
   settings/state, one planner per mode, exclusive live transport, StereoDrive refused.
-- Piston ±100 nL connection window plus estimated 0–5000 nL capacity; no unlimited
+- Options ranges default to 0–40 mm per mechanical Axis and 0–5000 nL piston;
+  connection-relative windows are removed. Estimated 0–5000 nL capacity remains; no unlimited
   fill/empty or rate-controlled injection hidden behind free-step requests.
 - Resume injection uses whole-plan preflight/bench confirmation; faults/disconnects clear stale
   crosses/readings. Branch updater cannot reset this branch to `origin/main`.
