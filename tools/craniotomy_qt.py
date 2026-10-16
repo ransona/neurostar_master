@@ -1,6 +1,7 @@
-import math
+from array import array
 import ctypes
 import json
+import math
 import subprocess
 import sys
 import threading
@@ -8,8 +9,26 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QProcess, QTimer, Signal, QLockFile
+from PySide6.QtCore import (
+    QByteArray,
+    QBuffer,
+    QEvent,
+    QIODevice,
+    QPoint,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QProcess,
+    QTimer,
+    Signal,
+    QLockFile,
+)
 from PySide6.QtGui import QColor, QCursor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
+try:
+    from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
+except ImportError:  # Keep the planner usable if QtMultimedia is omitted by a custom build.
+    QAudioFormat = QAudioSink = QMediaDevices = None
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractButton,
@@ -886,6 +905,11 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_index: int | None = None
         self.current_action = "No trajectory yet"
         self.move_speed_step_mm = DEFAULT_MOVE_SPEED_MM
+        self._move_speed_audio_sink = None
+        self._move_speed_audio_buffer = None
+        self._move_speed_audio_cleanup = QTimer(self)
+        self._move_speed_audio_cleanup.setSingleShot(True)
+        self._move_speed_audio_cleanup.timeout.connect(self._stop_move_speed_tone)
         self.movement_key_bindings = {
             "speed_decrease": int(Qt.Key.Key_Shift),
             "speed_increase": int(Qt.Key.Key_Ccedilla),
@@ -3258,15 +3282,84 @@ class CraniotomyWindow(QMainWindow):
     def _beep(self):
         QApplication.beep()
 
+    @staticmethod
+    def _move_speed_tone_pcm(speed_mm: float) -> tuple[bytes, float]:
+        """Build a half-second tone whose pitch tracks the selected movement step."""
+        sample_rate = 22050
+        duration_seconds = 0.5
+        fade_seconds = 0.1
+        minimum_hz, maximum_hz = 220.0, 880.0
+        speed_ratio = (speed_mm - MOVE_SPEED_OPTIONS_MM[0]) / (
+            MOVE_SPEED_OPTIONS_MM[-1] - MOVE_SPEED_OPTIONS_MM[0]
+        )
+        frequency_hz = minimum_hz + max(0.0, min(1.0, speed_ratio)) * (maximum_hz - minimum_hz)
+        sample_count = int(sample_rate * duration_seconds)
+        fade_samples = int(sample_rate * fade_seconds)
+        samples = array("h")
+        amplitude = 0.22 * 32767
+        for sample_index in range(sample_count):
+            fade_in = min(1.0, sample_index / fade_samples)
+            fade_out = min(1.0, (sample_count - 1 - sample_index) / fade_samples)
+            envelope = max(0.0, min(fade_in, fade_out))
+            value = amplitude * envelope * math.sin(2.0 * math.pi * frequency_hz * sample_index / sample_rate)
+            samples.append(int(value))
+        return samples.tobytes(), frequency_hz
+
+    def _play_move_speed_tone(self) -> None:
+        if QAudioSink is None or QMediaDevices is None:
+            # Keep speed feedback audible on custom builds lacking QtMultimedia.
+            QApplication.beep()
+            return
+        try:
+            device = QMediaDevices.defaultAudioOutput()
+            if device.isNull():
+                QApplication.beep()
+                return
+            self._stop_move_speed_tone()
+            pcm, _frequency_hz = self._move_speed_tone_pcm(self.move_speed_step_mm)
+            audio_format = QAudioFormat()
+            audio_format.setSampleRate(22050)
+            audio_format.setChannelCount(1)
+            audio_format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            buffer = QBuffer(self)
+            buffer.setData(QByteArray(pcm))
+            if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+                return
+            sink = QAudioSink(device, audio_format, self)
+            sink.setVolume(0.7)
+            self._move_speed_audio_buffer = buffer
+            self._move_speed_audio_sink = sink
+            sink.start(buffer)
+            self._move_speed_audio_cleanup.start(700)
+        except Exception:
+            # Audio is nonessential feedback and must never prevent movement.
+            self._stop_move_speed_tone()
+            QApplication.beep()
+
+    def _stop_move_speed_tone(self) -> None:
+        self._move_speed_audio_cleanup.stop()
+        sink, buffer = self._move_speed_audio_sink, self._move_speed_audio_buffer
+        self._move_speed_audio_sink = None
+        self._move_speed_audio_buffer = None
+        if sink is not None:
+            sink.stop()
+            sink.deleteLater()
+        if buffer is not None:
+            buffer.close()
+            buffer.deleteLater()
+
     def adjust_move_speed(self, direction: int) -> None:
         current_index = min(
             range(len(MOVE_SPEED_OPTIONS_MM)),
             key=lambda index: abs(MOVE_SPEED_OPTIONS_MM[index] - self.move_speed_step_mm),
         )
         next_index = max(0, min(len(MOVE_SPEED_OPTIONS_MM) - 1, current_index + direction))
+        if next_index == current_index:
+            return
         self.move_speed_step_mm = MOVE_SPEED_OPTIONS_MM[next_index]
         self.update_move_speed_label()
         self.set_status(f"Move speed set to {self.move_speed_step_mm:g} mm")
+        self._play_move_speed_tone()
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str, *, auto_repeat: bool = False) -> None:
         if getattr(self,"restart_required",False):return

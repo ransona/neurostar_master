@@ -197,6 +197,27 @@ class PlannerTests(unittest.TestCase):
         nudge.assert_not_called()
         stop.assert_not_called()
 
+    def test_move_speed_change_plays_tone_only_when_speed_changes(self):
+        initial=self.window.move_speed_step_mm
+        with patch.object(self.window,'_play_move_speed_tone') as play_tone:
+            self.window.adjust_move_speed(1)
+            self.assertGreater(self.window.move_speed_step_mm,initial)
+            play_tone.assert_called_once_with()
+            self.window.move_speed_step_mm=planner.MOVE_SPEED_OPTIONS_MM[-1]
+            self.window.adjust_move_speed(1)
+            play_tone.assert_called_once_with()
+
+    def test_move_speed_tone_pitch_and_envelope_track_speed(self):
+        slow_pcm,slow_hz=self.window._move_speed_tone_pcm(planner.MOVE_SPEED_OPTIONS_MM[0])
+        fast_pcm,fast_hz=self.window._move_speed_tone_pcm(planner.MOVE_SPEED_OPTIONS_MM[-1])
+        self.assertEqual(len(slow_pcm),int(22050*.5)*2)
+        self.assertEqual(len(fast_pcm),len(slow_pcm))
+        self.assertAlmostEqual(slow_hz,220)
+        self.assertAlmostEqual(fast_hz,880)
+        slow_samples=memoryview(slow_pcm).cast('h')
+        self.assertEqual(slow_samples[0],0)
+        self.assertEqual(slow_samples[-1],0)
+
     def test_injection_validation_dialog_wraps_and_orders_equal_buttons(self):
         observed={}
         def inspect_and_close():
