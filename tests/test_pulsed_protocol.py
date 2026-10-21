@@ -89,6 +89,29 @@ class PulseTests(unittest.TestCase):
         effective=pulse.apply_borehole_freeze_overrides(holes,[False,True,None])
         self.assertEqual([hole[3] for hole in effective],[False,True,False])
 
+    def test_single_hole_plan_drills_to_requested_depth_at_rate(self):
+        start=(1.0,2.0,3.0)
+        events=pulse.single_hole_drilling_plan(start,start,0,0.02,0.01)
+        self.assertTrue(events)
+        self.assertEqual(events[-1].target,(1.0,2.0,3.02))
+        self.assertAlmostEqual(events[-1].depth_mm,0.02)
+        self.assertAlmostEqual(events[-1].due_s,2.0)
+        self.assertTrue(all(event.target[0:2]==start[0:2] for event in events))
+        depths=[start[2]]+[event.target[2] for event in events]
+        self.assertTrue(all(0 < right-left <= 0.005000001 for left,right in zip(depths,depths[1:])))
+
+    def test_single_hole_resume_returns_to_saved_depth_before_continuing(self):
+        surface=(0.0,0.0,10.0)
+        current=(0.0,0.0,8.0)
+        events=pulse.single_hole_drilling_plan(current,surface,0.01,0.02,0.01)
+        self.assertAlmostEqual(events[0].target[2],8.005)
+        self.assertAlmostEqual(events[-1].target[2],10.02)
+        self.assertAlmostEqual(events[-1].depth_mm,0.02)
+
+    def test_single_hole_plan_rejects_shallower_resume_target(self):
+        with self.assertRaises(ValueError):
+            pulse.single_hole_drilling_plan((0,0,0),(0,0,0),0.02,0.01,0.01)
+
     def test_spaced_boreholes_infer_surface_from_perimeter_profile(self):
         perimeter=[(0,0,0),(2,0,2),(2,2,2),(0,2,0),(0,0,0)]
         holes=pulse.sample_boreholes(perimeter,1.0,[False]*len(perimeter))

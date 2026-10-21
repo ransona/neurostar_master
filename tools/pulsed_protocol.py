@@ -241,6 +241,41 @@ def borehole_drilling_plan(start, holes, current_depths, target_depths, clearanc
     return events
 
 
+def single_hole_drilling_plan(current_position, surface_position, current_depth_mm,
+                              target_depth_mm, depth_rate_mm_s, step_mm=.005):
+    """Plan serial DV pulses at one fixed AP/ML point, resuming from saved depth."""
+    current_position = tuple(finite(value, 'Axis coordinate', -math.inf) for value in current_position)
+    surface_position = tuple(finite(value, 'surface Axis coordinate', -math.inf) for value in surface_position)
+    if len(current_position) != 3 or len(surface_position) != 3:
+        raise ValueError('Single-hole start and current positions need three Axis coordinates.')
+    current_depth = finite(current_depth_mm, 'current hole depth')
+    target_depth = finite(target_depth_mm, 'target hole depth', 1e-6)
+    rate = finite(depth_rate_mm_s, 'drill rate', 1e-9)
+    step = finite(step_mm, 'drill step', 1/5225)
+    if target_depth < current_depth - 1e-9:
+        raise ValueError('Target hole depth cannot be shallower than the saved depth.')
+
+    saved_depth_position = (surface_position[0], surface_position[1], surface_position[2] + current_depth)
+    events = []
+    elapsed = 0.0
+    previous = current_position
+    if math.dist(previous, saved_depth_position) > 1e-9:
+        for target in line(previous, saved_depth_position, step):
+            elapsed += math.dist(previous, target) / rate
+            events.append(Pulse(elapsed, 'single_hole_reentry', target=target,
+                                depth_mm=current_depth))
+            previous = target
+
+    target_position = (surface_position[0], surface_position[1], surface_position[2] + target_depth)
+    if math.dist(previous, target_position) > 1e-9:
+        for target in line(previous, target_position, step):
+            elapsed += math.dist(previous, target) / rate
+            depth = max(0.0, target[2] - surface_position[2])
+            events.append(Pulse(elapsed, 'single_hole_drill', target=target, depth_mm=depth))
+            previous = target
+    return events
+
+
 def execute(controller,events,*,stop_requested=lambda:False,pause_requested=lambda:False,
             retract_on_pause=False,on_event=lambda e:None,on_delivered=lambda value:None,
             clock=time.monotonic,sleep=time.sleep):

@@ -916,6 +916,9 @@ class CraniotomyWindow(QMainWindow):
     usb_probe_finished_signal = Signal(str)
     validation_move_position_signal = Signal(object)
     keyboard_move_finished_signal = Signal(object)
+    single_hole_progress_signal = Signal(float)
+    single_hole_status_signal = Signal(str)
+    single_hole_finished_signal = Signal(str, float, str)
 
     def __init__(self, controller=None) -> None:
         super().__init__()
@@ -966,6 +969,13 @@ class CraniotomyWindow(QMainWindow):
         self.drill_pause_requested = threading.Event()
         self.drill_stop_requested = threading.Event()
         self.drill_thread: threading.Thread | None = None
+        self.single_hole_pause_requested = threading.Event()
+        self.single_hole_cancel_requested = threading.Event()
+        self.single_hole_thread: threading.Thread | None = None
+        self.single_hole_origin_axis: tuple[float, float, float] | None = None
+        self.single_hole_safe_retract_axis: tuple[float, float, float] | None = None
+        self.single_hole_current_depth_mm = 0.0
+        self.single_hole_paused = False
         self.drill_completed_points = 0
         self.drilling_progress_reset_requires_ack = False
         self.drill_round_started_at: float | None = None
@@ -1099,8 +1109,8 @@ class CraniotomyWindow(QMainWindow):
                 event.ignore()
                 return
             # Keep the process alive until cancelled workers have unwound.
-            workers = (self.drill_thread, self.injection_thread, self._manual_syringe_thread,
-                       self.benchmark_thread, self.usb_probe_thread,
+            workers = (self.drill_thread, self.single_hole_thread, self.injection_thread,
+                       self._manual_syringe_thread, self.benchmark_thread, self.usb_probe_thread,
                        getattr(self,"direct_operation_thread",None))
             for worker in workers:
                 if worker is not None:
@@ -1590,6 +1600,7 @@ class CraniotomyWindow(QMainWindow):
         left_layout.addWidget(right_panel, 1)
         self.update_current_target_depth_label()
         self.update_move_speed_label()
+        self._build_single_hole_tab()
         self._build_injection_tab()
         default_overlay = "skull_bregma_lambda_reference"
         default_index = self.overlay_combo.findText(default_overlay)
@@ -1597,6 +1608,62 @@ class CraniotomyWindow(QMainWindow):
             self.overlay_combo.setCurrentIndex(default_index)
         self.refresh_craniotomy_points_list()
         self._on_drilling_mode_changed()
+
+    def _build_single_hole_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        self.tabs.addTab(tab, "Drill Hole")
+
+        setup = QGroupBox("Single Hole")
+        grid = QGridLayout(setup)
+        grid.addWidget(QLabel(
+            "Place the drill tip at the hole start surface. Start records the current calibrated Axis position; depth advances in DV."
+        ), 0, 0, 1, 4)
+        self.single_hole_depth_mm = self._double_spinbox(value=1.0, minimum=0.01, maximum=5.0)
+        self.single_hole_rate_mm_per_s = self._double_spinbox(
+            value=float(self.drill_rate_mm_per_s.value()), minimum=0.001, maximum=5.0
+        )
+        self.single_hole_clearance_mm = self._double_spinbox(value=2.0, minimum=0.1, maximum=10.0)
+        grid.addWidget(QLabel("Depth to drill (mm)"), 1, 0)
+        grid.addWidget(self.single_hole_depth_mm, 1, 1)
+        grid.addWidget(QLabel("Drill rate (mm/s)"), 1, 2)
+        grid.addWidget(self.single_hole_rate_mm_per_s, 1, 3)
+        grid.addWidget(QLabel("Retract above start (mm)"), 2, 0)
+        grid.addWidget(self.single_hole_clearance_mm, 2, 1)
+        self.single_hole_origin_label = QLabel("Start position: not captured")
+        self.single_hole_origin_label.setProperty("role", "muted")
+        grid.addWidget(self.single_hole_origin_label, 3, 0, 1, 4)
+        layout.addWidget(setup)
+
+        progress_box = QGroupBox("Progress")
+        progress_layout = QVBoxLayout(progress_box)
+        self.single_hole_status_label = QLabel("Status: Ready. Position tip at the surface.")
+        self.single_hole_depth_label = QLabel("Depth: 0.00 mm of 1.00 mm")
+        self.single_hole_progress = QProgressBar()
+        self.single_hole_progress.setRange(0, 1000)
+        self.single_hole_progress.setValue(0)
+        progress_layout.addWidget(self.single_hole_status_label)
+        progress_layout.addWidget(self.single_hole_depth_label)
+        progress_layout.addWidget(self.single_hole_progress)
+        layout.addWidget(progress_box)
+        layout.addStretch(1)
+
+        actions = QHBoxLayout()
+        self.single_hole_start_btn = QPushButton("Start")
+        self.single_hole_start_btn.setProperty("variant", "primary")
+        self.single_hole_start_btn.clicked.connect(self.start_pause_single_hole)
+        self.single_hole_cancel_btn = QPushButton("Cancel")
+        self.single_hole_cancel_btn.clicked.connect(self.cancel_single_hole)
+        self.single_hole_cancel_btn.setEnabled(False)
+        actions.addWidget(self.single_hole_start_btn, 1)
+        actions.addWidget(self.single_hole_cancel_btn, 1)
+        layout.addLayout(actions)
+
+        self.single_hole_progress_signal.connect(self._update_single_hole_progress)
+        self.single_hole_status_signal.connect(self._set_single_hole_status)
+        self.single_hole_finished_signal.connect(self._on_single_hole_finished)
 
     def _build_injection_tab(self) -> None:
         injection_tab = QWidget()
@@ -2529,6 +2596,8 @@ class CraniotomyWindow(QMainWindow):
     def _motion_is_active(self) -> bool:
         return bool(
             (self.drill_thread is not None and self.drill_thread.is_alive())
+            or (self.single_hole_thread is not None and self.single_hole_thread.is_alive())
+            or self.single_hole_paused
             or (self.injection_thread is not None and self.injection_thread.is_alive())
             or self._manual_syringe_queue_active
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
@@ -3540,6 +3609,12 @@ class CraniotomyWindow(QMainWindow):
             if self.validation_move_cancel_callback is not None:
                 self.validation_move_cancel_callback()
             return True
+        if key == Qt.Key.Key_Escape and self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            self.cancel_single_hole(emergency=True)
+            return True
+        if key == Qt.Key.Key_Escape and self.single_hole_paused:
+            self.cancel_single_hole(emergency=True)
+            return True
         if (
             key == Qt.Key.Key_Escape
             and self.drill_thread is not None
@@ -3594,6 +3669,8 @@ class CraniotomyWindow(QMainWindow):
                     return True
         if modal is not None and not (self.validation_modal_active and modal.property("allow_motor_shortcuts")):
             return super().eventFilter(watched,event)
+        if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            return super().eventFilter(watched, event)
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
             focus_widget = QApplication.focusWidget()
             if focus_widget is not None:
@@ -8220,8 +8297,248 @@ class CraniotomyWindow(QMainWindow):
                 return extended_values[idx] + t * (extended_values[idx + 1] - extended_values[idx])
         return values[-1]
 
+    def start_pause_single_hole(self) -> None:
+        if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            self.single_hole_pause_requested.set()
+            self.single_hole_start_btn.setText("Pausing...")
+            self.single_hole_start_btn.setEnabled(False)
+            self.single_hole_status_signal.emit("Pausing after the current verified movement step.")
+            return
+
+        if not self.single_hole_paused and not self._require_idle("Single Hole Drilling"):
+            return
+        if not getattr(self.controller, "supports_drilling_protocol", False):
+            QMessageBox.warning(
+                self,
+                "Single Hole Drilling",
+                "Connect with verified calibration and enable pulsed drilling in USB setup first.",
+            )
+            return
+
+        try:
+            target_depth = float(self.single_hole_depth_mm.value())
+            depth_rate = float(self.single_hole_rate_mm_per_s.value())
+            clearance = float(self.single_hole_clearance_mm.value())
+            if target_depth <= 0 or depth_rate <= 0 or clearance <= 0:
+                raise StereoDriveError("Depth, drill rate, and retract clearance must be greater than zero.")
+
+            if self.single_hole_paused:
+                origin = self.single_hole_origin_axis
+                if origin is None or self.single_hole_safe_retract_axis is None:
+                    raise StereoDriveError("Saved hole position is missing; cancel and verify the tool position.")
+                current = tuple(self.controller.get_current_axis_position())
+                if any(abs(a - b) > 0.01 for a, b in zip(current, self.single_hole_safe_retract_axis)):
+                    raise StereoDriveError("Tool is no longer at the verified retract position. Verify position before resuming.")
+                start_depth = self.single_hole_current_depth_mm
+            else:
+                origin = tuple(self.controller.get_current_axis_position())
+                current = origin
+                start_depth = 0.0
+
+            if target_depth <= start_depth + 0.0005:
+                raise StereoDriveError("Target depth must be greater than the already drilled depth.")
+            safe_retract = (origin[0], origin[1], origin[2] - clearance)
+            plan = pulsed_protocol.single_hole_drilling_plan(
+                current, origin, start_depth, target_depth, depth_rate
+            )
+            target_position = (origin[0], origin[1], origin[2] + target_depth)
+            retract_path = pulsed_protocol.line(target_position, safe_retract, 0.005)
+            self.controller.validate_axis_path(
+                [event.target for event in plan if event.target is not None] + retract_path
+            )
+            if not self._ensure_drill_on_for_drilling():
+                return
+            self.controller.prepare_motion()
+        except Exception as exc:
+            QMessageBox.warning(self, "Single Hole Drilling", str(exc))
+            return
+
+        self.single_hole_origin_axis = tuple(origin)
+        self.single_hole_safe_retract_axis = tuple(safe_retract)
+        self.single_hole_pause_requested.clear()
+        self.single_hole_cancel_requested.clear()
+        self.single_hole_paused = False
+        self.single_hole_start_btn.setText("Pause")
+        self.single_hole_cancel_btn.setEnabled(True)
+        self._set_single_hole_controls_locked(True)
+        self.single_hole_origin_label.setText(
+            f"Start position (Axis): AP {origin[0]:.3f}, ML {origin[1]:.3f}, DV {origin[2]:.3f} mm"
+        )
+        self.single_hole_depth_label.setText(f"Depth: {start_depth:.2f} mm of {target_depth:.2f} mm")
+        self.single_hole_progress.setValue(int(1000 * min(1.0, start_depth / target_depth)))
+        self.single_hole_status_signal.emit("Drilling from the captured start position.")
+        self.status_signal.emit("Single-hole drilling started.")
+        self.single_hole_thread = threading.Thread(
+            target=self._run_single_hole_drilling,
+            args=(plan, tuple(origin), target_depth, depth_rate, clearance),
+            daemon=True,
+        )
+        self.single_hole_thread.start()
+
+    def _set_single_hole_controls_locked(self, locked: bool) -> None:
+        for control in (
+            self.single_hole_depth_mm,
+            self.single_hole_rate_mm_per_s,
+            self.single_hole_clearance_mm,
+        ):
+            control.setEnabled(not locked)
+        self.single_hole_start_btn.setEnabled(not self.single_hole_pause_requested.is_set())
+        self.single_hole_cancel_btn.setEnabled(locked or self.single_hole_paused)
+
+    def _run_single_hole_drilling(self, plan, origin, target_depth, depth_rate, clearance) -> None:
+        outcome = "completed"
+        detail = "Hole depth reached; drill is off and tool is retracted."
+        try:
+            started = time.monotonic()
+            previous_due = 0.0
+            previous_command_started = None
+            for event in plan:
+                interval = event.due_s - previous_due
+                due_at = (
+                    started + event.due_s
+                    if previous_command_started is None
+                    else previous_command_started + interval
+                )
+                while True:
+                    if self.single_hole_cancel_requested.is_set():
+                        raise pulsed_protocol.PulseCancelled("Single-hole operation cancelled.")
+                    if self.single_hole_pause_requested.is_set():
+                        raise pulsed_protocol.PulsePaused("Single-hole operation paused.")
+                    remaining = due_at - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.03, remaining))
+                if event.target is None:
+                    previous_due = event.due_s
+                    continue
+                # Finish and verify this small pulse before honoring pause/cancel.
+                previous_command_started = time.monotonic()
+                previous_due = event.due_s
+                self.controller.goto_axis_position(*event.target)
+                actual = tuple(self.controller.get_current_axis_position())
+                depth = max(0.0, min(target_depth, actual[2] - origin[2]))
+                self.single_hole_current_depth_mm = depth
+                self.single_hole_progress_signal.emit(depth)
+                self.single_hole_status_signal.emit(f"Drilling at {depth:.2f} mm.")
+                self.status_signal.emit(f"Single hole drilling at {depth:.2f} mm.")
+            self.controller.turn_drill_off()
+            self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+        except pulsed_protocol.PulsePaused:
+            outcome = "paused"
+            try:
+                actual = tuple(self.controller.get_current_axis_position())
+                depth = max(0.0, min(target_depth, actual[2] - origin[2]))
+                self.single_hole_current_depth_mm = depth
+                self.controller.turn_drill_off()
+                self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+                detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
+            except Exception as exc:
+                outcome = "error"
+                detail = f"Pause retract failed: {exc}. Verify physical position before moving."
+        except pulsed_protocol.PulseCancelled:
+            outcome = "cancelled"
+            try:
+                actual = tuple(self.controller.get_current_axis_position())
+                depth = max(0.0, min(target_depth, actual[2] - origin[2]))
+                self.single_hole_current_depth_mm = depth
+                self._retract_single_hole_to_clearance(origin, clearance, stop_first=True)
+                detail = "Cancelled; drill is off and tool is retracted. Verify position before another hole."
+            except Exception as exc:
+                outcome = "error"
+                detail = f"Stop or retract could not be verified: {exc}. Use physical Stop and verify position."
+        except Exception as exc:
+            outcome = "error"
+            detail = f"Drilling stopped: {exc}. Verify physical position before restarting."
+            try:
+                self.controller.stop()
+                self.controller.wait_until_stopped()
+            except Exception:
+                pass
+            try:
+                self.controller.turn_drill_off()
+            except Exception:
+                pass
+        finally:
+            self.single_hole_finished_signal.emit(outcome, self.single_hole_current_depth_mm, detail)
+
+    def _retract_single_hole_to_clearance(self, origin, clearance, *, stop_first: bool) -> None:
+        if stop_first:
+            self.controller.stop()
+            self.controller.wait_until_stopped()
+            # Stop motion first, then explicitly disable drill power before
+            # any retract command is issued.
+            self.controller.turn_drill_off()
+            self.controller.prepare_motion()
+        else:
+            if bool(self.controller.reported_drill_state()):
+                raise StereoDriveError("Drill power is still reported ON; retract was not started.")
+            self.controller.prepare_motion()
+        safe_dv = origin[2] - clearance
+        self.controller.move_axis_to_target("DV", safe_dv, step_mm=0.005, dwell_seconds=0)
+        self.controller.wait_until_stopped()
+        actual = tuple(self.controller.get_current_axis_position())
+        expected = (origin[0], origin[1], safe_dv)
+        if any(abs(a - b) > 0.01 for a, b in zip(actual, expected)):
+            raise StereoDriveError("Retract position did not match the verified target.")
+        if bool(self.controller.reported_drill_state()):
+            raise StereoDriveError("Drill power is still reported ON after retract.")
+        self.single_hole_safe_retract_axis = expected
+
+    def _update_single_hole_progress(self, depth: float) -> None:
+        target = max(0.01, float(self.single_hole_depth_mm.value()))
+        depth = max(0.0, min(target, depth))
+        self.single_hole_depth_label.setText(f"Depth: {depth:.2f} mm of {target:.2f} mm")
+        self.single_hole_progress.setValue(int(1000 * depth / target))
+
+    def _set_single_hole_status(self, message: str) -> None:
+        self.single_hole_status_label.setText(f"Status: {message}")
+
+    def _on_single_hole_finished(self, outcome: str, depth: float, detail: str) -> None:
+        if outcome == "paused":
+            self.single_hole_paused = True
+            self.single_hole_start_btn.setText("Resume")
+            self.single_hole_start_btn.setEnabled(True)
+            self.single_hole_cancel_btn.setEnabled(True)
+            self._set_single_hole_status(detail)
+            self.status_signal.emit("Single hole paused and retracted.")
+            return
+        self.single_hole_paused = False
+        self.single_hole_pause_requested.clear()
+        self.single_hole_cancel_requested.clear()
+        self.single_hole_start_btn.setText("Start")
+        self._set_single_hole_controls_locked(False)
+        self._set_single_hole_status(detail)
+        if outcome == "completed":
+            self.single_hole_progress.setValue(1000)
+            self.status_signal.emit("Single-hole drilling completed.")
+        elif outcome == "cancelled":
+            self.status_signal.emit("Single-hole operation cancelled.")
+        else:
+            self.status_signal.emit("Single-hole stop requires position verification.")
+
+    def cancel_single_hole(self, *, emergency: bool = False) -> None:
+        if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            self.single_hole_cancel_requested.set()
+            self.single_hole_start_btn.setEnabled(False)
+            self.single_hole_cancel_btn.setEnabled(False)
+            message = "Stopping after the current verified step, switching drill off, and retracting." if emergency else "Cancelling after the current verified step and retracting."
+            self.single_hole_status_signal.emit(message)
+            self.status_signal.emit("Stopping single-hole drilling.")
+            return
+        if self.single_hole_paused:
+            self.single_hole_paused = False
+            self.single_hole_origin_axis = None
+            self.single_hole_safe_retract_axis = None
+            self.single_hole_current_depth_mm = 0.0
+            self.single_hole_progress.setValue(0)
+            self.single_hole_start_btn.setText("Start")
+            self._set_single_hole_controls_locked(False)
+            self._set_single_hole_status("Paused hole cancelled; tool remains retracted.")
+
     def stop_motion(self) -> None:
         self.drill_stop_requested.set()
+        if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            self.single_hole_cancel_requested.set()
         self.injection_stop_requested.set()
         if self.validation_move_cancel_callback is not None:
             self.validation_move_cancel_callback()

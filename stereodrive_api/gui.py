@@ -307,7 +307,7 @@ class App:
     def stop(self):
         if not self.worker or not self.connected: return
         self.busy=True;self.controls();self.worker.stop_async()
-        self.status.set('Stop requested…'); self.note('Stop requested. Interrupted motion invalidates saved backlash state.')
+        self.status.set('Stopping...'); self.note('Sending Stop to all channels and drill OFF.')
 
     def disconnect(self):
         if not self.worker: return
