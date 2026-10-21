@@ -913,8 +913,6 @@ class CraniotomyWindow(QMainWindow):
     insertion_confirmation_signal = Signal()
     injection_pause_state_signal = Signal(bool)
     beep_signal = Signal()
-    usb_probe_log_signal = Signal(str)
-    usb_probe_finished_signal = Signal(str)
     validation_move_position_signal = Signal(object)
     keyboard_move_finished_signal = Signal(object)
     single_hole_progress_signal = Signal(float)
@@ -989,7 +987,6 @@ class CraniotomyWindow(QMainWindow):
         self.drilling_paused = False
         self.benchmark_thread: threading.Thread | None = None
         self.direct_operation_thread: threading.Thread | None = None
-        self.usb_probe_thread: threading.Thread | None = None
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
@@ -1055,8 +1052,6 @@ class CraniotomyWindow(QMainWindow):
         self.insertion_confirmation_signal.connect(self.show_insertion_confirmation)
         self.injection_pause_state_signal.connect(self.set_injection_paused_ui)
         self.beep_signal.connect(self._beep)
-        self.usb_probe_log_signal.connect(self._append_usb_probe_log)
-        self.usb_probe_finished_signal.connect(self._finish_usb_probe)
         self.validation_move_position_signal.connect(self._set_validation_move_position)
         self.keyboard_move_finished_signal.connect(self._keyboard_move_finished)
         self._build_ui()
@@ -1112,7 +1107,7 @@ class CraniotomyWindow(QMainWindow):
                 return
             # Keep the process alive until cancelled workers have unwound.
             workers = (self.drill_thread, self.single_hole_thread, self.injection_thread,
-                       self._manual_syringe_thread, self.benchmark_thread, self.usb_probe_thread,
+                       self._manual_syringe_thread, self.benchmark_thread,
                        getattr(self,"direct_operation_thread",None))
             for worker in workers:
                 if worker is not None:
@@ -1298,6 +1293,8 @@ class CraniotomyWindow(QMainWindow):
         set_bregma_local_btn.clicked.connect(self.set_local_bregma)
         set_anchor_btn = QPushButton("Set Anchor")
         set_anchor_btn.clicked.connect(self.set_anchor)
+        self.set_relative_coordinates_btn = QPushButton("Set Relative Coordinates")
+        self.set_relative_coordinates_btn.clicked.connect(self.set_relative_coordinates)
         at_anchor_btn = QPushButton("At Anchor")
         at_anchor_btn.clicked.connect(self.at_anchor)
         self.axis_mode_btn = QPushButton("Axis")
@@ -1344,6 +1341,7 @@ class CraniotomyWindow(QMainWindow):
         header_layout.addWidget(go_to_btn)
         for button in quick_buttons:
             header_layout.addWidget(button)
+        header_layout.addWidget(self.set_relative_coordinates_btn)
         header_layout.addStretch(1)
         options_btn = QPushButton("Options")
         options_btn.clicked.connect(self.open_options_dialog)
@@ -2104,73 +2102,20 @@ class CraniotomyWindow(QMainWindow):
         reset_keys_btn.clicked.connect(self.reset_movement_key_bindings)
         options_grid.addWidget(reset_keys_btn, len(key_options) + 1, 0, 1, 2)
         options_layout.addWidget(options_box)
-        scan_box = QGroupBox("Direct USB diagnostics")
-        scan_layout = QVBoxLayout(scan_box)
-        scan_layout.addWidget(QLabel("Direct control uses the public API; native window control IDs are not used."))
-        scan_btn = QPushButton("Direct USB diagnostics")
-        scan_btn.clicked.connect(self.scan_stereodrive)
-        scan_layout.addWidget(scan_btn)
+        benchmark_box = QGroupBox("Axis Movement Benchmark")
+        benchmark_layout = QVBoxLayout(benchmark_box)
+        benchmark_layout.addWidget(QLabel(
+            "Supervised bench-only movement timing. This does not measure physical displacement."
+        ))
         benchmark_btn = QPushButton("Benchmark Axis Moves")
         benchmark_btn.clicked.connect(self.start_axis_benchmark)
-        scan_layout.addWidget(benchmark_btn)
-        update_btn = QPushButton("Update from GitHub (discard local changes)")
-        update_btn.clicked.connect(self.update_from_github)
-        scan_layout.addWidget(update_btn)
-        self.stereodrive_scan_output = QPlainTextEdit()
-        self.stereodrive_scan_output.setPlaceholderText("Scan results will appear here for copying into chat.")
-        scan_layout.addWidget(self.stereodrive_scan_output, 1)
-        options_layout.addWidget(scan_box, 1)
-
-        usb_probe_box = QGroupBox("USB Controller Probe")
-        usb_probe_layout = QVBoxLayout(usb_probe_box)
-        usb_probe_layout.addWidget(QLabel(
-            "Use this only while recording with USBPcap/Wireshark. The app logs timestamps and performs one "
-            "small, confirmed Axis nudge followed by its reversal; it does not capture, replay, or inject USB traffic."
-        ))
-        probe_controls = QHBoxLayout()
-        probe_controls.addWidget(QLabel("Axis"))
-        self.usb_probe_axis_combo = QComboBox()
-        for axis in ("AP", "ML", "DV"):
-            self.usb_probe_axis_combo.addItem(axis, axis)
-        probe_controls.addWidget(self.usb_probe_axis_combo)
-        probe_controls.addWidget(QLabel("Step"))
-        self.usb_probe_step_combo = QComboBox()
-        for step_mm in (0.01, 0.02, 0.05):
-            self.usb_probe_step_combo.addItem(f"{step_mm:g} mm", step_mm)
-        probe_controls.addWidget(self.usb_probe_step_combo)
-        self.usb_probe_button = QPushButton("Run one out-and-back probe")
-        self.usb_probe_button.clicked.connect(self.start_usb_controller_probe)
-        probe_controls.addWidget(self.usb_probe_button)
-        probe_controls.addStretch(1)
-        usb_probe_layout.addLayout(probe_controls)
-        self.usb_probe_output = QPlainTextEdit()
-        self.usb_probe_output.setReadOnly(True)
-        self.usb_probe_output.setPlaceholderText(
-            "Probe log will appear here. Start USBPcap/Wireshark capture before running one probe."
-        )
-        self.usb_probe_output.setMinimumHeight(115)
-        usb_probe_layout.addWidget(self.usb_probe_output)
-        options_layout.addWidget(usb_probe_box)
+        benchmark_layout.addWidget(benchmark_btn)
+        options_layout.addWidget(benchmark_box)
 
     def open_options_dialog(self) -> None:
         self.options_dialog.show()
         self.options_dialog.raise_()
         self.options_dialog.activateWindow()
-
-    def scan_stereodrive(self) -> None:
-        try:
-            self.stereodrive_scan_output.setPlainText(self.controller.scan_stereodrive_controls())
-            self.set_status("StereoDrive control scan complete.")
-        except Exception as exc:
-            self.stereodrive_scan_output.setPlainText(f"Scan failed: {exc}")
-            self.set_status("StereoDrive control scan failed.")
-
-    @staticmethod
-    def _usb_probe_timestamp() -> str:
-        return time.strftime("%Y-%m-%d %H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
-
-    def _append_usb_probe_log(self, message: str) -> None:
-        self.usb_probe_output.appendPlainText(message)
 
     def open_direct_usb_setup(self) -> None:
         """Open one live USB calibration surface, independent of planner simulation."""
@@ -2619,7 +2564,6 @@ class CraniotomyWindow(QMainWindow):
             or (self.injection_thread is not None and self.injection_thread.is_alive())
             or self._manual_syringe_queue_active
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
-            or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
             or self.validation_move_active
             or self.validation_modal_active
             or self.controller.has_active_motion()
@@ -2683,104 +2627,6 @@ class CraniotomyWindow(QMainWindow):
         for position in path:
             self.controller.goto_axis_position(*position, delay_seconds=0.5, stop_requested=stop_requested)
             self.controller.wait_for_axis_position(*position, stop_requested=stop_requested)
-
-    def start_usb_controller_probe(self) -> None:
-        if self._motion_is_active():
-            QMessageBox.warning(
-                self,
-                "USB Controller Probe",
-                "Wait for the current drill, injection, benchmark, or probe operation to finish first.",
-            )
-            return
-        axis = str(self.usb_probe_axis_combo.currentData())
-        step_mm = float(self.usb_probe_step_combo.currentData())
-        response = QMessageBox.warning(
-            self,
-            "Run USB Controller Probe?",
-            f"Start the USBPcap/Wireshark capture first. This will nudge {axis} by {step_mm:g} mm, "
-            "verify idle arrival from the direct API motor counts, then nudge it back. "
-            "If the forward move cannot be verified, the app will stop and will not guess a reversal. Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if response != QMessageBox.Yes:
-            return
-        self.usb_probe_button.setEnabled(False)
-        self.usb_probe_output.clear()
-        try:
-            self.controller.prepare_motion()
-        except Exception as exc:
-            self.usb_probe_button.setEnabled(True)
-            QMessageBox.warning(self, "USB Controller Probe", str(exc))
-            return
-        self.usb_probe_thread = threading.Thread(
-            target=self._run_usb_controller_probe,
-            args=(axis, step_mm),
-            daemon=True,
-        )
-        self.usb_probe_thread.start()
-
-    def _wait_for_probe_axis_value(
-        self,
-        axis: str,
-        expected: float,
-        tolerance_mm: float,
-        timeout_seconds: float = 8.0,
-    ) -> float:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            self.controller._check_motion_cancelled()
-            current = self.controller.get_current_axis(axis)
-            if abs(current - expected) <= tolerance_mm and not self.controller.has_active_motion():
-                # A transient moving count is not permission to reverse.
-                self.controller.wait_until_stopped()
-                return self.controller.get_current_axis(axis)
-            time.sleep(0.05)
-        current = self.controller.get_current_axis(axis)
-        raise StereoDriveError(
-            f"{axis} did not reach {expected:.4f} mm within {timeout_seconds:g} seconds "
-            f"(last reading {current:.4f} mm)."
-        )
-
-    def _run_usb_controller_probe(self, axis: str, step_mm: float) -> None:
-        tolerance_mm = max(0.003, step_mm * 0.25)
-        try:
-            start = self.controller.get_current_axis(axis)
-            if getattr(self.controller,"direct_api",False):
-                origin=self.controller.get_current_axis_position();target=list(origin)
-                target[("AP","ML","DV").index(axis)]+=step_mm
-                self.controller.validate_axis_path([tuple(target),origin])
-            self.usb_probe_log_signal.emit(
-                f"{self._usb_probe_timestamp()} START axis={axis} step_mm={step_mm:g} start_axis_mm={start:.4f}"
-            )
-            self.controller.set_nudge_step(axis, step_mm)
-            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} FORWARD_NUDGE axis={axis}")
-            self.controller.nudge_axis(axis, True)
-            forward = self._wait_for_probe_axis_value(axis, start + step_mm, tolerance_mm)
-            self.usb_probe_log_signal.emit(
-                f"{self._usb_probe_timestamp()} FORWARD_CONFIRMED axis={axis} axis_mm={forward:.4f}"
-            )
-            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} REVERSE_NUDGE axis={axis}")
-            self.controller.nudge_axis(axis, False)
-            returned = self._wait_for_probe_axis_value(axis, start, tolerance_mm)
-            self.usb_probe_log_signal.emit(
-                f"{self._usb_probe_timestamp()} RETURN_CONFIRMED axis={axis} axis_mm={returned:.4f}"
-            )
-            self.usb_probe_finished_signal.emit("USB controller probe completed; position returned to its starting value.")
-        except Exception as exc:
-            try:
-                self.controller.stop()
-                self.controller.wait_until_stopped()
-            except Exception as stop_exc:
-                self.usb_probe_log_signal.emit(f"Stop confirmation failed: {stop_exc}")
-            self.usb_probe_log_signal.emit(f"{self._usb_probe_timestamp()} ERROR {exc}")
-            self.usb_probe_finished_signal.emit(
-                "USB controller probe stopped. Check the Axis display before moving again; no unverified reversal was issued."
-            )
-
-    def _finish_usb_probe(self, status: str) -> None:
-        self.usb_probe_button.setEnabled(True)
-        self.set_status(status)
 
     def update_from_github(self) -> None:
         if getattr(self.controller,"direct_api",False):
@@ -4786,6 +4632,82 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Bregma Coordinates", str(exc))
 
+    def set_relative_coordinates(self) -> None:
+        if not self._require_idle("Set Relative Coordinates"):
+            return
+        response = QMessageBox.warning(
+            self,
+            "Replace Bregma Calibration?",
+            "This will replace the current GUI Bregma calibration, if one is set. Existing Bregma-based craniotomy "
+            "and injection targets will then resolve to different mechanical positions, and any saved "
+            "anchor will be cleared. Continue?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Relative Coordinates")
+        layout = QVBoxLayout(dialog)
+        prompt = QLabel(
+            "Enter the Bregma-relative AP, ML, and DV coordinates of the tool's current physical position."
+        )
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+        coordinates = {}
+        grid = QGridLayout()
+        for row, axis in enumerate(("AP", "ML", "DV")):
+            edit = QDoubleSpinBox()
+            edit.setDecimals(3)
+            edit.setRange(-100.0, 100.0)
+            edit.setSuffix(" mm")
+            edit.setValue(0.0)
+            coordinates[axis] = edit
+            grid.addWidget(QLabel(axis), row, 0)
+            grid.addWidget(edit, row, 1)
+        layout.addLayout(grid)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Review Coordinates")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        requested = tuple(coordinates[axis].value() for axis in ("AP", "ML", "DV"))
+        response = QMessageBox.warning(
+            self,
+            "Confirm New Bregma Coordinates?",
+            "Set the current physical position to Bregma "
+            f"AP {requested[0]:.3f}, ML {requested[1]:.3f}, DV {requested[2]:.3f} mm? "
+            "This replaces the previous calibration and changes where saved Bregma-based targets "
+            "resolve physically.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
+
+        try:
+            current_axis = tuple(self.controller.get_current_axis_position())
+            self.bregma_axis = tuple(current_axis[index] - requested[index] for index in range(3))
+            self.anchor_axis = None
+            self.anchor_bregma = None
+            self.coordinate_mode = "bregma"
+            self.update_coordinate_mode_buttons()
+            self.top_view.set_coordinate_mode_bregma(True)
+            self.injection_sites_view.set_coordinate_mode_bregma(True)
+            self._save_general_settings()
+            self._autosave_project_session()
+            self.refresh_live_position()
+            self.refresh_injection_sites_list()
+            self.refresh_craniotomy_points_list()
+            self.redraw_views()
+            self.set_status("Relative coordinates set.")
+        except Exception as exc:
+            QMessageBox.critical(self, "Set Relative Coordinates", str(exc))
+
     def set_anchor(self) -> None:
         if not self._require_idle("Set Anchor"):
             return
@@ -5677,7 +5599,7 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Validate Sites", str(exc))
             return
         if self._motion_is_active():
-            QMessageBox.warning(self, "Validate Sites", "Wait for the current movement, drill, injection, benchmark, or probe to finish first.")
+            QMessageBox.warning(self, "Validate Sites", "Wait for the current movement, drill, injection, or benchmark to finish first.")
             return
         if not self.injection_sites:
             QMessageBox.information(self, "Validate Sites", "Add one or more injection sites first.")

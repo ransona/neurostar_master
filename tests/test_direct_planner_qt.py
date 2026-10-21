@@ -73,6 +73,11 @@ class PlannerTests(unittest.TestCase):
         self.window.show();self.app.processEvents()
         self.assertEqual(self.window.craniotomy_load_btn.text(),'Load')
         self.assertEqual(self.window.craniotomy_save_btn.text(),'Save')
+        self.assertEqual(self.window.set_relative_coordinates_btn.text(),'Set Relative Coordinates')
+        option_group_titles={group.title() for group in self.window.options_dialog.findChildren(planner.QGroupBox)}
+        self.assertNotIn('Direct USB diagnostics',option_group_titles)
+        self.assertNotIn('USB Controller Probe',option_group_titles)
+        self.assertIn('Axis Movement Benchmark',option_group_titles)
         for index in (0,1):
             tab=self.window.tabs.widget(index)
             layout=tab.layout()
