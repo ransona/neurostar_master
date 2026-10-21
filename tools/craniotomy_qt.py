@@ -4745,6 +4745,16 @@ class CraniotomyWindow(QMainWindow):
     def set_anchor(self) -> None:
         if not self._require_idle("Set Anchor"):
             return
+        if self.anchor_axis is not None or self.anchor_bregma is not None:
+            response = QMessageBox.warning(
+                self,
+                "Change Existing Anchor?",
+                "An anchor is already set. Are you sure you want to change it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response != QMessageBox.Yes:
+                return
         try:
             if self.bregma_axis is None:
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
