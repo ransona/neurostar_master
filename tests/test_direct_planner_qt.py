@@ -62,6 +62,11 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.delay_at_depth.value(),3.0)
         session_config=self.window._project_session_dict()['craniotomy_config']
         self.assertEqual(session_config['delayAtDepth'],3.0)
+        self.assertEqual(self.window.single_hole_delay_at_depth.value(),3.0)
+        self.window.single_hole_delay_at_depth.setValue(1.25)
+        self.window._save_general_settings()
+        saved_settings=self.window._read_config_file(self.window._general_settings_path())
+        self.assertEqual(saved_settings['single_hole_delay_at_depth'],1.25)
         self.window.resize(1440,900)
         self.window.tabs.setCurrentIndex(1)
         self.window.show();self.app.processEvents()
@@ -114,6 +119,17 @@ class PlannerTests(unittest.TestCase):
         self.assertGreaterEqual(
             self.window.craniotomy_surface_box.geometry().bottom(),
             self.window.craniotomy_surface_box.parentWidget().rect().bottom()-8,
+        )
+
+    def test_single_hole_waits_after_drill_plan_reaches_depth(self):
+        self.window.controller.turn_drill_off=Mock()
+        self.window._retract_single_hole_to_clearance=Mock()
+        started=time.monotonic()
+        self.window._run_single_hole_drilling([], (0.0,0.0,0.0), 0.1, 0.1, 2.0, 0.05)
+        self.assertGreaterEqual(time.monotonic()-started,0.045)
+        self.window.controller.turn_drill_off.assert_called_once_with()
+        self.window._retract_single_hole_to_clearance.assert_called_once_with(
+            (0.0,0.0,0.0), 2.0, stop_first=False
         )
 
     def test_freeze_modes_lock_craniotomy_edits_and_can_switch_or_exit(self):

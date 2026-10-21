@@ -1637,12 +1637,15 @@ class CraniotomyWindow(QMainWindow):
             value=float(self.drill_rate_mm_per_s.value()), minimum=0.001, maximum=5.0
         )
         self.single_hole_clearance_mm = self._double_spinbox(value=2.0, minimum=0.1, maximum=10.0)
+        self.single_hole_delay_at_depth = self._double_spinbox(value=3.0, minimum=0.0, maximum=3600.0)
         grid.addWidget(QLabel("Depth to drill (mm)"), 1, 0)
         grid.addWidget(self.single_hole_depth_mm, 1, 1)
         grid.addWidget(QLabel("Drill rate (mm/s)"), 1, 2)
         grid.addWidget(self.single_hole_rate_mm_per_s, 1, 3)
         grid.addWidget(QLabel("Retract above start (mm)"), 2, 0)
         grid.addWidget(self.single_hole_clearance_mm, 2, 1)
+        grid.addWidget(QLabel("Delay at Depth (s)"), 2, 2)
+        grid.addWidget(self.single_hole_delay_at_depth, 2, 3)
         self.single_hole_origin_label = QLabel("Start position: not captured")
         self.single_hole_origin_label.setProperty("role", "muted")
         grid.addWidget(self.single_hole_origin_label, 3, 0, 1, 4)
@@ -3250,6 +3253,7 @@ class CraniotomyWindow(QMainWindow):
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "validation_clearance_mm": self.validation_clearance_mm,
             "single_hole_drill_rate_mm_per_s": self.single_hole_rate_mm_per_s.value(),
+            "single_hole_delay_at_depth": self.single_hole_delay_at_depth.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
             "axis_zero_reference": getattr(self, "axis_zero_reference", None),
@@ -3302,6 +3306,12 @@ class CraniotomyWindow(QMainWindow):
                 single_hole_rate = float(single_hole_rate)
                 if math.isfinite(single_hole_rate):
                     self.single_hole_rate_mm_per_s.setValue(single_hole_rate)
+            except (TypeError, ValueError):
+                pass
+            try:
+                single_hole_delay = float(payload.get("single_hole_delay_at_depth", 3.0))
+                if math.isfinite(single_hole_delay):
+                    self.single_hole_delay_at_depth.setValue(max(0.0, single_hole_delay))
             except (TypeError, ValueError):
                 pass
             recent_grids = payload.get("recent_injection_grid_configs", [])
@@ -8467,8 +8477,9 @@ class CraniotomyWindow(QMainWindow):
             target_depth = float(self.single_hole_depth_mm.value())
             depth_rate = float(self.single_hole_rate_mm_per_s.value())
             clearance = float(self.single_hole_clearance_mm.value())
-            if target_depth <= 0 or depth_rate <= 0 or clearance <= 0:
-                raise StereoDriveError("Depth, drill rate, and retract clearance must be greater than zero.")
+            delay_at_depth = float(self.single_hole_delay_at_depth.value())
+            if target_depth <= 0 or depth_rate <= 0 or clearance <= 0 or delay_at_depth < 0:
+                raise StereoDriveError("Depth, drill rate, and retract clearance must be greater than zero; delay cannot be negative.")
 
             if self.single_hole_paused:
                 origin = self.single_hole_origin_axis
@@ -8483,7 +8494,9 @@ class CraniotomyWindow(QMainWindow):
                 current = origin
                 start_depth = 0.0
 
-            if target_depth <= start_depth + 0.0005:
+            if target_depth <= start_depth + 0.0005 and not (
+                self.single_hole_paused and target_depth >= start_depth - 0.0005
+            ):
                 raise StereoDriveError("Target depth must be greater than the already drilled depth.")
             safe_retract = (origin[0], origin[1], origin[2] - clearance)
             plan = pulsed_protocol.single_hole_drilling_plan(
@@ -8518,7 +8531,7 @@ class CraniotomyWindow(QMainWindow):
         self.status_signal.emit("Single-hole drilling started.")
         self.single_hole_thread = threading.Thread(
             target=self._run_single_hole_drilling,
-            args=(plan, tuple(origin), target_depth, depth_rate, clearance),
+            args=(plan, tuple(origin), target_depth, depth_rate, clearance, delay_at_depth),
             daemon=True,
         )
         self.single_hole_thread.start()
@@ -8528,12 +8541,14 @@ class CraniotomyWindow(QMainWindow):
             self.single_hole_depth_mm,
             self.single_hole_rate_mm_per_s,
             self.single_hole_clearance_mm,
+            self.single_hole_delay_at_depth,
         ):
             control.setEnabled(not locked)
         self.single_hole_start_btn.setEnabled(not self.single_hole_pause_requested.is_set())
         self.single_hole_cancel_btn.setEnabled(locked or self.single_hole_paused)
 
-    def _run_single_hole_drilling(self, plan, origin, target_depth, depth_rate, clearance) -> None:
+    def _run_single_hole_drilling(self, plan, origin, target_depth, depth_rate, clearance,
+                                  delay_at_depth: float = 3.0) -> None:
         outcome = "completed"
         detail = "Hole depth reached; drill is off and tool is retracted."
         try:
@@ -8569,6 +8584,15 @@ class CraniotomyWindow(QMainWindow):
                 self.single_hole_progress_signal.emit(depth)
                 self.single_hole_status_signal.emit(f"Drilling at {depth:.2f} mm.")
                 self.status_signal.emit(f"Single hole drilling at {depth:.2f} mm.")
+            delay_deadline = time.monotonic() + delay_at_depth
+            while time.monotonic() < delay_deadline:
+                if self.single_hole_cancel_requested.is_set():
+                    raise pulsed_protocol.PulseCancelled("Single-hole operation cancelled during depth delay.")
+                if self.single_hole_pause_requested.is_set():
+                    raise pulsed_protocol.PulsePaused("Single-hole operation paused during depth delay.")
+                self.single_hole_status_signal.emit("Waiting at depth.")
+                remaining = delay_deadline - time.monotonic()
+                time.sleep(min(0.03, remaining))
             self.controller.turn_drill_off()
             self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
         except pulsed_protocol.PulsePaused:
