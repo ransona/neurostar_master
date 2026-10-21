@@ -978,6 +978,7 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_paused = False
         self.drill_completed_points = 0
         self.drilling_progress_reset_requires_ack = False
+        self.restart_drill_round_after_pause = False
         self.drill_round_started_at: float | None = None
         self.drill_round_target_seconds: float = 0.0
         self.active_surface_dv: float | None = None
@@ -1574,15 +1575,20 @@ class CraniotomyWindow(QMainWindow):
         self.round_elapsed_label = QLabel("Circuit elapsed: --:--")
         self.round_percent_label = QLabel("Circuit complete: --%")
         self.current_target_depth_label = QLabel("Current Target Depth: -- mm")
-        self.change_target_depth_btn = QPushButton("Change")
+        self.change_target_depth_btn = QPushButton("Set Target Depth")
         self.change_target_depth_btn.clicked.connect(self.change_current_target_depth)
+        self.restart_round_btn = QPushButton("Restart Round")
+        self.restart_round_btn.clicked.connect(self.restart_drilling_round)
         self.round_elapsed_label.setProperty("role", "muted")
         self.round_percent_label.setProperty("role", "muted")
         self.current_target_depth_label.setProperty("role", "muted")
         legend_layout.addWidget(self.round_elapsed_label)
         legend_layout.addWidget(self.round_percent_label)
         legend_layout.addWidget(self.current_target_depth_label)
-        legend_layout.addWidget(self.change_target_depth_btn)
+        target_actions = QHBoxLayout()
+        target_actions.addWidget(self.change_target_depth_btn, 1)
+        target_actions.addWidget(self.restart_round_btn, 1)
+        legend_layout.addLayout(target_actions)
         surface_box = QGroupBox("Craniotomy Seed Points")
         self.craniotomy_surface_box = surface_box
         surface_layout = QVBoxLayout(surface_box)
@@ -7581,9 +7587,9 @@ class CraniotomyWindow(QMainWindow):
     def change_current_target_depth(self) -> None:
         max_depth = max(0.0, self.drill_depth.value())
         dialog = QDialog(self)
-        dialog.setWindowTitle("Current Target Depth")
+        dialog.setWindowTitle("Set Target Depth")
         layout = QGridLayout(dialog)
-        layout.addWidget(QLabel("Current target depth (mm)"), 0, 0)
+        layout.addWidget(QLabel("Target drilling depth (mm)"), 0, 0)
         depth_box = QLineEdit(f"{self.current_target_depth_mm:.3f}")
         layout.addWidget(depth_box, 0, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -7595,11 +7601,66 @@ class CraniotomyWindow(QMainWindow):
         try:
             value = float(depth_box.text())
         except ValueError:
-            QMessageBox.warning(self, "Current Target Depth", "Enter a numeric depth in mm.")
+            QMessageBox.warning(self, "Set Target Depth", "Enter a numeric depth in mm.")
             return
-        self.current_target_depth_mm = min(max(value, 0.0), max_depth)
+        if not math.isfinite(value) or value <= 0 or value > max_depth:
+            QMessageBox.warning(
+                self,
+                "Set Target Depth",
+                f"Enter a depth greater than 0 and no deeper than the configured maximum of {max_depth:.3f} mm.",
+            )
+            return
+
+        running = self.drill_thread is not None and self.drill_thread.is_alive()
+        target_changed = value != self.current_target_depth_mm
+        if not target_changed:
+            return
+        if running or self.drilling_paused:
+            answer = QMessageBox.warning(
+                self,
+                "Target Changed",
+                "The target depth changed. Restart the round from the first eligible, unfrozen point?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self.current_target_depth_mm = value
         self.update_current_target_depth_label()
         self.redraw_views()
+        if running:
+            self.restart_drill_round_after_pause = True
+            self.pause_drilling_round()
+            self.set_status(f"Target updated to {value:.3f} mm. Pausing before round restart.")
+        elif self.drilling_paused:
+            self.drilling_paused = False
+            self.start_round_btn.setText("Start")
+            self.set_status(f"Restarting round to {value:.3f} mm.")
+            QTimer.singleShot(150, self.start_drilling_round)
+
+    def restart_drilling_round(self) -> None:
+        running = self.drill_thread is not None and self.drill_thread.is_alive()
+        if not running and not self.drilling_paused:
+            QMessageBox.information(self, "Restart Round", "There is no active or paused round to restart.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Restart Drilling Round",
+            "Restart from the first eligible, unfrozen point at the current target depth?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if running:
+            self.restart_drill_round_after_pause = True
+            self.pause_drilling_round()
+            self.set_status("Pausing safely before restarting the round.")
+        else:
+            self.drilling_paused = False
+            self.start_round_btn.setText("Start")
+            QTimer.singleShot(150, self.start_drilling_round)
 
     def update_seed_selector_label(self) -> None:
         if self.current_seed_index is None or not self.seeds:
@@ -8048,7 +8109,7 @@ class CraniotomyWindow(QMainWindow):
         """Disable craniotomy editing and movement controls during a drill round."""
         controls = list(self.craniotomy_setup_box.findChildren(QWidget))
         controls.extend((
-            self.top_view, self.zoom_mode_combo, self.change_target_depth_btn,
+            self.top_view, self.zoom_mode_combo,
             self.craniotomy_points_list, self.set_craniotomy_surface_btn,
         ))
         controls = list(dict.fromkeys(controls))
@@ -8718,11 +8779,30 @@ class CraniotomyWindow(QMainWindow):
             self.drilling_paused = True
             self.start_round_btn.setText("Continue")
             self.redraw_views()
+            if self.restart_drill_round_after_pause:
+                self.restart_drill_round_after_pause = False
+                self.drilling_paused = False
+                self.start_round_btn.setText("Start")
+                self.set_status(
+                    f"Restarting round to {self.current_target_depth_mm:.3f} mm from the first eligible point."
+                )
+                QTimer.singleShot(150, self.start_drilling_round)
             return
         if outcome in ("stopped", "error"):
+            self.restart_drill_round_after_pause = False
             self.drilling_paused = False
             self.start_round_btn.setText("Start")
             self.redraw_views()
+            return
+        if self.restart_drill_round_after_pause:
+            self.restart_drill_round_after_pause = False
+            self.drilling_paused = False
+            self.start_round_btn.setText("Start")
+            self.set_status(
+                f"Restarting round to {self.current_target_depth_mm:.3f} mm from the first eligible point."
+            )
+            self.redraw_views()
+            QTimer.singleShot(150, self.start_drilling_round)
             return
         max_depth = max(0.0, self.drill_depth.value())
         completed_depth = self.current_target_depth_mm
