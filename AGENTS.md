@@ -116,6 +116,87 @@ and drilling are opt-in timed-pulse workflows, not continuous flow/speed
 controls. Drill state is queried and confirmed through the API; it does not
 prove spindle rotation or RPM.
 
+## Design logic behind the main workflows
+
+### Calibration separates physical measurement from motion state
+
+Calibration answers “what physical scale reading corresponds to these counts?”
+It does not answer “which direction did the mechanism last move?” Those are
+stored separately: `Calibration` holds the measured zero/anchor counts, while
+the API journal holds current raw counts, normalized command counts, and
+backlash state. Keeping these separate prevents a new scale reading from
+silently resetting direction history or recovering a fault.
+
+The calibration screen connects to the identified hardware (or an explicit
+simulation) and reads the controller's own current position. If direction
+history is not already established, it asks before making small positive moves
+on AP/ML/DV and the piston. That known move gives the controller a defensible
+starting direction state. Jogging then remains available so the operator can
+align each axis with a readable physical scale mark. A physical-reading input
+unlocks only after that axis has accumulated at least 0.200 mm of travel (50 nL
+for the piston); this avoids saving a zero from a display value without a
+meaningful physical comparison. Save is enabled only after all four physical
+readings have been entered. The resulting zero anchors are derived from the
+live raw counts, the supplied physical readings, and tracked backlash state.
+
+When the device lacks a measured absolute calibration, the calibration jog
+helper provides a bounded relative session for positioning. Its bounds and
+journal are deliberately separate from the normal calibrated motion journal.
+It must not be treated as an unrestricted movement mode or as a source of
+absolute calibration by itself. When already connected, reuse that session and
+its single port; never open another serial owner just to read counters.
+
+### A move is a persisted state transition
+
+`Session.move()` computes the requested normalized target before sending it.
+It persists an invalid/in-progress state first because a process or cable can
+fail after the motor receives a command but before software sees completion.
+After a stable arrival it commits raw counts, backlash state, and normalized
+position together. If Stop interrupts motion, it stops all motor channels,
+samples until counts are stably idle, and reconciles partial backlash take-up
+against actual travel. Only a count path consistent with the command can be
+saved as valid. A timeout, uncommanded axis change, implausible count, protocol
+error, or failed Stop leaves the session faulted; creating a new reference is
+not a recovery shortcut.
+
+The planner adapter has its own `busy` flag because UI workers may be running
+while API calls are asynchronous. Display reads during motion use live telemetry
+and do not claim verified idle. Before a new operation, the adapter waits until
+both the worker and hardware motion flags are idle. Stop is routed to the
+existing worker/session so only one thread owns serial I/O.
+
+### Keyboard queue order is intentional
+
+Keyboard moves are serialized because the API accepts one move at a time. The
+queue stores axis, direction, label, and distance. Consecutive pending steps on
+the same axis and in the same direction are summed into one longer command;
+steps with an intervening axis move stay separate to preserve input order. A
+direction reversal removes stale pending steps for that axis, stops its active
+move if needed, waits for stopped-count reconciliation and idle verification,
+then starts the reverse command. Other axes' pending work stays in order. Escape
+has broader meaning: cancel the entire pending queue and stop the active move.
+Do not merge across a reversal, across another axis command, or across an
+already-started motor command.
+
+### Coordinate frames stay layered
+
+The API and safety limits use mechanical Axis coordinates. GUI Bregma is a
+planner transform: `Bregma = Axis − bregma_axis`. Named locations and site plans
+are stored in their documented frame, then converted to Axis targets before
+preflight and motion. Setting or recalibrating GUI Bregma must refresh both
+planner views so maps and overlays use the same frame. A GUI coordinate change
+must never rewrite API zero anchors or native device coordinates.
+
+### Timed pulses are not continuous rate control
+
+The injector and drill workflows sequence captured, bounded serial movements
+with dwell/settling between them. Their configured rates describe a schedule;
+they do not command firmware-controlled continuous speed or fluid flow. Whole
+paths and doses should be preflighted before starting, each pulse should be
+verified from counters, and cancellation should stop remaining work without an
+automatic return/retry. Keep that distinction explicit in APIs, labels, and
+operator docs.
+
 ## Persistence and startup
 
 The GUI stores user preferences (including keyboard mappings) in
