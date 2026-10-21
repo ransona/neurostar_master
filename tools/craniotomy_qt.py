@@ -3045,14 +3045,22 @@ class CraniotomyWindow(QMainWindow):
                         ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
                         coordinate_system=str(raw_location.get("coordinate_system", "unknown")),
                     )
-        self.named_locations = {}
+        # General settings are the durable source of saved Go To positions.
+        # Keep positions from an older recoverable project session as a
+        # migration path, without letting that snapshot overwrite newer saves.
+        restored_named_locations = {}
         raw_named_locations = payload.get("named_locations")
         if isinstance(raw_named_locations, dict):
             for name, raw_location in raw_named_locations.items():
                 if isinstance(name, str) and isinstance(raw_location, dict):
-                    self.named_locations[name] = StoredLocation(
-                        ap=float(raw_location["ap"]), ml=float(raw_location["ml"]), dv=float(raw_location["dv"]),
-                    )
+                    try:
+                        coordinates = tuple(float(raw_location[axis]) for axis in ("ap", "ml", "dv"))
+                        if name.strip() and all(math.isfinite(value) for value in coordinates):
+                            restored_named_locations[name] = StoredLocation(*coordinates)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        restored_named_locations.update(self.named_locations)
+        self.named_locations = restored_named_locations
         overlay_name = payload.get("overlay_name")
         if isinstance(overlay_name, str):
             for index in range(self.overlay_combo.count()):
@@ -3102,6 +3110,10 @@ class CraniotomyWindow(QMainWindow):
             "single_hole_delay_at_depth": self.single_hole_delay_at_depth.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
+            "named_locations": {
+                name: {"ap": location.ap, "ml": location.ml, "dv": location.dv}
+                for name, location in self.named_locations.items()
+            },
             "axis_zero_reference": getattr(self, "axis_zero_reference", None),
             "window_geometry": getattr(self, "window_geometry", None),
         }
@@ -3116,6 +3128,17 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             payload = self._read_config_file(path)
+            raw_named_locations = payload.get("named_locations", {})
+            if isinstance(raw_named_locations, dict):
+                for name, raw_location in raw_named_locations.items():
+                    if not isinstance(name, str) or not name.strip() or not isinstance(raw_location, dict):
+                        continue
+                    try:
+                        coordinates = tuple(float(raw_location[axis]) for axis in ("ap", "ml", "dv"))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if all(math.isfinite(value) for value in coordinates):
+                        self.named_locations[name] = StoredLocation(*coordinates)
             bindings = payload.get("movement_keys", {})
             for name, edit in self.movement_key_edits.items():
                 value = bindings.get(name)
@@ -4931,18 +4954,18 @@ class CraniotomyWindow(QMainWindow):
             ml_box.setValue(location.ml)
             dv_box.setValue(location.dv)
 
-        def save_named_position() -> None:
+        def save_named_position() -> bool:
             if not using_bregma:
                 QMessageBox.information(
                     dialog,
                     "Save Position",
                     "Set Bregma before saving named positions. Named positions are always stored in Bregma coordinates.",
                 )
-                return
+                return False
             name = name_edit.text().strip()
             if not name:
                 QMessageBox.information(dialog, "Save Position", "Enter a name for this position.")
-                return
+                return False
             if name in self.named_locations:
                 response = QMessageBox.question(
                     dialog, "Replace Saved Position?",
@@ -4950,18 +4973,35 @@ class CraniotomyWindow(QMainWindow):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
                 )
                 if response != QMessageBox.Yes:
-                    return
+                    return False
+            previous_location = self.named_locations.get(name)
             self.named_locations[name] = StoredLocation(ap_box.value(), ml_box.value(), dv_box.value())
+            try:
+                self._save_general_settings()
+            except Exception as exc:
+                if previous_location is None:
+                    self.named_locations.pop(name, None)
+                else:
+                    self.named_locations[name] = previous_location
+                QMessageBox.critical(dialog, "Save Position", f"Could not save this position: {exc}")
+                return False
             populate_saved_positions(name)
             self._autosave_project_session()
             self.set_status(f"Saved Bregma position '{name}'.")
+            return True
 
         def delete_named_position() -> None:
             name = saved_combo.currentData()
             if not isinstance(name, str) or name not in self.named_locations:
                 QMessageBox.information(dialog, "Delete Saved Position", "Select a saved position to delete.")
                 return
-            del self.named_locations[name]
+            deleted_location = self.named_locations.pop(name)
+            try:
+                self._save_general_settings()
+            except Exception as exc:
+                self.named_locations[name] = deleted_location
+                QMessageBox.critical(dialog, "Delete Saved Position", f"Could not save the deletion: {exc}")
+                return
             name_edit.clear()
             populate_saved_positions()
             self._autosave_project_session()
@@ -5004,6 +5044,25 @@ class CraniotomyWindow(QMainWindow):
         ap = ap_box.value()
         ml = ml_box.value()
         dv = dv_box.value()
+        if using_bregma:
+            name = name_edit.text().strip()
+            saved_location = self.named_locations.get(name) if name else None
+            position_is_saved = saved_location is not None and all(
+                math.isclose(current, saved, rel_tol=0.0, abs_tol=0.0005)
+                for current, saved in zip((ap, ml, dv), (saved_location.ap, saved_location.ml, saved_location.dv))
+            )
+            if name and not position_is_saved:
+                response = QMessageBox.question(
+                    dialog,
+                    "Save Position Before Moving?",
+                    f"Save '{name}' as a Bregma position before moving?",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    QMessageBox.Yes,
+                )
+                if response == QMessageBox.Cancel:
+                    return
+                if response == QMessageBox.Yes and not save_named_position():
+                    return
         try:
             if using_bregma:
                 target_axis = self._bregma_to_axis((ap, ml, dv))

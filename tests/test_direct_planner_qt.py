@@ -58,6 +58,18 @@ class PlannerTests(unittest.TestCase):
             self.app.processEvents();time.sleep(.01)
         self.assertFalse(self.window.controller.has_active_motion())
 
+    def test_named_go_to_positions_persist_in_general_settings(self):
+        self.window.named_locations={
+            'Cortex':planner.StoredLocation(ap=1.25,ml=-2.5,dv=0.75),
+        }
+        self.window._save_general_settings()
+        saved=self.window._read_config_file(self.window._general_settings_path())
+        self.assertEqual(saved['named_locations']['Cortex'],{'ap':1.25,'ml':-2.5,'dv':0.75})
+
+        self.window.named_locations.clear()
+        self.window._load_general_settings()
+        self.assertEqual(self.window.named_locations['Cortex'],planner.StoredLocation(1.25,-2.5,0.75))
+
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.assertEqual(self.window.delay_at_depth.value(),3.0)
         session_config=self.window._project_session_dict()['craniotomy_config']
