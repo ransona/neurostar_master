@@ -1040,6 +1040,7 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(self.window.controller.error)
         self.assertEqual(self.window.drilled_depths,[.005]*4)
         self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
+        self.assertFalse(self.window.controller.reported_drill_state())
 
     def test_single_usb_calibration_window_unlocks_fields_after_motion(self):
         fake_drivers=[]

@@ -8883,7 +8883,19 @@ class CraniotomyWindow(QMainWindow):
             self.drilling_paused = False
             self.start_round_btn.setText("Start")
             self.update_current_target_depth_label()
-            self.set_status("Drilling complete to max depth.")
+            try:
+                self.controller.turn_drill_off()
+                if self.controller.reported_drill_state() is True:
+                    raise StereoDriveError("The controller still reports the drill as ON.")
+            except Exception as exc:
+                self.set_status("Drilling complete; drill shutoff needs attention.")
+                QMessageBox.warning(
+                    self,
+                    "Drill Shutoff",
+                    f"The drilling sequence is complete, but the drill could not be verified OFF: {exc}. Use the physical Stop if needed.",
+                )
+            else:
+                self.set_status("Drilling complete; drill is off.")
             self.redraw_views()
             return
         self.current_target_depth_mm = min(max_depth, completed_depth + self.depth_per_round.value())
