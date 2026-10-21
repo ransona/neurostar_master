@@ -1784,6 +1784,11 @@ class CraniotomyWindow(QMainWindow):
         self.start_injection_btn.style().unpolish(self.start_injection_btn)
         self.start_injection_btn.style().polish(self.start_injection_btn)
         self.start_injection_btn.clicked.connect(self.start_single_injection)
+        self.single_site_injection_btn = QPushButton("Single Injection")
+        self.single_site_injection_btn.setToolTip(
+            "Inject once at the current calibrated position, treating it as the site surface and using the current recipe settings."
+        )
+        self.single_site_injection_btn.clicked.connect(self.start_injection_at_current_position)
         self.stop_injection_btn = QPushButton("Stop")
         self.stop_injection_btn.setProperty("variant", "danger")
         self.stop_injection_btn.style().unpolish(self.stop_injection_btn)
@@ -1844,11 +1849,10 @@ class CraniotomyWindow(QMainWindow):
         self.injection_actions_panel = injection_actions_panel
         injection_actions = QHBoxLayout(injection_actions_panel)
         injection_actions.setContentsMargins(0, 0, 0, 0)
-        injection_actions.setSpacing(0)
+        injection_actions.setSpacing(8)
         injection_actions.addWidget(self.start_injection_btn)
-        injection_actions.addSpacing(8)
+        injection_actions.addWidget(self.single_site_injection_btn)
         injection_actions.addWidget(self.stop_injection_btn)
-        injection_actions.addStretch(1)
         single_layout.addWidget(injection_actions_panel, 8, 0, 1, 6)
         QTimer.singleShot(0, self._size_injection_action_buttons)
 
@@ -1943,11 +1947,11 @@ class CraniotomyWindow(QMainWindow):
     def _size_injection_action_buttons(self) -> None:
         if not hasattr(self, "injection_actions_panel"):
             return
-        available = max(0, self.injection_actions_panel.contentsRect().width() - 8)
-        width = available // 2
+        available = max(0, self.injection_actions_panel.contentsRect().width() - 16)
+        width = available // 3
         if width:
-            self.start_injection_btn.setFixedWidth(width)
-            self.stop_injection_btn.setFixedWidth(width)
+            for button in (self.start_injection_btn, self.single_site_injection_btn, self.stop_injection_btn):
+                button.setFixedWidth(width)
 
     def set_injection_sequence_controls_active(self, active: bool) -> None:
         """Lock injection setup while running, preserving progress and emergency controls."""
@@ -6135,6 +6139,54 @@ class CraniotomyWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.warning(self, "Injection", str(exc))
+
+    def start_injection_at_current_position(self) -> None:
+        """Run one recipe at the current position, treating it as the surface."""
+        if self.injection_thread is not None and self.injection_thread.is_alive():
+            return
+        if not getattr(self.controller, "supports_injection_protocol", True):
+            QMessageBox.warning(self, "Direct USB setup", "Connect with calibrated USB first. Continuous flow is not implemented.")
+            return
+        if not self._require_idle("Single Injection"):
+            return
+        try:
+            self._require_project_coordinates("injection_sites")
+            current_axis = tuple(self.controller.get_current_axis_position())
+            ap, ml, dv = self._axis_to_bregma(current_axis)
+            site = InjectionSite(ap=ap, ml=ml, dv=dv)
+            settings = self._injection_protocol_settings()
+            self._set_number_edit(self.single_injection_volume_nl, settings.main_volume_nl)
+            self._set_number_edit(self.insertion_injection_rate_nl_min, settings.insertion_rate_nl_min)
+            self._set_number_edit(self.main_injection_rate_nl_min, settings.main_rate_nl_min)
+            self._set_number_edit(self.injection_depth_mm, settings.injection_depth_mm)
+            self._set_number_edit(self.insert_retract_speed_um_s, settings.insert_retract_speed_um_s)
+            self._set_number_edit(self.movement_overshoot_mm, settings.overshoot_mm)
+            self._set_number_edit(self.post_inject_pause_s, settings.post_inject_pause_s)
+            injection_plan = self._main_injection_step_plan(settings.main_volume_nl)
+            if not injection_plan:
+                return
+            test_volume_nl = self._rounded_test_volume()
+            self.sync_syringe_position_before_injection()
+            required_volume_nl, _insertion_volume_nl, _test_volume_total_nl = (
+                self._estimated_total_syringe_volume_nl(settings, 1)
+            )
+            self.ensure_total_syringe_capacity(required_volume_nl)
+            self._start_injection_sequence(
+                sites=[site],
+                settings=settings,
+                injection_plan=injection_plan,
+                check_blocked=self.block_check.isChecked(),
+                test_volume_nl=test_volume_nl,
+                start_site_offset=0,
+                total_site_count=1,
+                initial_status=(
+                    f"Ready: single injection at current position, {settings.main_volume_nl} nl; "
+                    f"insertion {settings.insertion_rate_nl_min:.1f}, "
+                    f"main {settings.main_rate_nl_min:.1f} nl/min"
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Single Injection", str(exc))
 
     def resume_injection_from_selected(self) -> None:
         if not getattr(self.controller, "supports_injection_protocol", True):
