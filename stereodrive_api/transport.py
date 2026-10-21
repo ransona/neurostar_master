@@ -115,7 +115,9 @@ class Simulator:
     def __init__(self, log, raw=None, device_file=None):
         self.log = log
         self.device_file = Path(device_file) if device_file else None
-        if raw is None and self.device_file and self.device_file.exists():
+        # A persistent simulation must reopen at its last saved motor counts,
+        # even though the caller also supplies the default calibrated fixture.
+        if self.device_file and self.device_file.exists():
             raw = json.loads(self.device_file.read_text(encoding='utf-8'))
         self.raw = dict(raw or dict(AP=105280, ML=75864, DV=41767, PISTON=-8572))
         self.drill_on = False
@@ -128,10 +130,14 @@ class Simulator:
         if data[:2] == b'\xaf\x0f':
             axis = next(a for a in AXES if SELECTORS[a] == data[2])
             pending = self.pending.pop(axis, None)
-            # If the simulated target has already elapsed when Stop arrives,
-            # report it as completed; otherwise preserve the pre-move position.
-            if pending and time.monotonic() >= pending[1]:
-                self.raw[axis] = pending[0]
+            if pending:
+                self.raw[axis] = self._interpolated_raw(pending, time.monotonic())
+
+    @staticmethod
+    def _interpolated_raw(pending, now):
+        start, target, started, ends = pending
+        fraction = max(0.0, min(1.0, (now - started) / max(1e-9, ends - started)))
+        return round(start + (target - start) * fraction)
 
     def exchange(self, data, size):
         self.write(data)
@@ -142,12 +148,18 @@ class Simulator:
         axis = next(a for a in AXES if SELECTORS[a] == data[2])
         if data[1] == 0x0c:
             prior = self.raw[axis]; target = struct.unpack_from('<i', data, 3)[0]
-            self.pending[axis] = (target, time.monotonic() + .25)
+            started = time.monotonic()
+            self.pending[axis] = (prior, target, started, started + .5)
             reply = b'\x0c' + struct.pack('<ii', prior, target if axis == 'AP' else prior)
         else:
-            moving = axis in self.pending
-            if moving and time.monotonic() >= self.pending[axis][1]:
-                self.raw[axis] = self.pending.pop(axis)[0]; moving = False
+            pending = self.pending.get(axis)
+            moving = pending is not None
+            if pending:
+                self.raw[axis] = self._interpolated_raw(pending, time.monotonic())
+                if time.monotonic() >= pending[3]:
+                    self.raw[axis] = pending[1]
+                    self.pending.pop(axis, None)
+                    moving = False
             reply = b'\x0e' + struct.pack('<I', int(time.monotonic()*1000) % 2**32)
             reply += bytes((SELECTORS[axis],)) + struct.pack('<iB', self.raw[axis], int(moving))
             reply += bytes(size - len(reply))

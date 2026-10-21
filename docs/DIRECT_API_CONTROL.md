@@ -37,6 +37,66 @@ preferences never connects, verifies physical setup, chooses current direction
 history or enables New Reference automatically. Invalid/wrong-mode files are
 ignored for control and retained until the user explicitly saves new setup.
 
+## Calibrate from the current physical position
+
+Opening **USB setup / zero calibration** goes directly to the calibration screen.
+Select the verified current direction of AP, ML, DV and piston when disconnected.
+Connect when prompted. Use the shared AP/ML/DV step size, plunger step size,
+arrow controls and Stop to position the mechanism; enter AP/ML/DV mm and the
+current plunger scale reading in nL (not an injection dose). Saving updates the
+mode-specific `direct-control.json` profile in the standard configuration folder.
+Native StereoDrive/other controllers must be closed.
+The screen has enable switches for DV, Nano piston, drill power and pulsed
+workflows, plus Drill On/Off when a calibrated USB session is connected. Raster
+movement and force control are displayed as unavailable because this controller
+has no implementation for those commands.
+
+Saving reads two stable idle snapshots using status queries only; saving sends no
+movement, homing, zeroing, Stop or drill command and does not overwrite the API
+motion journal. A connected session supplies its tracked backlash history; no
+second serial port is opened. The newly saved anchors apply on verified reconnect,
+not by silently changing an active session reference. A moving/changing controller or failed read refuses the save.
+The resulting calibration is written atomically into the mode-specific setup
+settings and loaded into USB setup. Simulation reads synthetic counts; never reuse
+its calibration for hardware.
+
+The conversion subtracts CURRENT backlash from raw counts, then uses 5225 counts/mm
+(AP/DV sign -1, ML +1) to derive each zero count. The piston anchor is derived from
+the entered volume using 161.36 counts/nL and the 3000 nL reference. Saved anchors
+are normalized, with `anchor_backlash` zero. Rounding adds at most half a count of
+coordinate error. No physical travel to zero or to 3000 nL is needed. This sets
+offset references, not a new counts-per-unit or delivered-volume calibration.
+
+The calibration screen includes AP/ML/DV +/- jog buttons sharing one step size,
+piston Up/Down steps, a current position/counter display and Stop. Movement runs
+on a worker so Stop stays responsive. After a jog, the measured-reading checkbox
+is cleared: position the physical scales, enter the final readings and confirm
+again before Save.
+
+When disconnected, the dialog offers to connect; accepting opens a dedicated
+**relative calibration connection**, not an invented absolute calibration. It
+requires the selected verified direction histories and uses the identified USB
+controller exclusively. Uncalibrated jogging is bounded to +/-1 mm per axis and
++/-100 nL piston from this connection, 1 mm/s axis profile. Keep the entire envelope
+clear and leave plunger travel room. The drill must report OFF. Each move verifies
+raw target and idle, tracks backlash/fractional counts and journals validity before
+and after motion in a separate `calibration-jog-*.json`. Stop latches cancellation;
+interrupted/unknown motion faults the jog session. Closing the dialog Stops and
+closes an owned calibration connection; normal planner control then connects with
+the saved anchors and verified final history. These mode-specific journals are not
+normal calibrated motion-state files and are never silently restored as such.
+
+Existing calibrated connections retain their configured travel limits and are reused;
+the dialog temporarily permits DV and piston jogging, then restores their previous
+opt-ins. Drill ON is not offered in this dialog. No homing, automatic reference
+recovery or unrestricted pre-calibration motion is added.
+
+Afterward verify the loaded calibration, select **Establish independently verified
+new reference** only when legitimately replacing the old anchors, then connect.
+Changed anchors do not silently overwrite an existing motion journal or recover an
+unknown fault. Recheck displayed coordinates against the physical scales and reset
+GUI Bregma/Anchor separately as required.
+
 ## Reviewed physical entry points
 
 | Entry point | Direct behavior / safety guard |

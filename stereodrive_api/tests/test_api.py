@@ -6,7 +6,7 @@ import threading
 import time
 import unittest
 from stereodrive_api import StereoDrive, Calibration
-from stereodrive_api.protocol import target
+from stereodrive_api.protocol import target, BACKLASH
 
 INITIAL = dict(AP=0, ML=261, DV=0, PISTON=0)
 
@@ -22,6 +22,14 @@ class APITests(unittest.TestCase):
         d.connect(verified_backlash=INITIAL)
         self.addCleanup(d.close)
         return d
+
+    def test_live_configuration_does_not_validate_simulator_fixture_against_hardware_limits(self):
+        d = StereoDrive(simulate=False, calibration=Calibration(
+            dict(AP=105280, ML=75864, DV=41767), -8572, INITIAL),
+            travel_limits=dict(AP=(5,70), ML=(5,65), DV=(5,65), PISTON=(503,4500)))
+        self.assertEqual(d.travel_limits['AP'], (5.0, 70.0))
+        self.assertEqual(d.simulation_start_position['AP'], 0.0)
+        self.assertFalse(d.simulate)
 
     def test_packets_match_captured_profiles(self):
         self.assertEqual(target('AP', 105228, 1).hex(), 'af0c400c9b01001a05401f401f00010104')
@@ -48,14 +56,15 @@ class APITests(unittest.TestCase):
     def test_piston_reversal_and_three_same_direction_moves(self):
         d=self.drive(allow_piston=True)
         # 20 nL triples remain inside the cumulative 100 nL envelope.
-        raw=d.position()['raw_counts']['PISTON']; deltas=[]
+        raw=d.position()['raw_counts']['PISTON']; initial_raw=raw; deltas=[]
         for direction in ('up','up','up','down','down','down'):
             d.piston_step(direction,20)
             now=d.position()['raw_counts']['PISTON'];deltas.append(now-raw);raw=now
         self.assertEqual(deltas[0],9052)
         self.assertLessEqual(abs(deltas[1]-deltas[2]),1)
         self.assertLessEqual(abs(abs(deltas[3])-9052),1)
-        self.assertEqual(raw,-8572)
+        self.assertEqual(raw, initial_raw)
+        self.assertAlmostEqual(d.position()['piston_nl_estimate'], 3000.0, delta=1 / 161.36)
 
     def test_opt_in_invalid_inputs_and_cumulative_bounds(self):
         d=self.drive()
@@ -89,23 +98,65 @@ class APITests(unittest.TestCase):
 
     def test_stop_from_other_thread_no_retry_and_busy_rejected(self):
         d=self.drive();errors=[]
+        start=d.position()['axes_mm']['AP']
+        end=start+.5
+        raw_start=d._session.raw['AP']
+        from stereodrive_api.protocol import SIGNS, BACKLASH
+        raw_target=round(d._session.command_normal['AP'] + SIGNS['AP']*(end-start)*d._session.scales['AP'])
         def move():
-            try:d.move_mm('AP',.5)
+            try:d.move_mm('AP',end-start)
             except Exception as e:errors.append(e)
         thread=threading.Thread(target=move);thread.start()
         deadline=time.monotonic()+2
-        while not d._session.busy and time.monotonic()<deadline:time.sleep(.005)
+        while 'AP' not in d._session.transport.pending and time.monotonic()<deadline:time.sleep(.005)
         with self.assertRaises(RuntimeError):d.move_mm('ML',.01)
+        time.sleep(.2)
         d.stop();thread.join(2)
         self.assertFalse(thread.is_alive());self.assertTrue(errors)
-        # Simulator reports an exact stopped position, so cancellation is
-        # recoverable rather than becoming a latched USB safety fault.
-        self.assertTrue(json.loads(self.path.read_text())['valid'])
+        stopped=d.position()
+        position=stopped['axes_mm']['AP']
+        self.assertGreater(position,start)
+        self.assertLess(position,end)
+        state=json.loads(self.path.read_text())
+        self.assertTrue(state['valid'])
+        self.assertGreater(state['raw']['AP'], min(raw_start,raw_target))
+        self.assertLess(state['raw']['AP'], max(raw_start,raw_target))
+        self.assertEqual(state['backlash_state']['AP'],BACKLASH['AP'] if SIGNS['AP'] > 0 else 0)
+        self.assertTrue(any('MOVE_CANCELLED_RECOVERED' in line for line in (self.path.with_suffix('.jsonl').read_text()).splitlines()))
         d.move_mm('ML',.01)
         self.assertAlmostEqual(d.position()['axes_mm']['ML'],.01,delta=1/5225)
         packets=d._session.transport.packets
         self.assertEqual(sum(p[1]==0x0c for p in packets),2)
         self.assertEqual({p[2] for p in packets if p[1]==0x0f},{0x40,0x50,0x60,0x70})
+
+    def test_stop_during_backlash_takeup_persists_partial_offset_and_restores(self):
+        d=self.drive()
+        d.move_mm('AP',1.0)
+        start=d.position()['axes_mm']['AP']
+        errors=[]
+        def reverse():
+            try:d.move_mm('AP',-.1)
+            except Exception as exc:errors.append(exc)
+        thread=threading.Thread(target=reverse);thread.start()
+        deadline=time.monotonic()+2
+        while 'AP' not in d._session.transport.pending and time.monotonic()<deadline:time.sleep(.005)
+        time.sleep(.12)
+        d.stop();thread.join(2)
+        self.assertFalse(thread.is_alive());self.assertTrue(errors)
+        saved=json.loads(self.path.read_text())
+        partial=saved['backlash_state']['AP']
+        self.assertTrue(saved['valid'])
+        self.assertGreater(partial,0)
+        self.assertLess(partial,BACKLASH['AP'])
+        self.assertAlmostEqual(d.position()['axes_mm']['AP'],start,delta=1/5225)
+        d.close()
+
+        restored=StereoDrive(state_path=self.path).connect()
+        self.addCleanup(restored.close)
+        self.assertEqual(restored._session.states['AP'],partial)
+        self.assertAlmostEqual(restored.position()['axes_mm']['AP'],start,delta=1/5225)
+        restored.move_mm('AP',-.2)
+        self.assertAlmostEqual(restored.position()['axes_mm']['AP'],start-.2,delta=1/5225)
 
     def test_corrupt_ack_stops_and_faults(self):
         d=self.drive(); original=d._session.transport.exchange

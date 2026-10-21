@@ -52,8 +52,12 @@ class StereoDrive:
                for value in simulation_start_position.values()):
             raise ValueError('Simulation start coordinates must be finite numbers.')
         self.simulation_start_position = {axis: float(value) for axis, value in simulation_start_position.items()}
-        for axis in ('AP', 'ML', 'DV', 'PISTON'):
-            check_target(self.travel_limits, axis, self.simulation_start_position[axis])
+        # The synthetic fixture is irrelevant to a live connection. Validating
+        # its default zero position against the user's real hardware envelope
+        # incorrectly rejected otherwise valid saved calibrations at startup.
+        if self.simulate:
+            for axis in ('AP', 'ML', 'DV', 'PISTON'):
+                check_target(self.travel_limits, axis, self.simulation_start_position[axis])
         self.allow_drill = bool(allow_drill) or (self.simulate and not self.persist_simulation)
         self.allow_dv = bool(allow_dv) or (self.simulate and not self.persist_simulation)
         self.allow_piston = bool(allow_piston) or (self.simulate and not self.persist_simulation)
@@ -64,6 +68,46 @@ class StereoDrive:
         self._lock = threading.Lock()
         self._stopping = threading.Event()
         self._session = None
+
+    @staticmethod
+    def read_idle_counts(*, simulate=True):
+        """Read stable idle raw counters without calibration, journal writes or movement.
+
+        Disconnect other controllers first. This opens the same identified port
+        exclusively and sends only status queries, never targets, Stop or drill writes.
+        """
+        from .protocol import poll, decode_status
+        transport=Simulator(lambda *a,**k:None) if simulate else WindowsSerial(lambda *a,**k:None)
+        try:
+            def sample():
+                readings={a:decode_status(a,transport.exchange(poll(a),21 if a=='AP' else 26)) for a in AXES}
+                if any(v.moving for v in readings.values()):raise RuntimeError('Calibration refused: controller moving')
+                return {a:v.raw for a,v in readings.items()}
+            initial=sample()
+            time.sleep(.2)
+            if sample()!=initial:raise RuntimeError('Calibration refused: motor counts changed')
+            return initial
+        finally:transport.close()
+
+    def capture_calibration_counts(self):
+        """Capture stable counts/history from an existing idle, nonfaulted session.
+
+        Holds the operation lock to prevent a move starting between snapshots.
+        Does not change the current reference or motion journal.
+        """
+        if not self._lock.acquire(blocking=False):raise RuntimeError('Controller busy; wait for idle before calibrating')
+        try:
+            s=self._require()
+            if s.fault:raise RuntimeError('Resolve the session fault before calibrating')
+            first=s.snapshot()
+            time.sleep(.2)
+            second=s.snapshot()
+            if s.busy or any(first[a].moving or second[a].moving or first[a].raw!=second[a].raw for a in AXES):
+                raise RuntimeError('Calibration refused: motor counts are moving or changing')
+            if any(second[a].raw!=s.raw[a] for a in AXES):
+                raise RuntimeError('Calibration refused: unexpected counts; investigate before resetting a reference')
+            return dict(raw_counts={a:second[a].raw for a in AXES},backlash_counts=dict(s.states))
+        finally:self._lock.release()
 
     def _log(self, event, **values):
         record = dict(utc=datetime.now(timezone.utc).isoformat(), event=event, **values)
@@ -108,6 +152,9 @@ class StereoDrive:
                 if saved and not new_reference and verified_backlash != saved.get('backlash_state'):
                     raise ValueError('Current verified direction history differs from saved state; investigate before reconnecting')
             if (new_reference or saved is None) and not self.simulate:
+                if verified_backlash is None or set(verified_backlash) != set(AXES):
+                    raise ValueError('New reference requires verified AP/ML/DV/PISTON backlash states')
+            if (new_reference or saved is None) and self.simulate and self.persist_simulation:
                 if verified_backlash is None or set(verified_backlash) != set(AXES):
                     raise ValueError('New reference requires verified AP/ML/DV/PISTON backlash states')
             if not (self.simulate and not self.persist_simulation):
@@ -187,13 +234,11 @@ class StereoDrive:
             try: s.move(axis, 1 if delta > 0 else -1, abs(delta))
             except (ValueError,): raise
             except InterruptedError:
-                # Session.move reconciles a deterministic simulator stop. Keep
-                # that recoverable state; a live controller remains invalidated.
+                # Session.move preserves state only after it has stopped every
+                # axis and reconciled stable raw counts/backlash. An unresolved
+                # stop has already latched a fault and invalidated the journal.
                 if s.simulated:
                     s.cancel.clear()
-                else:
-                    try: s.invalidate('Movement interrupted; verify physical position/history before reconnecting.')
-                    finally: s.emergency_stop()
                 raise
             except Exception as exc:
                 try: s.invalidate(exc)
@@ -362,9 +407,6 @@ class StereoDrive:
         except InterruptedError:
             if self._session is not None and self._session.simulated:
                 self._session.cancel.clear()
-            elif self._session is not None:
-                try: self._session.invalidate('Movement interrupted; verify physical position/history before reconnecting.')
-                finally: self._session.emergency_stop()
             raise
         except Exception as exc:
             if self._session is not None:

@@ -12,8 +12,9 @@ from unittest.mock import Mock, patch
 HAS_QT=importlib.util.find_spec('PySide6') is not None
 if HAS_QT:
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-    from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog,QComboBox,QMessageBox
+    from PySide6.QtCore import QTimer,QEvent,Qt
+    from PySide6.QtGui import QKeyEvent,QImage
+    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox,QDialog,QComboBox,QMessageBox,QDoubleSpinBox
     import craniotomy_qt as planner
     from direct_api_controller import StereoDriveController
     from stereodrive_api import Calibration
@@ -29,6 +30,10 @@ class PlannerTests(unittest.TestCase):
         self.root=Path(self.directory.name)
         self.settings_patch=patch.object(planner.CraniotomyWindow,'_config_root_dir',lambda _:self.root)
         self.settings_patch.start()
+        self.appdata_patch=patch.object(planner.CraniotomyWindow,'_app_data_root_dir',lambda _:self.root/'AppData'/'Roaming'/'Neurostar_Master')
+        self.appdata_patch.start()
+        self.legacy_patch=patch.object(planner.CraniotomyWindow,'_legacy_direct_control_root_dir',lambda _:self.root/'Legacy'/'DirectUSB'/'simulation')
+        self.legacy_patch.start()
         self.dialogs_patch=patch.object(planner,'QMessageBox')
         self.dialogs=self.dialogs_patch.start()
         self.window=planner.CraniotomyWindow(StereoDriveController())
@@ -37,10 +42,11 @@ class PlannerTests(unittest.TestCase):
     def tearDown(self):
         self.window.controller.close()
         self.window.close();self.app.processEvents()
-        self.dialogs_patch.stop();self.settings_patch.stop();self.directory.cleanup()
+        self.dialogs_patch.stop();self.settings_patch.stop();self.appdata_patch.stop();self.legacy_patch.stop();self.directory.cleanup()
 
     def connect(self,**kwargs):
         c=self.window.controller
+        if c.drive is not None:c.close()
         options=dict(allow_dv=True,allow_piston=True,travel_limits=dict(AP=(-40,40),ML=(-40,40),DV=(-40,40),PISTON=(500,4500)));options.update(kwargs)
         c.connect(Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,dict(AP=0,ML=261,DV=0,PISTON=0)),
                   dict(AP=0,ML=261,DV=0,PISTON=0),self.root/'api.json',**options)
@@ -212,8 +218,8 @@ class PlannerTests(unittest.TestCase):
         fast_pcm,fast_hz=self.window._move_speed_tone_pcm(planner.MOVE_SPEED_OPTIONS_MM[-1])
         self.assertEqual(len(slow_pcm),int(22050*.5)*2)
         self.assertEqual(len(fast_pcm),len(slow_pcm))
-        self.assertAlmostEqual(slow_hz,220)
-        self.assertAlmostEqual(fast_hz,880)
+        self.assertAlmostEqual(slow_hz,440)
+        self.assertAlmostEqual(fast_hz,1760)
         slow_samples=memoryview(slow_pcm).cast('h')
         self.assertEqual(slow_samples[0],0)
         self.assertEqual(slow_samples[-1],0)
@@ -297,6 +303,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(observed['default'])
 
     def test_disconnected_keyboard_does_not_move(self):
+        self.window.controller.close()
         with patch.object(self.window,'_focus_is_editable',return_value=False):
             self.window.keyboard_nudge('AP',True,'AP')
         self.assertIsNone(self.window.controller.drive)
@@ -308,7 +315,7 @@ class PlannerTests(unittest.TestCase):
         self.window.direct_limit_edits['AP'][1].setValue(25)
         self.window.direct_speed_combo.setCurrentText('2')
         self.window._apply_direct_motion_options()
-        self.assertEqual(json.loads((self.root/'direct-control.json').read_text())['travel_limits']['AP'],[0,25])
+        self.assertEqual(json.loads(self.window._direct_control_settings_path().read_text())['travel_limits']['AP'],[0,25])
         self.window.close();self.app.processEvents()
         self.window=planner.CraniotomyWindow(StereoDriveController())
         self.assertEqual(self.window.direct_limit_edits['AP'][1].value(),25)
@@ -328,7 +335,11 @@ class PlannerTests(unittest.TestCase):
 
     def test_keyboard_absolute_progress_and_internal_bregma(self):
         self.connect()
+        self.window.top_view.set_overlay_image(QImage(2,2,QImage.Format.Format_ARGB32), {})
         self.window.set_local_bregma()
+        self.assertEqual(self.window.coordinate_mode,"bregma")
+        self.assertTrue(self.window.top_view.coordinate_mode_bregma)
+        self.assertTrue(self.window.injection_sites_view.coordinate_mode_bregma)
         self.window.keyboard_nudge('AP',True,'AP')
         self.wait_idle()
         self.window.controller.prepare_motion()
@@ -358,13 +369,148 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(self.window.top_view.current_point)
         self.assertIsNone(self.window.injection_sites_view.current_point)
 
+    def test_main_position_readout_opens_mm_target_prompt(self):
+        self.window.controller.close()
+        self.connect()
+        observed={}
+        def inspect_and_submit():
+            prompt=next(d for d in QApplication.topLevelWidgets()
+                if isinstance(d,QDialog) and d.windowTitle()=="Move AP to Position")
+            edit=prompt.findChild(QDoubleSpinBox,"mainTargetPositionAP")
+            observed["suffix"]=edit.suffix()
+            observed["start"]=edit.value()
+            edit.setValue(12.5)
+            prompt.accept()
+        with patch.object(self.window,"_require_idle",return_value=True), \
+             patch.object(self.window,"goto_gui_position") as goto:
+            QTimer.singleShot(0,inspect_and_submit)
+            self.window.open_axis_position_target("AP")
+            self.assertTrue(goto.called)
+            self.assertEqual(goto.call_args.args[0],12.5)
+        self.assertEqual(observed["suffix"]," mm")
+        self.assertAlmostEqual(observed["start"],self.window.get_gui_position()[0],places=3)
+        self.assertFalse(any(d.windowTitle()=="Move AP to Position" for d in QApplication.topLevelWidgets()
+                             if isinstance(d,QDialog) and d.isVisible()))
+
+    def test_keyboard_nudges_queue_and_escape_clears_pending_steps(self):
+        self.window._keyboard_move_active=True
+        stopped=threading.Event()
+        def fake_stop():stopped.set()
+        with patch.object(self.window,"_motion_is_active",return_value=True), \
+             patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window.controller,"stop",side_effect=fake_stop) as stop, \
+             patch.object(self.window,"_start_next_keyboard_move") as start_next:
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.assertEqual(len(self.window._keyboard_move_queue),1)
+            self.assertAlmostEqual(self.window._keyboard_move_queue[0][3],2*self.window.move_speed_step_mm)
+            self.window.cancel_keyboard_move_queue()
+            self.assertTrue(stopped.wait(1))
+            self.window.cancel_keyboard_move_queue()
+            self.assertEqual(self.window._keyboard_move_queue,[])
+            self.assertTrue(self.window._keyboard_move_cancelled)
+            stop.assert_called_once_with()
+            self.assertIn("already in progress", self.window.current_action)
+        self.window._keyboard_move_active=False
+        self.window._keyboard_move_cancelled=False
+
+    def test_keyboard_same_direction_queue_steps_are_consolidated(self):
+        self.window._keyboard_move_active=True
+        step=self.window.move_speed_step_mm
+        with patch.object(self.window,"_motion_is_active",return_value=True), \
+             patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window,"_start_next_keyboard_move"):
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.window.keyboard_nudge("ML",True,"ML lateral")
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+        self.assertEqual(self.window._keyboard_move_queue,
+                         [("AP",True,"AP anterior",2*step),
+                          ("ML",True,"ML lateral",step),
+                          ("AP",True,"AP anterior",step)])
+        self.window._keyboard_move_active=False
+        self.window._keyboard_move_queue.clear()
+
+    def test_keyboard_direction_reversal_replaces_only_that_axis_queue(self):
+        self.window._keyboard_move_active=True
+        with patch.object(self.window,"_motion_is_active",return_value=True), \
+             patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window,"_start_next_keyboard_move"):
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.window.keyboard_nudge("AP",True,"AP anterior")
+            self.window.keyboard_nudge("ML",True,"ML lateral")
+            self.window.keyboard_nudge("AP",False,"AP posterior")
+        self.assertEqual(
+            self.window._keyboard_move_queue,
+            [("ML",True,"ML lateral",self.window.move_speed_step_mm),
+             ("AP",False,"AP posterior",self.window.move_speed_step_mm)],
+        )
+        self.window._keyboard_move_active=False
+        self.window._keyboard_move_queue.clear()
+
+    def test_keyboard_direction_reversal_stops_active_move_then_resumes(self):
+        self.window._keyboard_move_active=True
+        self.window._keyboard_move_current_axis="AP"
+        self.window._keyboard_move_current_positive=True
+        self.window._keyboard_move_queue=[("ML",True,"ML lateral",.1),
+                                          ("AP",True,"AP anterior",.1)]
+        stop_called=threading.Event()
+        with patch.object(self.window,"_motion_is_active",return_value=True), \
+             patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window.controller,"stop",side_effect=stop_called.set), \
+             patch.object(self.window,"refresh_live_position") as refresh, \
+             patch.object(self.window,"_keyboard_move_finished_after_idle") as wait_for_idle:
+            self.window.keyboard_nudge("AP",False,"AP posterior")
+            self.assertTrue(stop_called.wait(1))
+            self.assertTrue(self.window._keyboard_move_cancelled)
+            self.assertEqual(self.window._keyboard_move_queue,
+                             [("ML",True,"ML lateral",.1),
+                              ("AP",False,"AP posterior",self.window.move_speed_step_mm)])
+            self.window._keyboard_move_finished(None)
+        refresh.assert_called_once_with()
+        wait_for_idle.assert_called_once_with()
+        self.assertFalse(self.window._keyboard_move_active)
+        self.assertFalse(self.window._keyboard_move_cancelled)
+        self.assertFalse(self.window._keyboard_move_resume_after_cancel)
+
+    def test_escape_stops_partial_keyboard_move_without_disconnect(self):
+        self.connect()
+        self.window.move_speed_step_mm=1.0
+        self.window.keyboard_nudge("AP",True,"AP anterior")
+        self.window.keyboard_nudge("AP",True,"AP anterior")
+        deadline=time.monotonic()+2
+        while not self.window._keyboard_move_active and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        time.sleep(.16)
+        drive=self.window.controller.drive
+        self.window.cancel_keyboard_move_queue()
+        deadline=time.monotonic()+4
+        while self.window._keyboard_move_active and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        self.assertIs(self.window.controller.drive,drive)
+        self.assertIsNone(self.window.controller.error)
+        position=self.window.controller.get_current_axis("AP")
+        self.assertGreater(position,0)
+        self.assertLess(position,1)
+        self.assertEqual(self.window._keyboard_move_queue,[])
+        self.assertTrue(json.loads((self.root/'api.json').read_text())['valid'])
+
+    def test_escape_outside_active_injection_does_not_query_syringe_position(self):
+        event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_Escape,Qt.KeyboardModifier.NoModifier)
+        with patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window,"stop_injection") as stop_injection, \
+             patch.object(self.window,"_start_syringe_position_scale_read") as read_scale:
+            self.assertTrue(self.window.eventFilter(self.window,event))
+        stop_injection.assert_not_called()
+        read_scale.assert_not_called()
+
     def test_direct_settings_separate_and_survive_startup(self):
         self.window.direct_control_settings=dict(calibration=dict(axis_zero_counts=dict(AP=105280,ML=75864,DV=41767),
             piston_3000_count=-8572,anchor_backlash=dict(AP=0,ML=261,DV=0,PISTON=0)),speed_mm_s=2,
             allow_dv=True,allow_piston=True,allow_drill=False,verified=True,new_reference=True)
         self.window.home_axis=(.1,.2,.3)
         self.window._save_general_settings()
-        saved=json.loads((self.root/'direct-control.json').read_text())
+        saved=json.loads(self.window._direct_control_settings_path().read_text())
         general=json.loads(self.window._general_settings_path().read_text())
         self.assertEqual(saved['speed_mm_s'],2)
         self.assertNotIn('verified',saved);self.assertNotIn('new_reference',saved)
@@ -373,7 +519,24 @@ class PlannerTests(unittest.TestCase):
         self.window=planner.CraniotomyWindow(StereoDriveController())
         self.assertEqual(self.window.direct_control_settings['speed_mm_s'],2)
         self.assertEqual(self.window.home_axis,(.1,.2,.3))
-        self.assertIsNone(self.window.controller.drive)
+        self.assertIsNotNone(self.window.controller.drive)
+        self.assertTrue(self.window.controller.drive.simulate)
+
+    def test_keyboard_shortcuts_save_in_appdata_and_legacy_settings_migrate_once(self):
+        path=self.window._general_settings_path()
+        self.assertEqual(path,self.root/'AppData'/'Roaming'/'Neurostar_Master'/'settings.json')
+        self.window._save_general_settings()
+        payload=json.loads(path.read_text())
+        self.assertIn('movement_keys',payload)
+        self.assertIn('ml_left',payload['movement_keys'])
+        legacy=self.root/'settings.json'
+        legacy.write_text(json.dumps({'coordinate_mode':'axis'}))
+        target=self.root/'migrated'/'settings.json'
+        planner._copy_legacy_user_file(legacy,target)
+        self.assertEqual(json.loads(target.read_text()),{'coordinate_mode':'axis'})
+        target.write_text(json.dumps({'coordinate_mode':'bregma'}))
+        planner._copy_legacy_user_file(legacy,target)
+        self.assertEqual(json.loads(target.read_text()),{'coordinate_mode':'bregma'})
 
     def test_legacy_direct_fields_migrate_without_loss(self):
         path=self.window._direct_control_settings_path()
@@ -411,9 +574,62 @@ class PlannerTests(unittest.TestCase):
         self.connect();self.window.set_syringe_position(3000)
         self.window.manual_injection_volume_nl=10
         self.window.manual_syringe_step(True)
-        self.assertTrue(self.window.controller.has_active_motion())
-        self.wait_idle();self.app.processEvents()
+        self.assertTrue(self.window._manual_syringe_queue_is_active())
+        deadline=time.monotonic()+5
+        while self.window._manual_syringe_queue_is_active() and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        self.app.processEvents()
         self.assertAlmostEqual(self.window.current_syringe_position(),3010,delta=1/161.36)
+
+    def test_manual_syringe_pulses_queue_and_execute_in_order(self):
+        self.connect();self.window.set_syringe_position(3000)
+        self.window.manual_injection_volume_nl=10
+        for _ in range(3):self.window.manual_syringe_step(True)
+        deadline=time.monotonic()+8
+        while self.window._manual_syringe_queue_is_active() and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.01)
+        self.app.processEvents()
+        self.assertFalse(self.window._manual_syringe_queue_is_active())
+        self.assertAlmostEqual(self.window.current_syringe_position(),3030,delta=2/161.36,
+                               msg=f"status={self.window.current_action}; queue={self.window._manual_syringe_queue}")
+        packets=self.window.controller.drive._session.transport.packets
+        piston_targets=[p for p in packets if len(p)>2 and p[:2]==b'\xaf\x0c' and p[2]==0x70]
+        self.assertEqual(len(piston_targets),3)
+
+    def test_stop_cancels_queued_pulses_and_reconciles_partial_plunger_move(self):
+        self.connect();self.window.set_syringe_position(3000)
+        self.window.manual_injection_volume_nl=100
+        for _ in range(3):self.window.manual_syringe_step(True)
+        drive=self.window.controller.drive
+        deadline=time.monotonic()+3
+        while 'PISTON' not in drive._session.transport.pending and time.monotonic()<deadline:time.sleep(.01)
+        self.assertIn('PISTON',drive._session.transport.pending)
+        time.sleep(.12)
+        self.window.stop_injection()
+        deadline=time.monotonic()+5
+        while (self.window._manual_syringe_queue_is_active() or self.window.current_syringe_position() is None) and time.monotonic()<deadline:
+            self.app.processEvents();time.sleep(.02)
+        position=self.window.current_syringe_position()
+        self.assertIs(self.window.controller.drive,drive)
+        self.assertIsNone(self.window.controller.error)
+        self.assertGreater(position,3000)
+        self.assertLess(position,3100)
+        self.assertEqual(self.window._manual_syringe_queue,[])
+        self.assertTrue(json.loads((self.root/'api.json').read_text())['valid'])
+        piston_targets=[p for p in drive._session.transport.packets if len(p)>2 and p[:2]==b'\xaf\x0c' and p[2]==0x70]
+        self.assertEqual(len(piston_targets),1)
+
+    def test_drill_toggle_shortcut_defaults_to_d_and_is_persisted(self):
+        self.assertEqual(self.window.movement_key_bindings['drill_toggle'],int(Qt.Key.Key_D))
+        self.assertEqual(self.window.movement_key_edits['drill_toggle'].keySequence().toString(),'D')
+        self.window._save_general_settings()
+        stored=json.loads(self.window._general_settings_path().read_text())
+        self.assertEqual(stored['movement_keys']['drill_toggle'],int(Qt.Key.Key_D))
+        event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_D,Qt.KeyboardModifier.NoModifier)
+        with patch.object(self.window,"_focus_is_editable",return_value=False), \
+             patch.object(self.window,"activate_stereodrive_drill") as toggle:
+            self.assertTrue(self.window.eventFilter(self.window,event))
+        toggle.assert_called_once_with()
 
     def test_large_manual_and_test_volumes_are_enabled_and_verified(self):
         self.connect();self.window.set_syringe_position(3000)
@@ -788,39 +1004,92 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.drilled_depths,[.005]*4)
         self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
 
-    def test_zero_setup_wizard_simulation(self):
-        # Persistent mechanical targets survive reconnect with the same Axis zero.
-        self.window.axis_zero_reference=dict(AP=105280,ML=75864-261,DV=41767)
-        self.window.home_axis=(.1,0,0)
-        invoked=[False]
-        timer=QTimer()
-        deadline=time.monotonic()+8
+    def test_single_usb_calibration_window_unlocks_fields_after_motion(self):
+        fake_drivers=[]
+        class FakeCalibrationJog:
+            def __init__(self, states=None, *, simulate=True, journal_path):
+                self.raw=dict(AP=105280,ML=75864,DV=41767,PISTON=-8572)
+                self.states=None;self.travelled=dict.fromkeys(("AP","ML","DV","PISTON"),0.0)
+                self.transport=type("Transport",(),{"identity":"FAKE-USB"})()
+                self.moves=[];self.validated_moves=[];fake_drivers.append(self)
+            def capture_calibration_counts(self):
+                return dict(raw_counts=dict(self.raw),backlash_counts=dict(self.states) if self.states is not None else None,
+                            travelled=dict(self.travelled))
+            def move(self,axis,delta,speed_mm_s=1):
+                from stereodrive_api.protocol import BACKLASH,SIGNS
+                self.moves.append((axis,delta))
+                if self.states is None:self.states=dict.fromkeys(self.raw)
+                old=self.states[axis] or 0
+                self.states[axis]=BACKLASH[axis] if SIGNS[axis]*delta>0 else 0
+                scale=161.36 if axis=="PISTON" else 5225
+                self.raw[axis]+=round(SIGNS[axis]*scale*delta)+self.states[axis]-old
+                self.travelled[axis]+=abs(delta)
+            def validate_move(self,axis,delta):self.validated_moves.append((axis,delta))
+            def stop(self):pass
+            def close(self):pass
+
+        stage={"axis":0,"moves":0,"saved":False,"timeout":False,"initialized":False}
+        timer=QTimer();deadline=time.monotonic()+12
+        axes=("AP","ML","DV","PISTON")
+        values=dict(AP="42.75",ML="39.47",DV="32.01",PISTON="2983.25")
+        live_root=self.root/"AppData"/"Roaming"/"Neurostar_Master"/"DirectUSB"/"live"
         def automate():
-            dialog=next((d for d in self.window.findChildren(QDialog) if d.isVisible() and 'measured zero' in d.windowTitle()),None)
-            if not dialog:return
+            visible_dialogs=[d for d in QApplication.topLevelWidgets() if isinstance(d,QDialog) and d.isVisible()]
+            dialog=next((d for d in visible_dialogs if d.windowTitle()=="USB hardware calibration"),None)
             if time.monotonic()>deadline:
-                dialog.reject();timer.stop();return
-            if not invoked[0]:
-                buttons=dialog.findChildren(QPushButton)
-                next(b for b in buttons if b.text().startswith('Use SIMULATION')).click()
-                next(c for c in dialog.findChildren(QComboBox) if c.count()==2 and c.itemText(0)=='1').setCurrentText('2')
-                next(c for c in dialog.findChildren(QCheckBox) if c.text().startswith('Enable DV')).setChecked(True)
-                next(c for c in dialog.findChildren(QCheckBox) if c.text().startswith('Measured zero/anchor')).setChecked(True)
-                next(b for b in buttons if b.text().startswith('Connect / restore')).click()
-                invoked[0]=True
-            if self.window.controller.drive is not None:
-                button=next(b for b in dialog.findChildren(QPushButton) if b.text()=='Close setup')
-                if button.isEnabled():button.click();timer.stop()
-        timer.timeout.connect(automate);timer.start(100)
-        self.window.open_direct_usb_setup()
-        self.assertTrue(invoked[0]);self.assertIsNotNone(self.window.controller.drive)
-        self.assertTrue(self.window.controller.drive.position()['calibrated'])
-        self.assertEqual(self.window.home_axis,(.1,0,0))
-        saved=json.loads(self.window._direct_control_settings_path().read_text())
-        self.assertIn('calibration',saved)
-        self.assertEqual(saved['speed_mm_s'],2)
-        self.assertTrue(saved['allow_dv'])
-        self.assertNotIn('verified_backlash',saved)
+                stage["timeout"]=True;timer.stop()
+                if dialog:dialog.reject()
+                return
+            if dialog is None:
+                if stage["saved"]:timer.stop()
+                return
+            status=dialog.findChild(planner.QLabel,"calibrationUsbConnectionStatus")
+            if status is None or status.text()!="Connected to hardware USB system":return
+            history=dialog.findChild(planner.QLabel,"calibrationDirectionHistoryStatus")
+            if history is not None and history.text()=="Movement direction history initialized":stage["initialized"]=True
+            axis=axes[stage["axis"]] if stage["axis"]<len(axes) else None
+            if axis is not None:
+                if axis=="PISTON":dialog.findChild(planner.QComboBox,"calibrationPlungerStep").setCurrentText("100")
+                else:dialog.findChild(planner.QComboBox,"calibrationAxisStep").setCurrentText("1")
+                button=dialog.findChild(QPushButton,"calibrationJog"+axis+"Plus")
+                required=1 if axis=="PISTON" else 2
+                if stage["moves"]<required and button.isEnabled():
+                    button.click();stage["moves"]+=1;return
+                field=dialog.findChild(planner.QLineEdit,"calibratePosition"+axis)
+                if field.isEnabled():
+                    field.setText(values[axis]);field.textEdited.emit(values[axis])
+                    stage["axis"]+=1;stage["moves"]=0;return
+            save=dialog.findChild(QPushButton,"saveCalibrationButton")
+            if save is not None and save.isEnabled():
+                save.click();stage["saved"]=True
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
+        reconnect_calls=[]
+        class FakeReconnectedDrive:
+            def position(self):
+                return dict(axes_mm=dict(AP=42.75,ML=39.47,DV=32.01),piston_nl_estimate=2983.25)
+            def close(self):pass
+        def fake_live_reconnect(calibration,states,state_path,**kwargs):
+            reconnect_calls.append((calibration,states,state_path,kwargs))
+            self.window.controller.live=True
+            self.window.controller.drive=FakeReconnectedDrive()
+        with patch("stereodrive_api.calibration_jog.CalibrationJog",FakeCalibrationJog), \
+             patch.object(planner.Path,"home",return_value=self.root), \
+             patch.object(self.window.controller,"connect",side_effect=fake_live_reconnect):
+            timer.timeout.connect(automate);timer.start(50)
+            self.window.open_direct_usb_setup()
+        self.assertFalse(stage["timeout"],stage)
+        self.assertTrue(stage["saved"])
+        self.assertTrue(stage["initialized"])
+        self.assertTrue(self.window.controller.live)
+        self.assertEqual(reconnect_calls[0][1],None)
+        self.assertEqual(reconnect_calls[0][2],live_root/"api-state.json")
+        self.assertEqual(fake_drivers[0].moves[:4],[("AP",.1),("ML",.1),("DV",.1),("PISTON",50.)])
+        profile=json.loads((live_root/"direct-control.json").read_text())
+        self.assertEqual(profile["calibration"]["axis_zero_counts"]["AP"],fake_drivers[0].raw["AP"]+round(42.75*5225))
+        state=json.loads((live_root/"api-state.json").read_text())
+        self.assertEqual(state["identity"],"FAKE-USB")
+        self.assertEqual(state["raw"]["AP"],fake_drivers[0].raw["AP"])
+        self.assertIsNotNone(self.window.controller.drive)
 
 
 if __name__=='__main__':unittest.main()

@@ -2,6 +2,8 @@ from array import array
 import ctypes
 import json
 import math
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,7 +26,7 @@ from PySide6.QtCore import (
     Signal,
     QLockFile,
 )
-from PySide6.QtGui import QColor, QCursor, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QCursor, QDoubleValidator, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 try:
     from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 except ImportError:  # Keep the planner usable if QtMultimedia is omitted by a custom build.
@@ -89,6 +91,19 @@ class BITMAPINFOHEADER(ctypes.Structure):
     ]
 
 
+def _user_app_data_root() -> Path:
+    """Stable per-user settings location, independent of the checked-out repo."""
+    return Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Neurostar_Master"
+
+
+def _copy_legacy_user_file(source: Path, destination: Path) -> None:
+    """Migrate once without overwriting newer data or deleting the old copy."""
+    if destination.exists() or not source.is_file():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
 class BITMAPINFO(ctypes.Structure):
     _fields_ = [
         ("bmiHeader", BITMAPINFOHEADER),
@@ -143,6 +158,17 @@ class NumericLineEdit(QLineEdit):
 
     def _commit_text(self) -> None:
         self.setValue(self.value())
+
+
+class PositionReadout(QLabel):
+    doubleClicked = Signal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.doubleClicked.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 # Native screenshot helpers are not used by the direct backend. Guard their
@@ -879,6 +905,7 @@ class CraniotomyWindow(QMainWindow):
     drill_round_finished_signal = Signal(str)
     benchmark_finished_signal = Signal(str)
     syringe_position_signal = Signal(object)
+    manual_syringe_queue_finished_signal = Signal(object)
     syringe_limit_warning_signal = Signal(str)
     block_prompt_signal = Signal()
     repeat_injection_site_signal = Signal(int)
@@ -888,6 +915,7 @@ class CraniotomyWindow(QMainWindow):
     usb_probe_log_signal = Signal(str)
     usb_probe_finished_signal = Signal(str)
     validation_move_position_signal = Signal(object)
+    keyboard_move_finished_signal = Signal(object)
 
     def __init__(self, controller=None) -> None:
         super().__init__()
@@ -905,6 +933,13 @@ class CraniotomyWindow(QMainWindow):
         self.current_seed_index: int | None = None
         self.current_action = "No trajectory yet"
         self.move_speed_step_mm = DEFAULT_MOVE_SPEED_MM
+        self._keyboard_move_queue = []
+        self._keyboard_move_active = False
+        self._keyboard_move_cancelled = False
+        self._keyboard_move_current_axis = None
+        self._keyboard_move_current_positive = None
+        self._keyboard_move_resume_after_cancel = False
+        self._keyboard_move_lock = threading.Lock()
         self._move_speed_audio_sink = None
         self._move_speed_audio_buffer = None
         self._move_speed_audio_cleanup = QTimer(self)
@@ -919,6 +954,7 @@ class CraniotomyWindow(QMainWindow):
             "ap_posterior": int(Qt.Key.Key_Down),
             "dv_up": int(Qt.Key.Key_PageUp),
             "dv_down": int(Qt.Key.Key_PageDown),
+            "drill_toggle": int(Qt.Key.Key_D),
         }
         self.syringe_key_bindings = {
             "volume_down": int(Qt.Key.Key_F1),
@@ -945,6 +981,13 @@ class CraniotomyWindow(QMainWindow):
         self.manual_injection_volume_nl = DEFAULT_INJECTION_VOLUME_NL
         self.syringe_position_nl: float | None = None
         self.syringe_position_lock = threading.Lock()
+        self._manual_syringe_queue = []
+        self._manual_syringe_queue_lock = threading.Lock()
+        self._manual_syringe_queue_active = False
+        self._manual_syringe_queue_cancelled = False
+        self._manual_syringe_queue_projected_nl: float | None = None
+        self._manual_syringe_active_step = None
+        self._manual_syringe_thread: threading.Thread | None = None
         self.coordinate_mode = "axis"
         self.craniotomy_coordinate_system = "bregma"
         self.injection_sites_coordinate_system = "bregma"
@@ -993,6 +1036,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_round_finished_signal.connect(self.on_drill_round_finished)
         self.benchmark_finished_signal.connect(self.show_benchmark_results)
         self.syringe_position_signal.connect(self.set_syringe_position)
+        self.manual_syringe_queue_finished_signal.connect(self._manual_syringe_queue_finished)
         self.syringe_limit_warning_signal.connect(self.show_syringe_limit_warning)
         self.block_prompt_signal.connect(self.show_block_prompt)
         self.repeat_injection_site_signal.connect(self.show_repeat_injection_site_prompt)
@@ -1002,6 +1046,7 @@ class CraniotomyWindow(QMainWindow):
         self.usb_probe_log_signal.connect(self._append_usb_probe_log)
         self.usb_probe_finished_signal.connect(self._finish_usb_probe)
         self.validation_move_position_signal.connect(self._set_validation_move_position)
+        self.keyboard_move_finished_signal.connect(self._keyboard_move_finished)
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
@@ -1054,7 +1099,8 @@ class CraniotomyWindow(QMainWindow):
                 event.ignore()
                 return
             # Keep the process alive until cancelled workers have unwound.
-            workers = (self.drill_thread, self.injection_thread, self.benchmark_thread, self.usb_probe_thread,
+            workers = (self.drill_thread, self.injection_thread, self._manual_syringe_thread,
+                       self.benchmark_thread, self.usb_probe_thread,
                        getattr(self,"direct_operation_thread",None))
             for worker in workers:
                 if worker is not None:
@@ -1190,9 +1236,9 @@ class CraniotomyWindow(QMainWindow):
         layout.setContentsMargins(8, 6, 8, 8)
         layout.setSpacing(4)
 
-        self.current_ap_label = QLabel("-")
-        self.current_ml_label = QLabel("-")
-        self.current_dv_label = QLabel("-")
+        self.current_ap_label = PositionReadout("-")
+        self.current_ml_label = PositionReadout("-")
+        self.current_dv_label = PositionReadout("-")
         self.action_status_label = QLabel("Status: No trajectory yet")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setMinimumHeight(34)
@@ -1206,6 +1252,10 @@ class CraniotomyWindow(QMainWindow):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setProperty("role", "coord")
             label.setMinimumWidth(82)
+            label.setCursor(Qt.CursorShape.PointingHandCursor)
+            label.setToolTip("Double-click to move this axis to a position in mm")
+        for axis, label in zip(("AP", "ML", "DV"), (self.current_ap_label, self.current_ml_label, self.current_dv_label)):
+            label.doubleClicked.connect(lambda a=axis: self.open_axis_position_target(a))
 
         header_container = QVBoxLayout()
         header_container.setSpacing(3)
@@ -1955,7 +2005,7 @@ class CraniotomyWindow(QMainWindow):
         options_grid = QGridLayout(options_box)
         options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 2)
         self.movement_key_edits = {}
-        key_options = (("speed_decrease", "Decrease movement step"), ("speed_increase", "Increase movement step"), ("ml_left", "ML left"), ("ml_right", "ML right"), ("ap_anterior", "AP anterior"), ("ap_posterior", "AP posterior"), ("dv_up", "DV up"), ("dv_down", "DV down"), ("volume_down", "Decrease injection volume"), ("volume_up", "Increase injection volume"), ("syringe_up", "Syringe step up"), ("syringe_down", "Syringe step down"), ("stop_injection", "Stop injection"))
+        key_options = (("speed_decrease", "Decrease movement step"), ("speed_increase", "Increase movement step"), ("ml_left", "ML left"), ("ml_right", "ML right"), ("ap_anterior", "AP anterior"), ("ap_posterior", "AP posterior"), ("dv_up", "DV up"), ("dv_down", "DV down"), ("drill_toggle", "Toggle drill power"), ("volume_down", "Decrease injection volume"), ("volume_up", "Increase injection volume"), ("syringe_up", "Syringe step up"), ("syringe_down", "Syringe step down"), ("stop_injection", "Stop injection"))
         for row, (name, label) in enumerate(key_options, start=1):
             bindings = self.syringe_key_bindings if name in self.syringe_key_bindings else self.movement_key_bindings
             edit = QKeySequenceEdit(QKeySequence(bindings[name]))
@@ -2038,153 +2088,459 @@ class CraniotomyWindow(QMainWindow):
         self.usb_probe_output.appendPlainText(message)
 
     def open_direct_usb_setup(self) -> None:
-        if not self._require_idle("USB setup"):
+        """Open one live USB calibration surface, independent of planner simulation."""
+        if not self._require_idle("USB setup / calibration"):
             return
         from stereodrive_api import Calibration
-        from stereodrive_api.protocol import BACKLASH, SIGNS
-        dialog=QDialog(self)
-        dialog.setWindowTitle("Direct USB — measured zero calibration first")
-        layout=QVBoxLayout(dialog)
-        mode="LIVE HARDWARE" if self.controller.live else "SIMULATION (no hardware)"
-        intro=QLabel(mode+"\nClose StereoDrive and every other controller. Load measured AP/ML/DV zero counts and piston 3000 nL anchor before moving. GUI Bregma is a separate reference, not API zero. No automatic homing.")
-        intro.setWordWrap(True); layout.addWidget(intro)
-        saved=self.direct_control_settings
-        calibration={"value":Calibration(**saved["calibration"]) if saved.get("calibration") else None}
-        filename_label=QLabel("No zero calibration loaded — movement unavailable")
-        if calibration["value"] is not None:
-            filename_label.setText("Saved measured zero calibration — verify before connecting")
-        load=QPushButton("Load measured zero calibration JSON")
-        def choose_calibration():
-            filename,_=QFileDialog.getOpenFileName(dialog,"Measured zero anchors","","JSON (*.json)")
-            if not filename:return
+        from stereodrive_api.protocol import AXES, BACKLASH, SIGNS
+        live_config_root = self._app_data_root_dir() / "DirectUSB" / "live"
+        _copy_legacy_user_file(
+            Path.home() / "Documents" / "Neurostar_Master" / "Configs" / "DirectUSB" / "live" / "direct-control.json",
+            live_config_root / "direct-control.json")
+        _copy_legacy_user_file(
+            Path.home() / "Documents" / "Neurostar_Master" / "Configs" / "DirectUSB" / "live" / "api-state.json",
+            live_config_root / "api-state.json")
+        live_profile_path = live_config_root / "direct-control.json"
+
+        was_simulation = not self.controller.live
+        if self.controller.drive is not None:
             try:
-                value=Calibration(**json.loads(Path(filename).read_text(encoding="utf-8")))
-                value.reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
-                calibration["value"]=value; filename_label.setText(filename)
-                persist_setup()
+                self.controller.close()
             except Exception as exc:
-                calibration["value"]=None; filename_label.setText("Invalid calibration")
-                QMessageBox.warning(dialog,"Calibration",str(exc))
-        load.clicked.connect(choose_calibration); layout.addWidget(load); layout.addWidget(filename_label)
-        choices={}
-        for axis in ("AP","ML","DV","PISTON"):
-            row=QHBoxLayout(); row.addWidget(QLabel("Verified CURRENT last direction: "+axis))
-            combo=QComboBox(); combo.addItem("Select verified direction",None)
-            labels=("up","down") if axis=="PISTON" else ("increasing mm","decreasing mm")
-            for label,direction in zip(labels,(1,-1)):
-                combo.addItem(label,BACKLASH[axis] if SIGNS[axis]*direction>0 else 0)
-            choices[axis]=combo; row.addWidget(combo); layout.addLayout(row)
-        if not self.controller.live:
-            sample=QPushButton("Use SIMULATION-ONLY zero anchors and direction history")
-            def simulation_anchors():
-                calibration["value"]=Calibration(dict(AP=105280,ML=75864,DV=41767),-8572,
-                                                  dict(AP=0,ML=261,DV=0,PISTON=0))
-                filename_label.setText("Synthetic simulator calibration — never use on hardware")
-                for axis,combo in choices.items():combo.setCurrentIndex(2 if axis=="PISTON" else 1)
-                persist_setup()
-            sample.clicked.connect(simulation_anchors); layout.addWidget(sample)
-        allow_dv=QCheckBox("Enable DV (reverify clearance each connection)")
-        allow_piston=QCheckBox("Enable Nano 5 µL piston (reverify setup each connection; 10–100 nL free steps only)")
-        allow_drill=QCheckBox("Enable supervised drill ON (spindle is never started automatically)")
-        allow_pulsed=QCheckBox("Enable PULSED drilling/injection workflows — supervised bench only, no specimen; not continuous motion/flow")
-        for name,widget in (("allow_dv",allow_dv),("allow_piston",allow_piston),("allow_drill",allow_drill),("allow_pulsed",allow_pulsed)):
-            widget.setChecked(saved.get(name,False))
-        verified=QCheckBox("Measured zero/anchor calibration and current direction history verified; workspace clear and physical Stop accessible")
-        verified.setChecked(False)
-        for widget in (allow_dv,allow_piston,allow_drill,allow_pulsed,verified):layout.addWidget(widget)
-        speed=QComboBox();speed.addItems(["1","2"]);layout.addWidget(QLabel("Captured Axis speed profile (mm/s)"));layout.addWidget(speed)
-        speed.setCurrentText(str(saved.get("speed_mm_s",1)))
-        def persist_setup():
-            self._direct_control_settings_loaded=True
-            value=calibration["value"]
-            self.direct_control_settings.update(dict(
-                calibration=dict(axis_zero_counts=value.axis_zero_counts,piston_3000_count=value.piston_3000_count,
-                                 anchor_backlash=value.anchor_backlash) if value else None,
-                speed_mm_s=int(speed.currentText()),allow_dv=allow_dv.isChecked(),
-                allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),allow_pulsed=allow_pulsed.isChecked()))
-            self._sync_direct_motion_options()
-            try:self._save_direct_control_settings()
-            except OSError as exc:QMessageBox.warning(dialog,"Save direct settings",str(exc))
-        speed.currentTextChanged.connect(persist_setup)
-        for widget in (allow_dv,allow_piston,allow_drill,allow_pulsed):widget.toggled.connect(persist_setup)
-        new_reference=QCheckBox("Establish independently verified new reference (not recovery from an unknown fault)");layout.addWidget(new_reference)
-        status=QLabel("Disconnected; loading calibration does not move or reset the controller.");status.setWordWrap(True);layout.addWidget(status)
-        row=QHBoxLayout(); connect=QPushButton("Connect / restore calibrated state");disconnect=QPushButton("Disconnect / Stop");row.addWidget(connect);row.addWidget(disconnect);layout.addLayout(row)
-        result={};finished=threading.Event();connecting=[False]
-        def do_connect():
-            if self.controller.drive is not None:
-                QMessageBox.information(dialog,"USB setup","Disconnect before changing calibration.");return
-            if calibration["value"] is None or any(c.currentData() is None for c in choices.values()) or not verified.isChecked():
-                QMessageBox.warning(dialog,"Calibration required","Load valid measured anchors, select every verified current direction and confirm the setup first.");return
-            if new_reference.isChecked() and QMessageBox.warning(dialog,"New reference",
-                    "Only proceed after independent physical reference and direction verification. This must not bypass an unresolved fault.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
-            states={a:c.currentData() for a,c in choices.items()}
-            cfg=dict(new_reference=new_reference.isChecked(),allow_dv=allow_dv.isChecked(),
-                     allow_piston=allow_piston.isChecked(),allow_drill=allow_drill.isChecked(),speed=int(speed.currentText()),allow_pulsed=allow_pulsed.isChecked(),
-                     travel_limits=self.direct_control_settings.get("travel_limits"))
-            value=calibration["value"]
-            finished.clear();result.clear();timer.start(100)
-            connecting[0]=True;connect.setEnabled(False);disconnect.setEnabled(False)
-            status.setText("Connecting exclusively and verifying idle motor counts…")
+                QMessageBox.warning(self, "USB calibration", f"Could not release the current controller: {exc}")
+                return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("USB hardware calibration")
+        dialog.resize(900, 760)
+        outer = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Connects directly to the physical USB controller. Use the displayed controller position and last-motion direction, "
+            "jog to the physical scale marks, enter those readings, then save. Calibration records the correspondence between "
+            "controller counts and physical scale positions. It does not home the device; small initial movements require your confirmation."
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        direction_history = QLabel("Movement direction history is not yet initialized")
+        direction_history.setObjectName("calibrationDirectionHistoryStatus")
+        direction_history.setStyleSheet("color: #b00020; font-weight: bold")
+        outer.addWidget(direction_history)
+
+        connection = QLabel("Connecting to hardware…")
+        connection.setObjectName("calibrationUsbConnectionStatus")
+        outer.addWidget(connection)
+        try:
+            live_profile = json.loads(live_profile_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            live_profile = {}
+        calibration = Calibration(**live_profile["calibration"]) if live_profile.get("calibration") else None
+        status_text = QLabel("Waiting for USB position readout…")
+        status_text.setObjectName("calibrationCurrentPosition")
+        outer.addWidget(status_text)
+
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        content = QWidget(scroll)
+        body = QVBoxLayout(content)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        axis_step = QComboBox(); axis_step.setObjectName("calibrationAxisStep")
+        for step in MOVE_SPEED_OPTIONS_MM:
+            if step <= 2: axis_step.addItem(f"{step:g}", step)
+        axis_step.setCurrentIndex(min(range(axis_step.count()), key=lambda i: abs(float(axis_step.itemData(i))-self.move_speed_step_mm)))
+        axis_speed_label = QLabel(f"Move step: {axis_step.currentText()} mm")
+        def axis_step_changed(index):
+            step = float(axis_step.itemData(index))
+            self.move_speed_step_mm = step
+            axis_speed_label.setText(f"Move step: {step:g} mm")
+            self.update_move_speed_label()
+        axis_step.currentIndexChanged.connect(axis_step_changed)
+        axis_rate = QComboBox(); axis_rate.setObjectName("calibrationAxisRate")
+        axis_rate.addItems(["1", "2"]); axis_rate.setCurrentText(str(live_profile.get("speed_mm_s", 1)))
+        piston_step = QComboBox(); piston_step.setObjectName("calibrationPlungerStep")
+        piston_step.addItems(["10", "20", "50", "100"])
+        step_row = QHBoxLayout()
+        step_row.addWidget(QLabel("Axis step (mm)")); step_row.addWidget(axis_step); step_row.addWidget(axis_speed_label)
+        step_row.addWidget(QLabel("Axis speed (mm/s)")); step_row.addWidget(axis_rate)
+        step_row.addWidget(QLabel("Plunger step (nL)")); step_row.addWidget(piston_step)
+        step_row.addStretch(1); body.addLayout(step_row)
+
+        direction_boxes = {}
+        position_labels = {}
+        input_qualified = dict.fromkeys(AXES, False)
+        input_entered = dict.fromkeys(AXES, False)
+        jog_buttons = []
+        inputs = {}
+        for axis in AXES:
+            field = QLineEdit(); field.setObjectName("calibratePosition" + axis)
+            field.setValidator(QDoubleValidator(-10000, 10000, 3, field) if axis != "PISTON" else QDoubleValidator(0, 5000, 2, field))
+            field.setPlaceholderText("Move 200 µm first" if axis != "PISTON" else "Move 50 nL first")
+            field.setEnabled(False)
+            inputs[axis] = field
+            field.textEdited.connect(lambda _text, a=axis: mark_input_entered(a))
+        axis_grid = QGridLayout()
+        axis_grid.addWidget(QLabel("Axis"), 0, 0)
+        axis_grid.addWidget(QLabel("Controller position"), 0, 1)
+        axis_grid.addWidget(QLabel("Last movement direction"), 0, 2)
+        axis_grid.addWidget(QLabel("Movement"), 0, 3)
+        axis_grid.addWidget(QLabel("Physical scale reading"), 0, 5)
+        for row, axis in enumerate(AXES, 1):
+            axis_grid.addWidget(QLabel(axis + (" (mm)" if axis != "PISTON" else " (nL)")), row, 0)
+            pos = QLabel("—"); pos.setObjectName("calibrationPosition" + axis)
+            position_labels[axis] = pos
+            axis_grid.addWidget(pos, row, 1)
+            direction = QComboBox(); direction.setObjectName("calibrationDirection" + axis)
+            direction.addItem("Not moved yet", None)
+            if axis == "PISTON":
+                direction.addItem("Increasing nL", 0 if SIGNS[axis] < 0 else BACKLASH[axis])
+                direction.addItem("Decreasing nL", BACKLASH[axis] if SIGNS[axis] < 0 else 0)
+            else:
+                direction.addItem("Increasing mm", BACKLASH[axis] if SIGNS[axis] > 0 else 0)
+                direction.addItem("Decreasing mm", 0 if SIGNS[axis] > 0 else BACKLASH[axis])
+            direction.setEnabled(False)
+            direction_boxes[axis] = direction; axis_grid.addWidget(direction, row, 2)
+            for col, sign in ((3, -1), (4, 1)):
+                caption = ("Down" if sign < 0 else "Up") if axis == "PISTON" else ("−" if sign < 0 else "+")
+                button = QPushButton(caption); button.setObjectName("calibrationJog" + axis + ("Minus" if sign < 0 else "Plus"))
+                button.setEnabled(False)
+                button.clicked.connect(lambda _checked=False, a=axis, d=sign: start_jog(a, d))
+                axis_grid.addWidget(button, row, col); jog_buttons.append(button)
+            axis_grid.addWidget(inputs[axis], row, 5)
+        body.addLayout(axis_grid)
+        jog_context = {"driver": None, "busy": False, "closing": False, "stopped": False,
+                       "resume_sim": was_simulation, "calibration_saved": False}
+        stop_button = QPushButton("STOP movement"); stop_button.setObjectName("stopCalibrationJogButton")
+        body.addWidget(stop_button)
+        message = QLabel("Confirm the small positive-direction initialization moves to begin calibration.")
+        message.setWordWrap(True); body.addWidget(message)
+
+        save_button = QPushButton("Save Calibration"); save_button.setObjectName("saveCalibrationButton")
+        save_button.setEnabled(False)
+        footer = QHBoxLayout(); footer.addStretch(1); footer.addWidget(save_button); outer.addLayout(footer)
+        connect_done = threading.Event()
+        connection_handled = [False]
+        connect_result = {}
+        action_done = threading.Event()
+        action_result = {}
+        stop_done = threading.Event()
+        stop_result = {}
+        timer = QTimer(dialog); timer.setInterval(50)
+
+        def update_save_enabled():
+            save_button.setEnabled(
+                jog_context["driver"] is not None and not jog_context["busy"]
+                and not jog_context["stopped"]
+                and jog_context.get("direction_initialized", False)
+                and all(input_qualified[a] and input_entered[a] for a in AXES)
+            )
+
+        def mark_input_entered(axis):
+            input_entered[axis] = bool(inputs[axis].text().strip())
+            update_save_enabled()
+
+        def show_position(snapshot):
+            raw = snapshot["raw_counts"]
+            states = snapshot.get("backlash_counts") or {}
+            travelled = snapshot.get("travelled", {})
+            initialized = all(states.get(axis) is not None for axis in AXES)
+            jog_context["direction_initialized"] = initialized
+            if initialized:
+                direction_history.setText("Movement direction history initialized")
+                direction_history.setStyleSheet("color: #168038; font-weight: bold")
+            else:
+                direction_history.setText("Movement direction history is not yet initialized")
+                direction_history.setStyleSheet("color: #b00020; font-weight: bold")
+            for axis in AXES:
+                state = states.get(axis)
+                direction_boxes[axis].setCurrentIndex(
+                    direction_boxes[axis].findData(state) if state is not None else 0)
+                if calibration is not None and state is not None:
+                    reference = calibration.reference(dict(AP=5225, ML=5225, DV=5225, PISTON=161.36))
+                    if axis == "PISTON":
+                        value = 3000 + (raw[axis] - state - reference[axis]) / 161.36
+                        position_labels[axis].setText(f"{value:.2f} nL")
+                    else:
+                        value = SIGNS[axis] * (raw[axis] - state - reference[axis]) / 5225
+                        position_labels[axis].setText(f"{value:.3f} mm")
+                else:
+                    normalized = raw[axis] - (state or 0)
+                    position_labels[axis].setText(f"{normalized} counts")
+                threshold = 50 if axis == "PISTON" else 0.2
+                input_qualified[axis] = travelled.get(axis, 0) >= threshold - 1e-9
+                field = inputs[axis]
+                field.setEnabled(input_qualified[axis] and not jog_context["busy"])
+                field.setPlaceholderText("Enter physical reading" if input_qualified[axis] else
+                                         ("Move 50 nL first" if axis == "PISTON" else "Move at least 200 µm first"))
+            status_text.setText("Current controller position. Values show calibrated units when a live calibration is available; otherwise raw counts.")
+            can_move = (jog_context["driver"] is not None and not jog_context["busy"]
+                        and not jog_context["stopped"] and initialized)
+            for button in jog_buttons: button.setEnabled(can_move)
+            update_save_enabled()
+            pending = [a for a in AXES if not input_qualified[a]]
+            if pending:
+                axis = pending[0]
+                requirement = "50 nL" if axis == "PISTON" else "200 µm"
+                message.setText(f"Move {axis} at least {requirement}; its physical reading field will then unlock.")
+            elif not all(input_entered.values()):
+                message.setText("Enter the physical scale reading beside each axis, then Save Calibration.")
+            else:
+                message.setText("All readings are ready. Save Calibration to write the live hardware profile.")
+
+        def start_move(axis, delta):
+            driver = jog_context["driver"]
+            if driver is None or jog_context["busy"] or not jog_context.get("direction_initialized", False): return
+            if abs(delta) < 1e-12:
+                message.setText("The entered target is already at the displayed position.")
+                return
+            try:
+                driver.validate_move(axis, delta)
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Calibration movement", str(exc))
+                return
+            jog_context["busy"] = True; action_done.clear(); action_result.clear()
+            input_entered[axis] = False
+            inputs[axis].clear()
+            update_save_enabled()
+            message.setText("Moving… Stop remains available.")
+            for button in jog_buttons: button.setEnabled(False)
+            save_button.setEnabled(False)
             def worker():
-                try:self.controller.connect(
-                    value, states, self._config_root_dir()/"api-state.json",
-                    persist_simulation=False if not self.controller.live else None,
-                    **cfg,
-                )
-                except Exception as exc:result["error"]=str(exc)
-                finished.set()
-            threading.Thread(target=worker,daemon=True).start()
-        def do_disconnect():
-            try:self.controller.close();status.setText("Disconnected — no movement permitted")
-            except Exception as exc:QMessageBox.warning(dialog,"USB Stop",str(exc))
-        connect.clicked.connect(do_connect);disconnect.clicked.connect(do_disconnect)
-        close_btn=QPushButton("Close setup");close_btn.clicked.connect(dialog.accept);layout.addWidget(close_btn)
-        timer=QTimer(dialog)
-        def poll_connection():
-            close_btn.setEnabled(not connecting[0])
-            if not finished.is_set():return
-            timer.stop();connecting[0]=False;connect.setEnabled(True);disconnect.setEnabled(True);close_btn.setEnabled(True)
-            if "error" in result:
-                status.setText("Connection refused: "+result["error"])
-                finished.clear();result.clear();timer.start(100);return
-            # A new USB session requires re-verifying tool-specific GUI references.
-            self.bregma_axis=self.anchor_axis=self.anchor_bregma=None
-            self.coordinate_mode="axis"
-            self.update_coordinate_mode_buttons()
-            self.top_view.set_coordinate_mode_bregma(False)
-            self.injection_sites_view.set_coordinate_mode_bregma(False)
-            axis_reference={a:self.controller.drive.calibration.reference(self.controller.drive.scales)[a]
-                            for a in ("AP", "ML", "DV")}
-            if self.axis_zero_reference != axis_reference:
-                self.home_axis=self.work_axis=None
-            self.axis_zero_reference=axis_reference
-            self._update_persistent_axis_location_labels()
-            self.quick_locations={}
-            for site in self.injection_sites:site.dv=None;site.generated=True
-            for seed in self.seeds:seed.dv=None
-            self.set_syringe_position(None)
-            self._save_general_settings();self.refresh_injection_sites_list();self.redraw_views()
-            self.refresh_live_position()
-            status.setText("Connected with verified zero calibration. Re-set GUI Bregma/Anchor and revalidate surfaces. Home/Work are retained only with identical Axis calibration; verify their clearance before use.")
-        timer.timeout.connect(poll_connection);timer.start(100)
-        def reject_while_connecting(event):
-            if connecting[0]:event.ignore()
-            else:QDialog.closeEvent(dialog,event)
-        dialog.closeEvent=reject_while_connecting
-        dialog.reject=lambda: None if connecting[0] else QDialog.reject(dialog)
-        dialog.resize(820,650);dialog.exec()
+                try:
+                    driver.move(axis, delta, int(axis_rate.currentText()))
+                    action_result.update(snapshot=driver.capture_calibration_counts(), text=f"Last movement: {axis} {delta:+g} {'nL' if axis == 'PISTON' else 'mm'}")
+                except Exception as exc: action_result["error"] = str(exc)
+                finally: action_done.set()
+            threading.Thread(target=worker, daemon=True).start()
+
+        def start_jog(axis, direction):
+            try:
+                delta = direction * float(piston_step.currentText() if axis == "PISTON" else axis_step.currentText())
+            except Exception as exc:
+                QMessageBox.warning(dialog, "Calibration movement", str(exc)); return
+            start_move(axis, delta)
+
+        def initialize_direction_history():
+            driver = jog_context["driver"]
+            if driver is None or jog_context["busy"] or jog_context["stopped"]: return
+            answer = QMessageBox.question(
+                dialog, "Initialize movement direction history?",
+                "The system will move AP, ML and DV by +0.100 mm (100 µm) each, then eject +50 nL on the plunger. "
+                "Confirm that all four movements are safe, the tool is clear, and Stop is accessible.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                message.setText("No initialization movement was made. Confirm safety and reopen calibration to try again.")
+                return
+            jog_context["busy"] = True
+            action_done.clear(); action_result.clear()
+            message.setText("Initializing direction history with small positive-direction movements…")
+            for button in jog_buttons: button.setEnabled(False)
+            save_button.setEnabled(False)
+            def worker():
+                try:
+                    from stereodrive_api.calibration_jog import INITIAL_DIRECTION_MOVE
+                    for axis in AXES:
+                        driver.move(axis, INITIAL_DIRECTION_MOVE[axis], int(axis_rate.currentText()))
+                    action_result.update(snapshot=driver.capture_calibration_counts(), initialization=True,
+                                         text="Movement direction history initialized.")
+                except Exception as exc: action_result.update(error=str(exc), initialization=True)
+                finally: action_done.set()
+            threading.Thread(target=worker, daemon=True).start()
+
+        def stop_movement():
+            driver = jog_context["driver"]
+            if driver is None or stop_done.is_set(): return
+            stop_button.setEnabled(False); message.setText("Stop requested…")
+            def worker():
+                try: driver.stop(); stop_result["message"] = "Stop sent. Close calibration, check the device, and reconnect before moving again."
+                except Exception as exc: stop_result["error"] = str(exc)
+                finally: stop_done.set()
+            stop_done.clear(); stop_result.clear()
+            threading.Thread(target=worker, daemon=True).start()
+
+        def save_calibration():
+            driver = jog_context["driver"]
+            if driver is None or not all(input_qualified[a] and input_entered[a] for a in AXES):
+                QMessageBox.warning(dialog, "Calibration required", "Move each axis enough to unlock its scale input, enter all four physical readings, then save.")
+                return
+            try:
+                positions = {a: float(inputs[a].text()) for a in ("AP", "ML", "DV")}
+                plunger_position = float(inputs["PISTON"].text())
+                axis_speed_mm_s = int(axis_rate.currentText())
+            except ValueError:
+                QMessageBox.warning(dialog, "Calibration required", "Enter a valid number in every physical scale field.")
+                return
+            jog_context["busy"] = True; action_done.clear(); action_result.clear()
+            message.setText("Reading stable idle counters and saving calibration…")
+            for field in inputs.values(): field.setEnabled(False)
+            for button in jog_buttons: button.setEnabled(False)
+            save_button.setEnabled(False)
+            def worker():
+                try:
+                    snapshot = driver.capture_calibration_counts()
+                    value = Calibration.from_current_position(
+                        snapshot["raw_counts"], positions, plunger_position, snapshot["backlash_counts"])
+                    live_config_root.mkdir(parents=True, exist_ok=True)
+                    live_profile.update(
+                        version=1, live=True,
+                        calibration=dict(axis_zero_counts=value.axis_zero_counts,
+                                         piston_3000_count=value.piston_3000_count,
+                                         anchor_backlash=value.anchor_backlash),
+                        speed_mm_s=axis_speed_mm_s,
+                        allow_dv=True, allow_piston=True, allow_drill=True, allow_pulsed=True)
+                    temporary = live_profile_path.with_suffix(".tmp")
+                    with temporary.open("w", encoding="utf-8") as handle:
+                        handle.write(json.dumps(live_profile, indent=2, allow_nan=False))
+                        handle.flush(); os.fsync(handle.fileno())
+                    temporary.replace(live_profile_path)
+                    from stereodrive_api.controller import StateStore
+                    from stereodrive_api.protocol import SIGNS
+                    scales = dict(AP=5225.0, ML=5225.0, DV=5225.0, PISTON=161.36)
+                    reference = value.reference(scales)
+                    raw_counts = snapshot["raw_counts"]
+                    backlash = snapshot["backlash_counts"]
+                    normal_counts = {a: raw_counts[a] - backlash[a] for a in AXES}
+                    position = {a: (normal_counts[a] - reference[a]) / (SIGNS[a] * scales[a]) for a in AXES}
+                    StateStore(live_config_root / "api-state.json").write(dict(
+                        version=1, identity=driver.transport.identity, valid=True,
+                        utc=time.strftime("%Y-%m-%dT%H:%M:%S%z"), raw=raw_counts,
+                        relative_units=position, backlash_state=backlash,
+                        absolute_calibration=True, reference_normal=reference,
+                        command_normal=normal_counts, scales=scales,
+                    ))
+                    if self.controller.live:
+                        self.direct_control_settings.update(live_profile)
+                        self._direct_control_settings_loaded = True
+                    action_result.update(calibration=value, path=str(live_profile_path), snapshot=snapshot)
+                except Exception as exc: action_result["error"] = str(exc)
+                finally: action_done.set()
+            threading.Thread(target=worker, daemon=True).start()
+
+        stop_button.clicked.connect(stop_movement)
+        save_button.clicked.connect(save_calibration)
+
+        def poll():
+            if connect_done.is_set() and not connection_handled[0]:
+                connection_handled[0] = True
+                if "error" in connect_result:
+                    connection.setText("USB connection failed")
+                    message.setText(connect_result["error"])
+                    return
+                driver = connect_result["driver"]
+                jog_context["driver"] = driver
+                connection.setText("Connected to hardware USB system")
+                show_position(driver.capture_calibration_counts())
+                QTimer.singleShot(0, initialize_direction_history)
+                return
+            if stop_done.is_set():
+                stop_done.clear(); jog_context["stopped"] = True
+                message.setText("STOP FAILED: " + stop_result["error"] + ". Use physical Stop." if "error" in stop_result else stop_result["message"])
+                stop_button.setEnabled(True)
+                for button in jog_buttons: button.setEnabled(False)
+                for field in inputs.values(): field.setEnabled(False)
+                save_button.setEnabled(False)
+                return
+            if not action_done.is_set(): return
+            action_done.clear(); jog_context["busy"] = False
+            if "error" in action_result:
+                message.setText("Hardware action failed: " + action_result["error"])
+                stop_button.setEnabled(True)
+                if action_result.get("initialization"):
+                    direction_history.setText("Movement direction history is not yet initialized")
+                    direction_history.setStyleSheet("color: #b00020; font-weight: bold")
+                for button in jog_buttons: button.setEnabled(jog_context["driver"] is not None and jog_context.get("direction_initialized", False) and not jog_context["stopped"])
+                update_save_enabled()
+                return
+            if "calibration" in action_result:
+                snapshot = action_result["snapshot"]
+                show_position(snapshot)
+                jog_context["calibration_saved"] = True
+                message.setText("Calibration saved. It will load on the next software start.")
+                timer.stop()
+                dialog.accept()
+                return
+            snapshot = action_result.get("snapshot")
+            if snapshot:
+                show_position(snapshot)
+                stop_button.setEnabled(True)
+                message.setText(action_result.get("text", "Position updated."))
+                action_result.clear(); return
+
+        timer.timeout.connect(poll); timer.start()
+        def connect_worker():
+            try:
+                from stereodrive_api.calibration_jog import CalibrationJog
+                driver = CalibrationJog(None, simulate=False,
+                    journal_path=self._config_root_dir() / ("calibration-jog-" + str(time.time_ns()) + ".json"))
+                connect_result["driver"] = driver
+            except Exception as exc: connect_result["error"] = str(exc)
+            finally: connect_done.set()
+        threading.Thread(target=connect_worker, daemon=True).start()
+        dialog.reject = lambda: None if not connect_done.is_set() else QDialog.reject(dialog)
+        def guard_calibration_close(event):
+            if not connect_done.is_set(): event.ignore()
+            else: QDialog.closeEvent(dialog, event)
+        dialog.closeEvent = guard_calibration_close
+        dialog.setProperty("usb_calibration_window", True)
+
+        def cleanup():
+            driver = jog_context["driver"]
+            if driver is not None:
+                try: driver.close()
+                except Exception as exc: QMessageBox.warning(self, "USB calibration disconnect", str(exc))
+            if jog_context["calibration_saved"]:
+                try:
+                    self.controller.live = True
+                    self.controller.connect(
+                        Calibration(**live_profile["calibration"]), None,
+                        live_config_root / "api-state.json",
+                        allow_dv=True, allow_piston=True, allow_drill=True,
+                        speed=int(live_profile.get("speed_mm_s", 1)), allow_pulsed=True,
+                        travel_limits=live_profile.get("travel_limits"))
+                    self.direct_control_settings.update(live_profile)
+                    self._direct_control_settings_loaded = True
+                    self.setWindowTitle("Neurostar — Direct USB API Planner · LIVE")
+                    self.set_status("Live hardware reconnected. The last movement direction is saved after each completed move.")
+                except Exception as exc:
+                    self.controller.live = False
+                    try:
+                        self.controller.connect_simulation(
+                            speed=int(live_profile.get("speed_mm_s", 1)),
+                            travel_limits=live_profile.get("travel_limits"))
+                    except Exception as simulation_exc:
+                        self.set_status(f"Calibration saved; hardware reconnect failed ({exc}); simulation also failed ({simulation_exc}).")
+                    else:
+                        self.setWindowTitle("Neurostar — Direct USB API Planner · SIMULATION")
+                        self.set_status(f"Calibration saved, but hardware reconnect failed. SIMULATION is active; no hardware commands will be sent. {exc}")
+                        QMessageBox.warning(self, "Hardware reconnect failed",
+                                            "Calibration was saved, but hardware could not be reconnected. The planner is in SIMULATION; no hardware commands will be sent.\n\n" + str(exc))
+                return
+            if jog_context["resume_sim"] and self.controller.drive is None:
+                try:
+                    self.controller.connect_simulation(
+                        speed=int(self.direct_control_settings.get("speed_mm_s", 1)),
+                        travel_limits=self.direct_control_settings.get("travel_limits"))
+                except Exception as exc: self.set_status(f"Calibration closed; simulator restart failed: {exc}")
+
+        dialog.finished.connect(lambda _result: (timer.stop(), cleanup()))
+        dialog.exec()
 
     def _motion_is_active(self) -> bool:
         return bool(
             (self.drill_thread is not None and self.drill_thread.is_alive())
             or (self.injection_thread is not None and self.injection_thread.is_alive())
+            or self._manual_syringe_queue_active
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
             or (self.usb_probe_thread is not None and self.usb_probe_thread.is_alive())
             or self.validation_move_active
             or self.validation_modal_active
             or self.controller.has_active_motion()
         )
+
+    def _manual_syringe_queue_is_active(self) -> bool:
+        with self._manual_syringe_queue_lock:
+            return self._manual_syringe_queue_active
 
     def _sync_direct_motion_options(self):
         from stereodrive_api.limits import validate_limits
@@ -2453,6 +2809,13 @@ class CraniotomyWindow(QMainWindow):
             root=root/"DirectUSB"/("live" if self.controller.live else "simulation")
         return root
 
+    def _app_data_root_dir(self) -> Path:
+        return _user_app_data_root()
+
+    def _legacy_direct_control_root_dir(self) -> Path:
+        return Path.home() / "Documents" / "Neurostar_Master" / "Configs" / "DirectUSB" / (
+            "live" if self.controller.live else "simulation")
+
     def _config_dir(self, kind: str) -> Path:
         mapping = {
             "injection": self._config_root_dir() / "Injection",
@@ -2467,10 +2830,14 @@ class CraniotomyWindow(QMainWindow):
         return self._config_dir(kind) / "last_used.json"
 
     def _general_settings_path(self) -> Path:
-        return self._config_root_dir() / "settings.json"
+        path = self._app_data_root_dir() / "settings.json"
+        _copy_legacy_user_file(self._config_root_dir() / "settings.json", path)
+        return path
 
     def _direct_control_settings_path(self) -> Path:
-        return self._config_root_dir() / "direct-control.json"
+        path = self._app_data_root_dir() / "DirectUSB" / ("live" if self.controller.live else "simulation") / "direct-control.json"
+        _copy_legacy_user_file(self._legacy_direct_control_root_dir() / "direct-control.json", path)
+        return path
 
     def _save_direct_control_settings(self) -> None:
         if not getattr(self.controller,"direct_api",False) or not self._direct_control_settings_loaded:return
@@ -2524,13 +2891,12 @@ class CraniotomyWindow(QMainWindow):
                     limits_migrated = True
             normalized_limits = validate_limits(stored_limits)
             if isinstance(speed,bool) or speed not in (1,2):raise ValueError("Invalid captured speed profile")
-            if any(type(payload.get(k,False)) is not bool for k in ("allow_dv","allow_piston","allow_drill","allow_pulsed")):
-                raise ValueError("Invalid direct-control preferences")
             reference=payload.get("axis_zero_reference")
             if reference is not None and (not isinstance(reference,dict) or set(reference)!={"AP","ML","DV"}
                     or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) for v in reference.values())):
                 raise ValueError("Invalid saved Axis-zero fingerprint")
-            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","allow_dv","allow_piston","allow_drill","allow_pulsed","travel_limits") if k in payload}
+            self.direct_control_settings={k:payload[k] for k in ("calibration","speed_mm_s","travel_limits") if k in payload}
+            self.direct_control_settings.update(allow_dv=True,allow_piston=True,allow_drill=True,allow_pulsed=True)
             self.direct_control_settings["travel_limits"] = normalized_limits
             self.axis_zero_reference=reference
             self.home_axis=self._session_axis(payload.get("home_axis"))
@@ -2857,13 +3223,9 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(f"Could not read settings from {path}")
 
     def restore_saved_window_geometry(self) -> None:
-        geometry = getattr(self, "window_geometry", None)
-        if not isinstance(geometry, dict):
-            return
-        try:
-            self.setGeometry(int(geometry["x"]), int(geometry["y"]), int(geometry["width"]), int(geometry["height"]))
-        except (KeyError, TypeError, ValueError):
-            return
+        # The planner always starts with the full workspace visible. Keep the
+        # method as a compatibility hook for older settings files.
+        self._start_maximized = True
     def reset_movement_key_bindings(self) -> None:
         for name, key in {
             "speed_decrease": Qt.Key.Key_Shift,
@@ -2874,6 +3236,7 @@ class CraniotomyWindow(QMainWindow):
             "ap_posterior": Qt.Key.Key_Down,
             "dv_up": Qt.Key.Key_PageUp,
             "dv_down": Qt.Key.Key_PageDown,
+            "drill_toggle": Qt.Key.Key_D,
         }.items():
             self.movement_key_bindings[name] = int(key)
             self.movement_key_edits[name].setKeySequence(QKeySequence(key))
@@ -3187,6 +3550,9 @@ class CraniotomyWindow(QMainWindow):
             self.pause_drilling_round()
             return True
         if key == Qt.Key.Key_Escape and QApplication.activeModalWidget() is None:
+            if self._keyboard_move_active or self._keyboard_move_queue:
+                self.cancel_keyboard_move_queue()
+                return True
             if self.freeze_draw_btn.isChecked():
                 self.freeze_draw_btn.setChecked(False)
                 return True
@@ -3196,6 +3562,36 @@ class CraniotomyWindow(QMainWindow):
         # Ordinary options/confirmation dialogs must not turn navigation keys
         # into physical motion. Only the dedicated site-validation modal opts in.
         modal=QApplication.activeModalWidget()
+        if modal is not None and modal.property("usb_calibration_window"):
+            combined_key = int(key) | event.modifiers().value
+            if key == Qt.Key.Key_Escape:
+                stop = modal.findChild(QPushButton, "stopCalibrationJogButton")
+                if stop is not None and stop.isEnabled(): stop.click()
+                return True
+            if self._focus_is_editable():
+                return super().eventFilter(watched, event)
+            step_combo = modal.findChild(QComboBox, "calibrationAxisStep")
+            if self._key_matches_binding(self.movement_key_bindings["speed_decrease"], key, combined_key):
+                if step_combo is not None: step_combo.setCurrentIndex(max(0, step_combo.currentIndex()-1))
+                return True
+            if self._key_matches_binding(self.movement_key_bindings["speed_increase"], key, combined_key):
+                if step_combo is not None: step_combo.setCurrentIndex(min(step_combo.count()-1, step_combo.currentIndex()+1))
+                return True
+            movement_keys = (
+                ("ml_left", "ML", "Minus"), ("ml_right", "ML", "Plus"),
+                ("ap_anterior", "AP", "Plus"), ("ap_posterior", "AP", "Minus"),
+                ("dv_up", "DV", "Minus"), ("dv_down", "DV", "Plus"),
+            )
+            for binding_name, axis, direction in movement_keys:
+                if self._key_matches_binding(self.movement_key_bindings[binding_name], key, combined_key):
+                    button = modal.findChild(QPushButton, "calibrationJog" + axis + direction)
+                    if button is not None and button.isEnabled(): button.click()
+                    return True
+            for binding_name, direction in (("syringe_up", "Plus"), ("syringe_down", "Minus")):
+                if self._key_matches_binding(self.syringe_key_bindings[binding_name], key, combined_key):
+                    button = modal.findChild(QPushButton, "calibrationJogPISTON" + direction)
+                    if button is not None and button.isEnabled(): button.click()
+                    return True
         if modal is not None and not (self.validation_modal_active and modal.property("allow_motor_shortcuts")):
             return super().eventFilter(watched,event)
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._focus_is_editable():
@@ -3208,11 +3604,14 @@ class CraniotomyWindow(QMainWindow):
             return super().eventFilter(watched, event)
         combined_key = int(key) | event.modifiers().value
         validation_active = self.validation_modal_active
-        injection_running = self.injection_thread is not None and self.injection_thread.is_alive()
+        protocol_injection_running = self.injection_thread is not None and self.injection_thread.is_alive()
+        manual_syringe_running = self._manual_syringe_queue_is_active()
+        injection_running = protocol_injection_running or manual_syringe_running
         if injection_running and not validation_active:
             if self._key_matches_binding(self.syringe_key_bindings["stop_injection"], key, combined_key):
                 self.stop_injection()
                 return True
+        if protocol_injection_running and not validation_active:
             blocked_bindings = [
                 *self.movement_key_bindings.values(),
                 self.syringe_key_bindings["volume_down"],
@@ -3239,7 +3638,13 @@ class CraniotomyWindow(QMainWindow):
             self.manual_syringe_step(up=False)
             return True
         if not validation_active and self._key_matches_binding(self.syringe_key_bindings["stop_injection"], key, combined_key):
-            self.stop_injection()
+            # Escape is configured as the injection Stop shortcut, but outside
+            # an active injection it must not launch a syringe position query.
+            if injection_running:
+                self.stop_injection()
+            return True
+        if not validation_active and self._key_matches_binding(self.movement_key_bindings["drill_toggle"], key, combined_key):
+            self.activate_stereodrive_drill()
             return True
         if self._key_matches_binding(self.movement_key_bindings["speed_decrease"], key, combined_key):
             self.adjust_move_speed(-1)
@@ -3288,7 +3693,7 @@ class CraniotomyWindow(QMainWindow):
         sample_rate = 22050
         duration_seconds = 0.5
         fade_seconds = 0.1
-        minimum_hz, maximum_hz = 220.0, 880.0
+        minimum_hz, maximum_hz = 440.0, 1760.0
         speed_ratio = (speed_mm - MOVE_SPEED_OPTIONS_MM[0]) / (
             MOVE_SPEED_OPTIONS_MM[-1] - MOVE_SPEED_OPTIONS_MM[0]
         )
@@ -3367,33 +3772,221 @@ class CraniotomyWindow(QMainWindow):
             return
         if self._focus_is_editable():
             return
+        if auto_repeat and self._cancelled_nudge_direction == (axis, positive):
+            return
+        if not auto_repeat:
+            self._cancelled_nudge_direction = None
+        if self._motion_is_active() and not self._keyboard_move_active and not self.validation_modal_active:
+            return
+        step = float(self.move_speed_step_mm)
+        reverse_active = False
+        with self._keyboard_move_lock:
+            removed = 0
+            # A reversal supersedes stale, not-yet-started steps on this axis.
+            # Keep queued work for other axes in its original order.
+            previous_direction = next(
+                (queued_positive for queued_axis, queued_positive, _, _ in reversed(self._keyboard_move_queue)
+                 if queued_axis == axis),
+                None,
+            )
+            if previous_direction is not None and previous_direction != positive:
+                retained = [move for move in self._keyboard_move_queue if move[0] != axis]
+                removed = len(self._keyboard_move_queue) - len(retained)
+                self._keyboard_move_queue = retained
+            if (self._keyboard_move_active and self._keyboard_move_current_axis == axis
+                    and self._keyboard_move_cancelled):
+                retained = [move for move in self._keyboard_move_queue if move[0] != axis]
+                removed += len(self._keyboard_move_queue) - len(retained)
+                self._keyboard_move_queue = retained
+            elif (self._keyboard_move_active and self._keyboard_move_current_axis == axis
+                  and self._keyboard_move_current_positive != positive):
+                retained = [move for move in self._keyboard_move_queue if move[0] != axis]
+                removed += len(self._keyboard_move_queue) - len(retained)
+                self._keyboard_move_queue = retained
+                self._keyboard_move_cancelled = True
+                self._keyboard_move_resume_after_cancel = True
+                reverse_active = True
+            combined = False
+            if (self._keyboard_move_queue
+                    and self._keyboard_move_queue[-1][0] == axis
+                    and self._keyboard_move_queue[-1][1] == positive):
+                previous_axis, previous_positive, previous_label, previous_step = self._keyboard_move_queue[-1]
+                self._keyboard_move_queue[-1] = (
+                    previous_axis, previous_positive, previous_label,
+                    round(previous_step + step, 12),
+                )
+                combined = True
+            else:
+                self._keyboard_move_queue.append((axis, positive, label, step))
+            pending = len(self._keyboard_move_queue)
+            queued_distance = self._keyboard_move_queue[-1][3]
+        if removed:
+            self.set_status(
+                f"{axis} direction changed; cleared {removed} pending move(s). "
+                f"{label} queued for {queued_distance:g} mm ({pending} pending)."
+            )
+        elif combined:
+            self.set_status(f"Combined {label} steps into a {queued_distance:g} mm move ({pending} pending).")
+        else:
+            self.set_status(f"{label} queued for {step:g} mm ({pending} pending).")
+        if reverse_active:
+            self.set_status(f"{axis} direction changed; stopping the current move before reversing.")
+            threading.Thread(target=self._stop_keyboard_move_for_reversal, daemon=True).start()
+            return
+        if not self._keyboard_move_active:
+            self._start_next_keyboard_move()
+
+    def _stop_keyboard_move_for_reversal(self) -> None:
         try:
-            if auto_repeat and self._cancelled_nudge_direction == (axis, positive):
-                return
-            if not auto_repeat:
-                self._cancelled_nudge_direction = None
-            direction = self.controller.get_motion_direction(axis)
-            if direction is not None:
-                if direction != positive:
-                    self._cancelled_nudge_direction = (axis, positive)
-                    self.stop_motion()
-                    self.controller.wait_until_stopped()
-                    self.set_status("Opposite-direction request stopped movement. Release and press again to move.")
-                # Neither queue a repeated nudge nor execute the reversal.
-                return
-            if self._motion_is_active() and not self.validation_modal_active:
-                return
-            self.controller.prepare_motion()
-            self.update_move_speed_label()
-            self.controller.set_nudge_step(axis, self.move_speed_step_mm)
-            self.controller.nudge_axis(axis, positive)
-            self.set_status(f"Keyboard nudge: {label} {self.move_speed_step_mm:g} mm")
-            try:
-                self.refresh_live_position()
-            except Exception:
-                pass
+            self.controller.stop()
         except Exception as exc:
-            QMessageBox.critical(self, "StereoDrive", str(exc))
+            self.status_signal.emit(f"Could not stop {self._keyboard_move_current_axis or 'axis'} movement: {exc}")
+
+    def _start_next_keyboard_move(self) -> None:
+        with self._keyboard_move_lock:
+            if self._keyboard_move_active or not self._keyboard_move_queue or self._keyboard_move_cancelled:
+                return
+            first_move = not self._keyboard_move_active
+            queued_snapshot = list(self._keyboard_move_queue)
+        if first_move:
+            try:
+                self.prepare_keyboard_move_sequence(queued_snapshot)
+            except Exception as exc:
+                with self._keyboard_move_lock:
+                    self._keyboard_move_queue.clear()
+                QMessageBox.warning(self, "Keyboard movement", str(exc))
+                return
+        with self._keyboard_move_lock:
+            if not self._keyboard_move_queue or self._keyboard_move_cancelled:
+                return
+            move = self._keyboard_move_queue.pop(0)
+            self._keyboard_move_active = True
+        axis, positive, label, step = move
+        with self._keyboard_move_lock:
+            self._keyboard_move_current_axis = axis
+            self._keyboard_move_current_positive = positive
+        try:
+            self.controller.prepare_motion()
+            self.controller.set_nudge_step(axis, step)
+            self.controller.nudge_axis(axis, positive)
+            self.set_status(f"Moving {label} by {step:g} mm.")
+            def wait_and_continue():
+                error = None
+                try:
+                    self.controller.wait_until_stopped()
+                except Exception as exc:
+                    error = exc
+                self.keyboard_move_finished_signal.emit(error)
+            threading.Thread(target=wait_and_continue, daemon=True).start()
+        except Exception as exc:
+            self.keyboard_move_finished_signal.emit(exc)
+
+    def _keyboard_move_finished(self, error) -> None:
+        with self._keyboard_move_lock:
+            cancelled = self._keyboard_move_cancelled
+            resume_after_cancel = self._keyboard_move_resume_after_cancel
+            if cancelled and not resume_after_cancel:
+                self._keyboard_move_queue.clear()
+        if error is not None:
+            self.set_status(f"Movement stopped with an error: {error}")
+            with self._keyboard_move_lock:
+                self._keyboard_move_active = False
+                self._keyboard_move_current_axis = None
+                self._keyboard_move_queue.clear()
+                self._keyboard_move_cancelled = False
+                self._keyboard_move_resume_after_cancel = False
+            return
+        try:
+            self.refresh_live_position()
+        except Exception:
+            pass
+        if cancelled:
+            with self._keyboard_move_lock:
+                self._keyboard_move_active = False
+                self._keyboard_move_current_axis = None
+                self._keyboard_move_cancelled = False
+                self._keyboard_move_resume_after_cancel = False
+            if resume_after_cancel:
+                self.set_status("Movement stopped and position updated; continuing in the new direction.")
+                self._keyboard_move_finished_after_idle()
+            else:
+                self.set_status("Movement stopped; pending moves cancelled.")
+            return
+        if self._keyboard_move_queue:
+            try:
+                if self.controller.is_hardware_moving():
+                    QTimer.singleShot(100, self._keyboard_move_finished_after_idle)
+                    return
+            except Exception as exc:
+                self.set_status(f"Could not confirm that the controller is idle: {exc}")
+                with self._keyboard_move_lock:
+                    self._keyboard_move_active = False
+                    self._keyboard_move_queue.clear()
+                return
+        with self._keyboard_move_lock:
+            self._keyboard_move_active = False
+            self._keyboard_move_current_axis = None
+        self._start_next_keyboard_move()
+
+    def _keyboard_move_finished_after_idle(self) -> None:
+        try:
+            if self.controller.has_active_motion() or self.controller.is_hardware_moving():
+                QTimer.singleShot(100, self._keyboard_move_finished_after_idle)
+                return
+        except Exception as exc:
+            self.set_status(f"Could not confirm that the controller is idle: {exc}")
+            with self._keyboard_move_lock:
+                self._keyboard_move_queue.clear()
+                self._keyboard_move_active = False
+            return
+        with self._keyboard_move_lock:
+            self._keyboard_move_active = False
+            self._keyboard_move_current_axis = None
+        self._start_next_keyboard_move()
+
+    def cancel_keyboard_move_queue(self) -> None:
+        with self._keyboard_move_lock:
+            already_stopping = self._keyboard_move_cancelled
+            self._keyboard_move_cancelled = True
+            self._keyboard_move_resume_after_cancel = False
+            self._keyboard_move_queue.clear()
+            active = self._keyboard_move_active
+        if active and already_stopping:
+            self.set_status("Movement Stop is already in progress.")
+            return
+        if not active:
+            with self._keyboard_move_lock:
+                self._keyboard_move_cancelled = False
+                self._keyboard_move_resume_after_cancel = False
+            self.set_status("Pending moves cancelled.")
+        else:
+            self.set_status("Stopping movement and cancelling pending moves…")
+            def stop_current_move():
+                try:
+                    self.controller.stop()
+                except Exception as exc:
+                    self.status_signal.emit(f"Movement Stop failed: {exc}")
+            threading.Thread(target=stop_current_move, daemon=True).start()
+
+    def prepare_keyboard_move_sequence(self, queued_moves) -> None:
+        """Prepare calibrated count state once before the first queued move."""
+        if self._keyboard_move_active:
+            return
+        drive = self.controller._require()
+        if drive.is_moving():
+            raise StereoDriveError("Controller reports movement; wait for it to stop before starting a keyboard sequence.")
+        self.controller.prepare_motion()
+        drive.position()
+        # Validate every same-axis accumulated target before moving. Different
+        # axes are applied serially and therefore each preflight sees fresh state.
+        positions = {a: p for a, p in zip(("AP", "ML", "DV"), self.get_gui_position())}
+        targets = []
+        for move in queued_moves:
+            axis, positive, _label, step = move
+            positions[axis] += step if positive else -step
+            target_axis = self._bregma_to_axis(tuple(positions.values())) if self.coordinate_mode == "bregma" else tuple(positions.values())
+            targets.append(target_axis)
+        self.controller.validate_axis_path(targets)
 
     def set_nudge_all_sites_active(self, active: bool) -> None:
         """Toggle AP/ML shortcuts between manipulator movement and site translation."""
@@ -3517,22 +4110,104 @@ class CraniotomyWindow(QMainWindow):
         self.set_status(f"Manual injection volume set to {self.manual_injection_volume_nl} nl")
 
     def manual_syringe_step(self, up: bool) -> None:
+        if getattr(self.controller,"direct_api",False):
+            self._queue_manual_syringe_step(up)
+            return
         if not self._require_idle("Syringe"):
             return
         try:
             self.ensure_syringe_move_allowed(self.manual_injection_volume_nl, up)
-            if getattr(self.controller,"direct_api",False):
-                self.controller.prepare_motion()
-                self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl",up=up,
-                    asynchronous=True,on_completed=self.syringe_position_signal.emit)
-                self.set_status("Direct piston move requested; wait for verified idle position.")
-                return
             self.controller.syringe_step(f"{self.manual_injection_volume_nl} nl", up=up)
             self.adjust_tracked_syringe_position(self.manual_injection_volume_nl if up else -self.manual_injection_volume_nl)
             direction = "up" if up else "down"
             self.set_status(f"Syringe step {direction}: {self.manual_injection_volume_nl} nl")
         except Exception as exc:
             QMessageBox.warning(self, "Injectomate", str(exc))
+
+    def _queue_manual_syringe_step(self, up: bool) -> None:
+        volume = int(self.manual_injection_volume_nl)
+        with self._manual_syringe_queue_lock:
+            active = self._manual_syringe_queue_active
+        if not active and not self._require_idle("Syringe"):
+            return
+        try:
+            self.controller.syringe_volume_steps(volume,up)
+            if not active:
+                self.ensure_syringe_move_allowed(volume,up)
+                current = self.current_syringe_position()
+                if current is None:
+                    current = self.controller.read_injectomate_calibrate_scale_nl()
+                    self.syringe_position_signal.emit(current)
+                projected = float(current)
+            else:
+                with self._manual_syringe_queue_lock:
+                    projected = float(self._manual_syringe_queue_projected_nl)
+            delta = volume if up else -volume
+            limits = self.controller._require().travel_limits["PISTON"]
+            target = projected + delta
+            if not limits[0] - 1e-7 <= target <= limits[1] + 1e-7:
+                direction = "up" if up else "down"
+                raise StereoDriveError(
+                    f"Queued {direction} pulse of {volume} nL would exceed the configured "
+                    f"piston range {limits[0]:g}–{limits[1]:g} nL from projected position {projected:g} nL."
+                )
+            with self._manual_syringe_queue_lock:
+                if not self._manual_syringe_queue_active:
+                    self.controller.prepare_motion()
+                self._manual_syringe_queue.append((volume, bool(up)))
+                self._manual_syringe_queue_projected_nl = target
+                if not self._manual_syringe_queue_active:
+                    self._manual_syringe_queue_active = True
+                    self._manual_syringe_queue_cancelled = False
+                    self.injection_stop_requested.clear()
+                    self._manual_syringe_thread = threading.Thread(
+                        target=self._run_manual_syringe_queue,daemon=True)
+                    self._manual_syringe_thread.start()
+                pending = len(self._manual_syringe_queue) + (1 if self._manual_syringe_active_step else 0)
+            self.set_status(f"Queued syringe pulse: {'up' if up else 'down'} {volume} nL ({pending} pending).")
+        except Exception as exc:
+            QMessageBox.warning(self,"Injectomate",str(exc))
+
+    def _run_manual_syringe_queue(self) -> None:
+        error = None
+        completed = 0
+        try:
+            while True:
+                with self._manual_syringe_queue_lock:
+                    if self._manual_syringe_queue_cancelled or not self._manual_syringe_queue:
+                        break
+                    volume, up = self._manual_syringe_queue.pop(0)
+                    self._manual_syringe_active_step = (volume,up)
+                with self._manual_syringe_queue_lock:
+                    if self._manual_syringe_queue_cancelled:
+                        break
+                self.ensure_syringe_move_allowed(volume,up)
+                self.controller.syringe_step(
+                    f"{volume} nl",up=up,asynchronous=False,
+                    on_completed=self.syringe_position_signal.emit)
+                completed += 1
+                with self._manual_syringe_queue_lock:
+                    self._manual_syringe_active_step = None
+        except Exception as exc:
+            error = exc
+        finally:
+            with self._manual_syringe_queue_lock:
+                cancelled = self._manual_syringe_queue_cancelled
+                self._manual_syringe_queue.clear()
+                self._manual_syringe_active_step = None
+                self._manual_syringe_queue_active = False
+                self._manual_syringe_queue_projected_nl = None
+                self._manual_syringe_queue_cancelled = False
+            self.manual_syringe_queue_finished_signal.emit(
+                dict(error=error,cancelled=cancelled,completed=completed))
+
+    def _manual_syringe_queue_finished(self, result) -> None:
+        if result.get("cancelled"):
+            self.set_status(f"Syringe pulse queue cancelled after {result.get('completed',0)} completed pulse(s); stopped position refreshed.")
+        elif result.get("error") is not None:
+            self.set_status(f"Syringe pulse queue stopped after {result.get('completed',0)} completed pulse(s): {result['error']}")
+        else:
+            self.set_status(f"Syringe pulse queue complete: {result.get('completed',0)} pulse(s).")
 
     def set_syringe_position(self, value_nl: object) -> None:
         with self.syringe_position_lock:
@@ -3623,8 +4298,8 @@ class CraniotomyWindow(QMainWindow):
             if wait_for_injection_thread:
                 deadline = time.monotonic() + 15.0
                 while (
-                    self.injection_thread is not None
-                    and self.injection_thread.is_alive()
+                    ((self.injection_thread is not None and self.injection_thread.is_alive())
+                     or (self._manual_syringe_thread is not None and self._manual_syringe_thread.is_alive()))
                     and time.monotonic() < deadline
                 ):
                     time.sleep(0.05)
@@ -3919,6 +4594,52 @@ class CraniotomyWindow(QMainWindow):
             self.controller.goto_axis_position(*axis_position, delay_seconds=delay_seconds)
         return True
 
+    def open_axis_position_target(self, axis: str) -> None:
+        """Open a per-axis mm target prompt from the main position readout."""
+        axis = axis.upper()
+        if axis not in {"AP", "ML", "DV"} or self._keyboard_move_active or not self._require_idle("Move to Position"):
+            return
+        try:
+            position = self.get_gui_position()
+        except Exception as exc:
+            QMessageBox.critical(self, "Current Position", str(exc))
+            return
+
+        index = {"AP": 0, "ML": 1, "DV": 2}[axis]
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Move {axis} to Position")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Enter target {axis} position (mm):"))
+        target_edit = QDoubleSpinBox()
+        target_edit.setObjectName("mainTargetPosition" + axis)
+        target_edit.setDecimals(3)
+        target_edit.setRange(-100.0, 100.0)
+        target_edit.setSingleStep(0.1)
+        target_edit.setSuffix(" mm")
+        target_edit.setValue(float(position[index]))
+        layout.addWidget(target_edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Go")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target = list(position)
+        target[index] = float(target_edit.value())
+        try:
+            if self.goto_gui_position(
+                *target,
+                title=f"Moving {axis}",
+                message=f"Moving {axis} to {target[index]:.3f} mm. Waiting for confirmed arrival…",
+                show_progress=True,
+            ):
+                coordinate_name = "Bregma" if self.coordinate_mode == "bregma" else "Axis"
+                self.set_status(f"Reached {coordinate_name} {axis} {target[index]:.3f} mm.")
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
+
     def wait_for_gui_position(self, ap: float, ml: float, dv: float, **kwargs) -> None:
         axis_position = self._bregma_to_axis((ap, ml, dv)) if self.coordinate_mode == "bregma" else (ap, ml, dv)
         self.controller.wait_for_axis_position(*axis_position, **kwargs)
@@ -3935,6 +4656,8 @@ class CraniotomyWindow(QMainWindow):
             self.anchor_bregma = None
             self.coordinate_mode = "bregma"
             self.update_coordinate_mode_buttons()
+            self.top_view.set_coordinate_mode_bregma(True)
+            self.injection_sites_view.set_coordinate_mode_bregma(True)
             self._save_general_settings()
             self.refresh_live_position()
             self.redraw_views()
@@ -5268,7 +5991,7 @@ class CraniotomyWindow(QMainWindow):
             self.pause_resume_injection()
             return
         if not getattr(self.controller,"supports_injection_protocol",True):
-            QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous flow is not implemented.")
+            QMessageBox.warning(self,"Direct USB setup","Connect with calibrated USB first. Continuous flow is not implemented.")
             return
         if not self._require_idle("Injection"):
             return
@@ -5512,16 +6235,27 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Injection paused")
 
     def stop_injection(self) -> None:
+        with self._manual_syringe_queue_lock:
+            manual_queue_active = self._manual_syringe_queue_active
+            manual_queue_already_stopping = self._manual_syringe_queue_cancelled
+            if manual_queue_active:
+                self._manual_syringe_queue_cancelled = True
+                self._manual_syringe_queue.clear()
+                self._manual_syringe_queue_projected_nl = None
+        if manual_queue_active:
+            self.syringe_position_signal.emit(None)
+            if manual_queue_already_stopping and not (self.injection_thread is not None and self.injection_thread.is_alive()):
+                self.set_status("Syringe pulse Stop is already in progress.")
+                return
         self.injection_stop_requested.set()
         self.set_status("Stopping injection")
         try:
             self.controller.stop()
         except Exception as exc:
             self.set_status(f"Could not stop manipulator: {exc}")
-        try:
-            self.controller.stop_injectomate_motion()
-        except Exception:
-            pass
+        if not getattr(self.controller,"direct_api",False):
+            try:self.controller.stop_injectomate_motion()
+            except Exception:pass
         self._start_syringe_position_scale_read(wait_for_injection_thread=True)
 
     def _rounded_test_volume(self) -> int:
@@ -6538,6 +7272,8 @@ class CraniotomyWindow(QMainWindow):
         if self.validation_move_active:
             return
         try:
+            if getattr(self.controller, "direct_api", False) and self.controller.has_active_motion():
+                return
             axis_position = self.controller.get_current_axis_position()
             if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
                 ap, ml, dv = self._axis_to_bregma(axis_position)
@@ -7377,9 +8113,9 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.set_freeze_mode(enabled)
         self._set_craniotomy_edit_mode("freeze" if enabled else ("unfreeze" if self.unfreeze_draw_btn.isChecked() else None))
         if enabled:
-            self.set_status("Freeze mode on")
+            self.set_status("Freeze mode enabled.")
         elif self.trajectory:
-            self.set_status("Freeze mode off")
+            self.set_status("Freeze mode disabled.")
 
     def toggle_unfreeze_mode(self, enabled: bool) -> None:
         if enabled:
@@ -7389,9 +8125,9 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.set_unfreeze_mode(enabled)
         self._set_craniotomy_edit_mode("unfreeze" if enabled else ("freeze" if self.freeze_draw_btn.isChecked() else None))
         if enabled:
-            self.set_status("Unfreeze mode on")
+            self.set_status("Unfreeze mode enabled.")
         elif self.trajectory:
-            self.set_status("Unfreeze mode off")
+            self.set_status("Unfreeze mode disabled.")
 
     def _freeze_mode_controls(self) -> tuple[QWidget, ...]:
         controls = list(self.craniotomy_setup_box.findChildren(QWidget))
@@ -7507,7 +8243,7 @@ class CraniotomyWindow(QMainWindow):
 
     def start_drilling_round(self) -> None:
         if not getattr(self.controller,"supports_drilling_protocol",True):
-            QMessageBox.warning(self,"Direct USB setup","Connect with verified calibration and enable pulsed workflows in USB setup first. Continuous-speed drilling is not implemented.")
+            QMessageBox.warning(self,"Direct USB setup","Connect with calibrated USB first. Continuous-speed drilling is not implemented.")
             return
         if self.drill_thread is not None and self.drill_thread.is_alive():
             self.pause_drilling_round()
@@ -8325,31 +9061,68 @@ class CraniotomyWindow(QMainWindow):
 
 def main() -> None:
     import argparse
-    parser=argparse.ArgumentParser(description="Direct USB planner: disconnected simulation by default")
-    parser.add_argument("--live",action="store_true",help="Choose hardware mode; zero calibration and explicit connection still required")
+    parser=argparse.ArgumentParser(description="Direct USB planner: try saved calibrated USB connection, then fall back to simulation")
+    parser.add_argument("--live",action="store_true",help="Compatibility flag; hardware connection is attempted automatically")
+    parser.add_argument("--simulation",action="store_true",help="Skip USB and start the in-memory simulator")
     args=parser.parse_args()
     app = QApplication(sys.argv)
     app.setApplicationName("Craniotomy Planner")
     application_font = QFont("Segoe UI")
     application_font.setPointSize(9)
     app.setFont(application_font)
-    lock_root=Path.home()/"Documents"/"Neurostar_Master"/"Configs"/"DirectUSB"/("live" if args.live else "simulation")
+    live_root=_user_app_data_root()/"DirectUSB"/"live"
+    simulation_root=_user_app_data_root()/"DirectUSB"/"simulation"
+    legacy_live=Path.home()/"Documents"/"Neurostar_Master"/"Configs"/"DirectUSB"/"live"
+    for name in ("direct-control.json", "api-state.json"):
+        _copy_legacy_user_file(legacy_live/name, live_root/name)
+    legacy_simulation=Path.home()/"Documents"/"Neurostar_Master"/"Configs"/"DirectUSB"/"simulation"
+    _copy_legacy_user_file(legacy_simulation/"direct-control.json", simulation_root/"direct-control.json")
+    lock_root=simulation_root if args.simulation else live_root
     lock_root.mkdir(parents=True,exist_ok=True)
     instance_lock=QLockFile(str(lock_root/"planner.lock"))
     instance_lock.setStaleLockTime(0)
     if not instance_lock.tryLock(0):
-        QMessageBox.warning(None,"Already open","A direct planner is already running for this mode.");return
+        QMessageBox.warning(None,"Already open","A direct planner is already running.");return
+    controller=StereoDriveController(live=not args.simulation)
+    startup_failure=None
     try:
-        window = CraniotomyWindow(StereoDriveController(live=args.live))
-    except StereoDriveError:
-        QMessageBox.warning(
-            None,
-            "Direct USB setup",
-            "Direct USB could not initialize. Check calibration and device setup. Keep StereoDrive closed for hardware control.",
-        )
+        if not args.simulation:
+            profile_path=live_root/"direct-control.json"
+            state_path=live_root/"api-state.json"
+            try:
+                profile=json.loads(profile_path.read_text(encoding="utf-8"))
+                from stereodrive_api import Calibration
+                calibration=Calibration(**profile["calibration"])
+                calibration.reference(dict(AP=5225,ML=5225,DV=5225,PISTON=161.36))
+                history=None
+                controller.connect(calibration,history,state_path,
+                    allow_dv=True,allow_piston=True,allow_drill=True,
+                    speed=int(profile.get("speed_mm_s",2)),allow_pulsed=True,
+                    travel_limits=profile.get("travel_limits"))
+            except Exception as exc:
+                startup_failure=str(exc)
+                controller.close()
+                controller=StereoDriveController(live=False)
+        window=CraniotomyWindow(controller)
+    except Exception as exc:
+        instance_lock.unlock()
+        QMessageBox.warning(None,"Direct USB setup",f"Planner could not start: {exc}")
         return
+    if startup_failure is not None:
+        instance_lock.unlock()
+        simulation_lock=QLockFile(str(simulation_root/"planner.lock"))
+        simulation_lock.setStaleLockTime(0)
+        if not simulation_lock.tryLock(0):
+            controller.close()
+            QMessageBox.warning(None,"Already open","A direct planner is already running.")
+            return
+        instance_lock=simulation_lock
+        window.setWindowTitle("Neurostar — Direct USB API Planner · SIMULATION")
+        window.set_status(f"USB connection unavailable — SIMULATION active. {startup_failure}")
+        QTimer.singleShot(0,lambda:QMessageBox.warning(window,"Simulation mode",
+            "USB could not be connected with the saved calibrated state. The planner is running in simulation; no hardware commands will be sent.\n\n"+startup_failure))
     window.instance_lock = instance_lock
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
 
 

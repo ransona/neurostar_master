@@ -23,31 +23,50 @@ py -3 -m pip install PySide6
 py -3 tools\craniotomy_qt.py
 ```
 
-Without `--live`, the planner auto-connects its in-memory simulator at AP/ML/DV
-30 mm and piston 2500 nL. All simulator commands are enabled for UI practice;
-positions and simulated API logs are discarded when the app closes and reset to
-those starting values next launch. No hardware is opened. This is not a live
-calibration or a prediction of physical position.
-
-For hardware mode (also initially disconnected):
+On normal startup, the planner tries the saved live calibration and matching
+API state first. It never moves or creates a new hardware reference during this
+attempt. If USB is unavailable or the saved state does not match, it starts the
+in-memory simulator and displays a warning. Use `--simulation` to skip USB:
 
 ```powershell
-py -3 tools\craniotomy_qt.py --live
+py -3 tools\craniotomy_qt.py --simulation
 ```
 
-`run_craniotomy_gui.bat` launches from its own folder and accepts `--live`.
+`--live` remains accepted for compatibility; automatic startup already tries
+hardware. The calibration screen's **Save Calibration** button stores measured anchors in
+the mode-specific `direct-control.json`, which is loaded at the next start.
+`run_craniotomy_gui.bat` launches from its own folder and accepts either flag.
 Update does not reset this branch to `main`; close the app and use `git pull --ff-only`.
 
 ## Before enabling hardware
 
 1. Clear the bench: no specimen, tool/pipette retracted, drill off, physical Stop
    accessible. Close StereoDrive, all other controllers and the probe server.
-2. Load measured calibration JSON: AP/ML/DV raw counts at mechanical Axis zero,
-   piston raw count at 3000 nL, and backlash states at those anchors. Separately
-   select verified current direction/backlash history of all four channels.
-   Never copy simulation counts or guess history from a raw count.
-3. Confirm physical reference and clearance. Enable DV, piston or drill ON only
-   after independently checking their setup. Planner default is captured 1 mm/s;
+2. Open **USB setup / zero calibration**. The single calibration window closes
+   any simulator connection and connects directly to physical USB, showing the
+   connection state, current position/counts and last-motion direction for each
+   axis. The window asks before making small positive-direction initialization
+   moves (+0.100 mm on AP/ML/DV and +50 nL on the plunger), which establish the
+   initial movement-direction history. After they finish, use the jog buttons or
+   normal keyboard shortcuts; later moves and reversals update direction automatically.
+   Pressing **D** toggles the drill; this shortcut can be changed in Options → Keyboard Controls.
+   Repeated manual syringe pulses are queued in order. Stop/Escape cancels the remaining
+   pulses and stops the pulse in progress, then refreshes the verified plunger position.
+   Repeated movement-key presses run as a queue; consecutive pending steps in the
+   same direction on an axis are combined into one longer move. Pressing the
+   opposite direction replaces pending moves on that axis while preserving other axes' queue. Escape
+   cancels all queued steps and stops the active move. The controller verifies the stopped counts, saves any
+   partial movement/backlash offset, and stays connected when that state is stable.
+   Use the physical Stop if software Stop or count verification fails.
+   A physical scale field unlocks after that axis has moved at least 0.200 mm
+   (50 nL for the plunger). Enter all four physical readings,
+   then press **Save Calibration**. This stores the live calibration profile in
+   `DirectUSB\live\direct-control.json`, then reconnects the planner to hardware.
+   Each completed move stores the new position and backlash direction in
+   `DirectUSB\live\api-state.json`; an interrupted move is reconciled from stable
+   stopped counts when possible, including partial backlash take-up.
+   The calibration screen never substitutes simulator data for hardware.
+3. Confirm physical reference and clearance. Planner default is captured 1 mm/s;
    2 mm/s is optional. Start with 0.01 mm AP, with physical observation.
 4. Connect / restore. Investigate mismatches; do not reset references to evade
    faults. Zero calibration changes interpretation, not device position or homing.
@@ -140,16 +159,22 @@ The dedicated network probe retains its independent experiment radius/command li
 Connecting conservatively clears tool references, captured surfaces and quick
 targets for reverification. Home/Work persist with identical Axis calibration,
 but are cleared when it changes or is unknown; verify clearance before using them.
-Live and simulation settings/state are separated
-under `Documents\Neurostar_Master\Configs\DirectUSB`, outside the repository.
+Keyboard shortcuts and application preferences are stored under
+`%APPDATA%\Neurostar_Master\settings.json`. Live and simulation control
+profiles/state are separated under `%APPDATA%\Neurostar_Master\DirectUSB`,
+outside the repository and preserved across repository updates. On first launch,
+existing settings and control files are copied from the former
+`Documents\Neurostar_Master\Configs` location only when the AppData copy is
+absent; the old files are left in place.
 Each mode has a dedicated `direct-control.json` for measured calibration, captured
-speed profile, travel ranges, DV/piston/drill preferences, Axis-zero fingerprint and Home/Work.
-The `allow_pulsed` preference is saved there too; it is off by default.
+speed profile, travel ranges, Axis-zero fingerprint and Home/Work. Supported
+capabilities are enabled by default and have no enable checkboxes.
 These are separate from general `settings.json` and the live API motion journal
 `api-state.json`. Setup preferences save immediately; existing Home/Work metadata
 migrates automatically. Simulation startup auto-connects only the volatile
 in-memory controller; its current AP/ML/DV and piston positions are never saved.
-Live hardware startup remains disconnected and requires fresh setup verification.
+Live startup attempts a restore only when saved calibration and matching API
+state are available; otherwise it falls back to simulation with a warning.
 
 Stop/Esc/close cancel movement, stop all four channels and attempt drill OFF even
 without ON permission. Software Stop depends on the connection/process; use physical

@@ -63,7 +63,7 @@ class Session:
             if bool(saved.get('absolute_calibration', False)) != (calibrated is not None):
                 raise RuntimeError('Supply the same calibration mode used by saved state')
             self.states = saved['backlash_state']; self.reference = saved['reference_normal']
-            if any(type(self.states[a]) is not int or self.states[a] not in (0, BACKLASH[a]) for a in AXES): raise RuntimeError('Invalid saved backlash state.')
+            if any(type(self.states[a]) is not int or not 0 <= self.states[a] <= BACKLASH[a] for a in AXES): raise RuntimeError('Invalid saved backlash state.')
             if any(not math.isfinite(self.reference[a]) for a in AXES): raise RuntimeError('Invalid saved reference.')
             self.log('RESTORED', raw=self.raw, backlash=self.states)
         else:
@@ -170,35 +170,38 @@ class Session:
                 time.sleep(.05)
             raise RuntimeError('Movement timed out; no automatic reverse or retry.')
         except InterruptedError as exc:
-            if not self.simulated:
-                self.fault = str(exc)
-                try: self.invalidate(exc)
-                except Exception: pass
-                try: self.emergency_stop()
-                except Exception as stop_exc:
-                    try: self.log('STOP_ERROR', error=str(stop_exc))
-                    except Exception: pass
-                raise
-            # A simulator can report an exact stop state, unlike live hardware.
-            # Stop all pending axes, then reconcile only the requested axis if
-            # its deterministic simulated target had already completed.
             try:
                 self.emergency_stop()
-                readings = self.snapshot()
-                if any(reading.moving for reading in readings.values()):
-                    raise RuntimeError('Simulator still reports movement after Stop.')
-                reached_target = readings[axis].raw == requested
-                if readings[axis].raw not in (old[axis], requested):
-                    raise RuntimeError('Simulator stopped at an unknown position.')
-                if any(readings[name].raw != old[name] for name in AXES if name != axis):
-                    raise RuntimeError('An uncommanded simulated axis changed.')
-                if reached_target:
-                    self.raw[axis] = requested
-                    self.states[axis] = new_state
-                    self.command_normal[axis] = next_normal
+                readings = self._read_stable_stopped_position(old, requested, axis)
+                actual = readings[axis].raw
+                old_state = self.states[axis]
+                raw_delta = actual - old[axis]
+                raw_direction = 1 if requested > old[axis] else -1
+                if raw_delta * raw_direction < 0:
+                    raise RuntimeError('Stopped count moved opposite to the commanded direction.')
+                state_delta = new_state - old_state
+                if state_delta * raw_direction < 0:
+                    raise RuntimeError('Backlash take-up direction is inconsistent with the stopped count.')
+                takeup = abs(state_delta)
+                if abs(raw_delta) <= takeup:
+                    actual_state = old_state + raw_delta
+                    actual_normal = normal
+                else:
+                    actual_state = new_state
+                    actual_normal = normal + raw_delta - state_delta
+                if not 0 <= actual_state <= BACKLASH[axis]:
+                    raise RuntimeError('Stopped backlash offset lies outside its calibrated range.')
+                expected_travel = next_normal - normal
+                actual_travel = actual_normal - normal
+                if actual_travel * expected_travel < 0 or abs(actual_travel) > abs(expected_travel) + 1.0:
+                    raise RuntimeError('Stopped count cannot be reconciled with the commanded travel.')
+                self.raw.update({name: readings[name].raw for name in AXES})
+                self.states[axis] = actual_state
+                self.command_normal[axis] = actual_normal
                 self.save(True)
-                self.log('MOVE_CANCELLED', axis=axis, reached_target=reached_target,
-                         relative_units=self.positions())
+                self.log('MOVE_CANCELLED_RECOVERED', axis=axis, start_raw=old[axis],
+                         target_raw=requested, stopped_raw=actual, backlash_state=actual_state,
+                         position=self.positions()[axis], relative_units=self.positions())
             except Exception as stop_exc:
                 self.fault = str(stop_exc)
                 try: self.invalidate(stop_exc)
@@ -219,6 +222,33 @@ class Session:
         finally:
             self.busy = False
             self.active_axis = None
+
+    def _read_stable_stopped_position(self, old, requested, active_axis,
+                                      *, timeout_seconds=3.0, stable_samples=3):
+        """Require stable idle telemetry and counts bounded by the in-flight target."""
+        deadline = time.monotonic() + timeout_seconds
+        previous = None
+        stable = 0
+        last = None
+        while time.monotonic() < deadline:
+            readings = self.snapshot()
+            if any(reading.moving for reading in readings.values()):
+                stable = 0
+                previous = None
+            else:
+                current = {axis: readings[axis].raw for axis in AXES}
+                if any(current[axis] != old[axis] for axis in AXES if axis != active_axis):
+                    raise RuntimeError('An uncommanded axis changed during stopped movement.')
+                count = current[active_axis]
+                if not min(old[active_axis], requested) - 2 <= count <= max(old[active_axis], requested) + 2:
+                    raise RuntimeError('Stopped motor count is outside the commanded raw range.')
+                stable = stable + 1 if current == previous else 1
+                previous = current
+                last = readings
+                if stable >= stable_samples:
+                    return last
+            time.sleep(.05)
+        raise RuntimeError('Could not verify stable idle counts after Stop.')
 
     def stopped(self):
         """Idle Stop verifies that no motion occurred; interrupted motion stays invalid."""

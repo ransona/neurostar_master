@@ -249,3 +249,22 @@ Load an absolute `Calibration` JSON with keys `axis_zero_counts`,
 with actual measured anchors. GUI calibration and speed persist per mode. GUI
 state/logs are in `%LOCALAPPDATA%\StereoDriveUSBController` using new `api-state-*.json`
 files; old standalone three-axis state is not silently reused.
+
+### Create anchors without moving to zero
+
+`Calibration.from_current_position(raw_counts, axis_positions_mm,
+piston_position_nl, current_backlash)` derives normalized zero/3000 nL anchors
+using the observed 5225 counts/mm and 161.36 counts/nL. Current direction history
+must be independently verified. `StereoDrive.read_idle_counts(simulate=False)`
+opens the identified controller exclusively and requires two stable idle snapshots;
+it sends status queries only and writes no motion journal. Close other controllers
+first. The planner's USB setup **Calibrate current position…** button combines
+this read with four physical-position entries and atomic save/load of the JSON.
+This sets offsets; it does not home hardware or recalibrate counts per unit.
+
+The planner calibration dialog can reuse an existing idle connection through
+`capture_calibration_counts()`. It also exposes explicit pre-calibration jogging
+via `CalibrationJog`: verified direction history, relative +/-1 mm / +/-100 nL
+bounds, 1 mm/s profile, separate validity journal, exact raw/idle completion and
+Stop. This is a relative setup mode, never an absolute-position or capacity claim.
+See `docs/DIRECT_API_CONTROL.md` in the repository for the complete GUI workflow.

@@ -119,8 +119,11 @@ class StereoDriveController:
             except Exception as exc:
                 cancelled=self.cancelled.is_set() or (stop_requested and stop_requested())
                 if cancelled:
-                    try:drive.position() # An idle cancellation between packets need not lose calibration.
-                    except Exception:self.error=str(exc)
+                    # StereoDrive reconciles stable raw counts and partial backlash
+                    # inside Session.move before it raises InterruptedError. Avoid
+                    # a second read here: the Stop caller may still own the API lock.
+                    session=getattr(drive,'_session',None)
+                    if session is None or session.fault:self.error=str(session.fault if session else exc)
                 else:self.error = str(exc)
                 if not asynchronous: raise StereoDriveError(str(exc)) from exc
             finally:
@@ -154,6 +157,23 @@ class StereoDriveController:
 
     def has_active_motion(self):
         return self.busy
+
+    def is_hardware_moving(self):
+        """Read controller movement flags through the already-open session."""
+        return bool(self._require().is_moving())
+
+    def wait_until_idle(self, timeout_seconds=15):
+        """Wait for the worker and hardware flags to both report stationary."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if not self.busy:
+                try:
+                    if not self._require().is_moving():
+                        return
+                except Exception as exc:
+                    raise StereoDriveError(str(exc)) from exc
+            time.sleep(.05)
+        raise StereoDriveError("Controller still reports movement; use Stop and wait for idle.")
 
     def set_nudge_step(self, axis, step_mm):
         if axis not in self.steps or not math.isfinite(step_mm) or not 0 < step_mm:
@@ -277,16 +297,20 @@ class StereoDriveController:
 
     def stop(self):
         self.cancelled.set()
-        if self.drive: self.drive.stop()
+        if not self.drive:return
+        if self.has_active_motion():
+            # The worker's cancellation watcher sends Stop and the API reconciles
+            # the in-flight count. Wait for that path instead of issuing a second
+            # concurrent Stop on the same serial session.
+            self.wait_until_idle()
+        else:
+            self.drive.stop()
 
     def stop_injectomate_motion(self, **kwargs):
         self.stop()
 
     def wait_until_stopped(self, timeout_seconds=15):
-        deadline=time.monotonic()+timeout_seconds
-        while self.busy and time.monotonic()<deadline: time.sleep(.03)
-        if self.busy: raise StereoDriveError("Stop has not completed; use physical Stop.")
-        if self.drive and self.drive.is_moving(): raise StereoDriveError("Controller still reports movement.")
+        self.wait_until_idle(timeout_seconds)
 
     def activate_drill_toggle(self):
         # Query and command under the same exclusive API session, so a concurrent
