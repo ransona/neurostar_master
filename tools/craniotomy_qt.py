@@ -255,6 +255,7 @@ class CraniotomyConfig:
     auto_start_rounds: bool
     drilling_mode: str
     hole_spacing_mm: float
+    delay_at_depth_seconds: float = 3.0
 
 
 class ProjectionWidget(QWidget):
@@ -1409,6 +1410,8 @@ class CraniotomyWindow(QMainWindow):
         )
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
         self.drill_rate_mm_per_s.setToolTip("Configured depth advance rate used by the pulsed drilling workflow.")
+        self.delay_at_depth = self._double_spinbox(value=3.0, minimum=0.0, maximum=3600.0)
+        self.delay_at_depth.setToolTip("Seconds to wait after the drill reaches its target depth, before retracting or continuing.")
         self.drilling_mode_combo = QComboBox()
         self.drilling_mode_combo.addItem("Spaced burr holes", "boreholes")
         self.drilling_mode_combo.addItem("Continuous path", "continuous")
@@ -1489,7 +1492,9 @@ class CraniotomyWindow(QMainWindow):
         timing_layout.addWidget(self.round_time_seconds, 0, 5)
         timing_layout.addWidget(QLabel("Drill Rate (mm/s)"), 1, 0)
         timing_layout.addWidget(self.drill_rate_mm_per_s, 1, 1)
-        timing_layout.addWidget(self.auto_start_rounds, 1, 2, 1, 4)
+        timing_layout.addWidget(QLabel("Delay at Depth (s)"), 1, 2)
+        timing_layout.addWidget(self.delay_at_depth, 1, 3)
+        timing_layout.addWidget(self.auto_start_rounds, 1, 4, 1, 2)
         timing_layout.addWidget(self.drilling_mode_description, 2, 0, 1, 6)
         setup_layout.addWidget(timing_box, 3, 0, 1, 6)
         setup_layout.addWidget(QLabel("Current Seed"), 4, 0)
@@ -3018,6 +3023,7 @@ class CraniotomyWindow(QMainWindow):
                 "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
                 "drilling_mode": self._craniotomy_config().drilling_mode,
                 "hole_spacing_mm": self._craniotomy_config().hole_spacing_mm,
+                "delayAtDepth": self._craniotomy_config().delay_at_depth_seconds,
             },
             "craniotomy_center": {"ap": self.mid_ap.value(), "ml": self.mid_ml.value()},
             "seeds": [
@@ -3127,6 +3133,7 @@ class CraniotomyWindow(QMainWindow):
                     auto_start_rounds=bool(config.get("auto_start_rounds", self.auto_start_rounds.isChecked())),
                     drilling_mode=str(config.get("drilling_mode", "boreholes")),
                     hole_spacing_mm=float(config.get("hole_spacing_mm", 0.5)),
+                    delay_at_depth_seconds=float(config.get("delayAtDepth", 3.0)),
                 )
             )
         injection_config = payload.get("injection_config")
@@ -3354,6 +3361,7 @@ class CraniotomyWindow(QMainWindow):
             auto_start_rounds=bool(self.auto_start_rounds.isChecked()),
             drilling_mode=str(self.drilling_mode_combo.currentData() or "boreholes"),
             hole_spacing_mm=float(self.hole_spacing_mm.value()),
+            delay_at_depth_seconds=float(self.delay_at_depth.value()),
         )
 
     def _apply_craniotomy_config(self, config: CraniotomyConfig) -> None:
@@ -3370,6 +3378,7 @@ class CraniotomyWindow(QMainWindow):
         mode_index = self.drilling_mode_combo.findData(config.drilling_mode)
         self.drilling_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else self.drilling_mode_combo.findData("boreholes"))
         self.hole_spacing_mm.setValue(config.hole_spacing_mm)
+        self.delay_at_depth.setValue(config.delay_at_depth_seconds)
         self.hole_spacing_mm.setEnabled(config.drilling_mode == "boreholes")
         self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
         self.update_current_target_depth_label()
@@ -3435,6 +3444,7 @@ class CraniotomyWindow(QMainWindow):
                 "auto_start_rounds": self._craniotomy_config().auto_start_rounds,
                 "drilling_mode": self._craniotomy_config().drilling_mode,
                 "hole_spacing_mm": self._craniotomy_config().hole_spacing_mm,
+                "delayAtDepth": self._craniotomy_config().delay_at_depth_seconds,
             },
         )
 
@@ -3462,6 +3472,7 @@ class CraniotomyWindow(QMainWindow):
                         auto_start_rounds=bool(self._read_config_file(craniotomy_path).get("auto_start_rounds", True)),
                         drilling_mode=str(self._read_config_file(craniotomy_path).get("drilling_mode", "boreholes")),
                         hole_spacing_mm=float(self._read_config_file(craniotomy_path).get("hole_spacing_mm", 0.5)),
+                        delay_at_depth_seconds=float(self._read_config_file(craniotomy_path).get("delayAtDepth", 3.0)),
                     )
                 )
             except Exception:
@@ -3528,6 +3539,7 @@ class CraniotomyWindow(QMainWindow):
             "auto_start_rounds": config.auto_start_rounds,
             "drilling_mode": config.drilling_mode,
             "hole_spacing_mm": config.hole_spacing_mm,
+            "delayAtDepth": config.delay_at_depth_seconds,
         }
         self._write_config_file(path, payload)
         self._write_config_file(self._last_used_config_path("craniotomy"), payload)
@@ -3560,6 +3572,7 @@ class CraniotomyWindow(QMainWindow):
             auto_start_rounds=bool(payload.get("auto_start_rounds", True)),
             drilling_mode=str(payload.get("drilling_mode", "boreholes")),
             hole_spacing_mm=float(payload.get("hole_spacing_mm", 0.5)),
+            delay_at_depth_seconds=float(payload.get("delayAtDepth", 3.0)),
         )
         self._apply_craniotomy_config(config)
         self._write_config_file(
@@ -3577,6 +3590,7 @@ class CraniotomyWindow(QMainWindow):
                 "auto_start_rounds": config.auto_start_rounds,
                 "drilling_mode": config.drilling_mode,
                 "hole_spacing_mm": config.hole_spacing_mm,
+                "delayAtDepth": config.delay_at_depth_seconds,
             },
         )
         self.set_status(f"Loaded craniotomy config from {path}")
@@ -8346,6 +8360,7 @@ class CraniotomyWindow(QMainWindow):
             self.trajectory_points, self.cut_offset, self.drill_depth,
             self.depth_per_round, self.skull_thickness_mm, self.round_time_seconds,
             self.drill_rate_mm_per_s, self.drilling_mode_combo, self.hole_spacing_mm,
+            self.delay_at_depth,
             self.auto_start_rounds, self.current_seed_spin, self.craniotomy_load_btn,
             self.craniotomy_save_btn, self.set_center_btn, self.generate_seeds_btn,
             self.clear_surfaces_btn, self.clear_craniotomy_btn, self.move_seed_btn,
@@ -9105,10 +9120,12 @@ class CraniotomyWindow(QMainWindow):
             plan = pulsed_protocol.borehole_drilling_plan(
                 self.controller.get_current_axis_position(), holes, current_depths, target_depths,
                 self.drill_clearance_axis_dv, self.pulsed_clearance_mm, center, self.pulsed_drill_rate,
+                self.delay_at_depth.value(),
             )
         else:
             plan=pulsed_protocol.drilling_plan(self.controller.get_current_axis_position(),surfaces,current_depths,
-                target_depths,frozen,self.drill_clearance_axis_dv,self.pulsed_clearance_mm,center,seconds,self.pulsed_drill_rate)
+                target_depths,frozen,self.drill_clearance_axis_dv,self.pulsed_clearance_mm,center,seconds,
+                self.pulsed_drill_rate,self.delay_at_depth.value())
         checked=[]
         for event in plan:
             if event.target is None:continue
@@ -9155,6 +9172,7 @@ class CraniotomyWindow(QMainWindow):
                     "enter": "Drilling down at a craniotomy point…",
                     "cut": "Drilling around the craniotomy…",
                     "return_center": "Returning above the craniotomy center…",
+                    "depth_hold": "Waiting at depth",
                 }
                 borehole_verbs = {
                     "borehole_approach": "Approaching",
@@ -9304,6 +9322,15 @@ class CraniotomyWindow(QMainWindow):
                         status_callback=None,
                         dwell_seconds=dwell_seconds,
                     )
+                    delay_deadline = time.monotonic() + self.delay_at_depth.value()
+                    while not self._should_abort_drilling():
+                        remaining_delay = delay_deadline - time.monotonic()
+                        if remaining_delay <= 0.0:
+                            break
+                        self.status_signal.emit("Waiting at depth")
+                        time.sleep(min(0.05, remaining_delay))
+                    if self._should_abort_drilling():
+                        break
                     at_cutting_depth = True
                     previous_index = index
                     self._mark_continuous_round_point(index, target_depths[index], point_count)

@@ -92,8 +92,9 @@ def injection_plan(start,site,settings,clearance_dv,clearance_mm=.5):
 
 
 def drilling_plan(start,surfaces,current_depths,target_depths,frozen,clearance_dv,clearance_mm,
-                  center_above,round_seconds,depth_rate):
+                  center_above,round_seconds,depth_rate,delay_at_depth_seconds=0.0):
     finite(clearance_mm,'clearance',1/5225);finite(round_seconds,'round time',1e-9);finite(depth_rate,'depth rate',1e-9)
+    delay_at_depth_seconds=finite(delay_at_depth_seconds,'delay at depth')
     if len(surfaces)<2 or any(len(v)!=len(surfaces) for v in (current_depths,target_depths,frozen)):
         raise ValueError('Drilling arrays must match the closed perimeter')
     if math.dist(surfaces[0],surfaces[-1])>1e-6:raise ValueError('Perimeter must be closed')
@@ -119,6 +120,10 @@ def drilling_plan(start,surfaces,current_depths,target_depths,frozen,clearance_d
             for p in points:
                 events.append(Pulse(elapsed,'cut',target=p,surface_dv=p[2]-target_depths[index]));current=p
         events.append(Pulse(elapsed,'point_complete',point_index=index,depth_mm=target_depths[index],surface_dv=surface))
+        if delay_at_depth_seconds:
+            events.append(Pulse(elapsed,'depth_hold',point_index=index,
+                                depth_mm=target_depths[index],surface_dv=surface))
+            elapsed+=delay_at_depth_seconds
         previous=index
     cuts=sum(e.phase=='cut' for e in events)
     # Spread cutting pulses across requested round time; completion can make it longer.
@@ -184,7 +189,7 @@ def apply_borehole_freeze_overrides(holes, overrides):
 
 
 def borehole_drilling_plan(start, holes, current_depths, target_depths, clearance_dv,
-                           clearance_mm, center_above, depth_rate):
+                           clearance_mm, center_above, depth_rate, delay_at_depth_seconds=0.0):
     """Create a safe, sequential plan to deepen spaced perimeter boreholes.
 
     Each hole is approached/retracted at clearance; only its own axis is
@@ -193,6 +198,7 @@ def borehole_drilling_plan(start, holes, current_depths, target_depths, clearanc
     """
     clearance_mm = finite(clearance_mm, 'clearance', 1e-6)
     depth_rate = finite(depth_rate, 'depth rate', 1e-9)
+    delay_at_depth_seconds = finite(delay_at_depth_seconds, 'delay at depth')
     if len(holes) == 0 or len(current_depths) != len(holes) or len(target_depths) != len(holes):
         raise ValueError('Borehole depths must match the sampled perimeter.')
     for values in (current_depths, target_depths):
@@ -231,6 +237,10 @@ def borehole_drilling_plan(start, holes, current_depths, target_depths, clearanc
             current = target
         events.append(Pulse(elapsed, 'borehole_complete', point_index=hole_index,
                             depth_mm=target_depth, surface_dv=surface_dv))
+        if delay_at_depth_seconds:
+            events.append(Pulse(elapsed, 'depth_hold', point_index=hole_index,
+                                depth_mm=target_depth, surface_dv=surface_dv))
+            elapsed += delay_at_depth_seconds
         retract = (ap, ml, safe_dv)
         for target in line(current, retract, 1):
             events.append(Pulse(elapsed, 'borehole_retract', target=target,

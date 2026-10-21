@@ -59,6 +59,9 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(self.window.controller.has_active_motion())
 
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
+        self.assertEqual(self.window.delay_at_depth.value(),3.0)
+        session_config=self.window._project_session_dict()['craniotomy_config']
+        self.assertEqual(session_config['delayAtDepth'],3.0)
         self.window.resize(1440,900)
         self.window.tabs.setCurrentIndex(1)
         self.window.show();self.app.processEvents()

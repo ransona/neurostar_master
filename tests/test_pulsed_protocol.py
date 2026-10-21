@@ -133,6 +133,29 @@ class PulseTests(unittest.TestCase):
                 self.assertLessEqual(left.target[2],-.02+1e-9)
                 self.assertLessEqual(right.target[2],-.02+1e-9)
 
+    def test_borehole_depth_delay_is_inserted_before_retraction(self):
+        hole=(0,0,0,False)
+        plan=pulse.borehole_drilling_plan((0,0,-.05),[hole],[0],[.01],-.02,.02,
+            (0,0,-.05),.1,3.0)
+        complete=next(i for i,event in enumerate(plan) if event.phase=='borehole_complete')
+        hold=plan[complete+1]
+        retract=plan[complete+2]
+        self.assertEqual(hold.phase,'depth_hold')
+        self.assertEqual(hold.due_s,plan[complete].due_s)
+        self.assertEqual(retract.phase,'borehole_retract')
+        self.assertAlmostEqual(retract.due_s-hold.due_s,3.0)
+
+    def test_continuous_drilling_depth_delay_is_inserted_after_reaching_depth(self):
+        surfaces=[(0,0,0),(1,0,0),(0,0,0)]
+        plan=pulse.drilling_plan((0,0,-.05),surfaces,[0,0,0],[.01,.01,.01],
+            [False,False,False],-.02,.02,(0,0,-.05),1.0,.1,3.0)
+        complete=next(i for i,event in enumerate(plan) if event.phase=='point_complete')
+        hold=plan[complete+1]
+        next_event=plan[complete+2]
+        self.assertEqual(hold.phase,'depth_hold')
+        self.assertEqual(hold.due_s,plan[complete].due_s)
+        self.assertGreaterEqual(next_event.due_s-hold.due_s,3.0)
+
     def test_piston_preflight_rejects_whole_overbudget_without_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             c=StereoDriveController();c.connect(CAL,STATES,Path(directory)/'api.json',allow_piston=True)
