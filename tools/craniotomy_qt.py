@@ -3232,6 +3232,7 @@ class CraniotomyWindow(QMainWindow):
             "anchor_bregma": self.anchor_bregma,
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "validation_clearance_mm": self.validation_clearance_mm,
+            "single_hole_drill_rate_mm_per_s": self.single_hole_rate_mm_per_s.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
             "axis_zero_reference": getattr(self, "axis_zero_reference", None),
@@ -3277,6 +3278,15 @@ class CraniotomyWindow(QMainWindow):
             self.validation_clearance_edit.blockSignals(True)
             self.validation_clearance_edit.setValue(self.validation_clearance_mm)
             self.validation_clearance_edit.blockSignals(False)
+            single_hole_rate = payload.get("single_hole_drill_rate_mm_per_s")
+            if single_hole_rate is None:
+                single_hole_rate = self.drill_rate_mm_per_s.value()
+            try:
+                single_hole_rate = float(single_hole_rate)
+                if math.isfinite(single_hole_rate):
+                    self.single_hole_rate_mm_per_s.setValue(single_hole_rate)
+            except (TypeError, ValueError):
+                pass
             recent_grids = payload.get("recent_injection_grid_configs", [])
             if isinstance(recent_grids, list):
                 self.recent_injection_grid_configs = [
