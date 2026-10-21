@@ -1632,7 +1632,7 @@ class CraniotomyWindow(QMainWindow):
         grid.addWidget(QLabel(
             "Place the drill tip at the hole start surface. Start records the current calibrated Axis position; depth advances in DV."
         ), 0, 0, 1, 4)
-        self.single_hole_depth_mm = self._double_spinbox(value=1.0, minimum=0.01, maximum=5.0)
+        self.single_hole_depth_mm = self._double_spinbox(value=0.20, minimum=0.01, maximum=5.0)
         self.single_hole_rate_mm_per_s = self._double_spinbox(
             value=float(self.drill_rate_mm_per_s.value()), minimum=0.001, maximum=5.0
         )
@@ -1654,7 +1654,7 @@ class CraniotomyWindow(QMainWindow):
         progress_box = QGroupBox("Progress")
         progress_layout = QVBoxLayout(progress_box)
         self.single_hole_status_label = QLabel("Status: Ready. Position tip at the surface.")
-        self.single_hole_depth_label = QLabel("Depth: 0.00 mm of 1.00 mm")
+        self.single_hole_depth_label = QLabel("Depth: 0.00 mm of 0.20 mm")
         self.single_hole_progress = QProgressBar()
         self.single_hole_progress.setRange(0, 1000)
         self.single_hole_progress.setValue(0)

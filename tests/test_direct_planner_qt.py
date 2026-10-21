@@ -63,6 +63,7 @@ class PlannerTests(unittest.TestCase):
         session_config=self.window._project_session_dict()['craniotomy_config']
         self.assertEqual(session_config['delayAtDepth'],3.0)
         self.assertEqual(self.window.single_hole_delay_at_depth.value(),3.0)
+        self.assertEqual(self.window.single_hole_depth_mm.value(),0.20)
         self.window.single_hole_delay_at_depth.setValue(1.25)
         self.window._save_general_settings()
         saved_settings=self.window._read_config_file(self.window._general_settings_path())
