@@ -1255,6 +1255,11 @@ class CraniotomyWindow(QMainWindow):
             "border-radius: 7px; padding: 4px 8px;"
         )
         self.move_speed_label = QLabel()
+        self.move_speed_label.setObjectName("stepSizeLabel")
+        self.move_speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.move_speed_label.setMinimumHeight(42)
+        self.move_speed_label.setMinimumWidth(190)
+        self.move_speed_label.setToolTip("Keyboard movement step size in millimetres")
         for label in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setProperty("role", "coord")
@@ -3511,8 +3516,12 @@ class CraniotomyWindow(QMainWindow):
         green = int(99 - ratio * 61)
         blue = int(235 - ratio * 197)
         color = f"#{red:02x}{green:02x}{blue:02x}"
-        self.move_speed_label.setText(f"Move speed = {self.move_speed_step_mm:g} mm")
-        self.move_speed_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        self.move_speed_label.setText(f"Step size: {self.move_speed_step_mm:g} mm")
+        self.move_speed_label.setStyleSheet(
+            f"color: {color}; font-size: 56px; font-weight: 900; "
+            "padding: 2px 12px; border: 2px solid #315a8a; "
+            "border-radius: 8px; background: #eef5ff;"
+        )
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() != QEvent.Type.KeyPress:
