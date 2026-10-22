@@ -8541,6 +8541,10 @@ class CraniotomyWindow(QMainWindow):
             self.single_hole_start_btn.setText("Pausing...")
             self.single_hole_start_btn.setEnabled(False)
             self.single_hole_status_signal.emit("Pausing after the current verified movement step.")
+            # Interrupt a long controller move so the worker can reconcile the
+            # actual position and perform the safe retract instead of waiting
+            # indefinitely for goto_axis_position() to return.
+            threading.Thread(target=self._stop_single_hole_for_pause, daemon=True).start()
             return
 
         if not self.single_hole_paused and not self._require_idle("Single Hole Drilling"):
@@ -8615,6 +8619,12 @@ class CraniotomyWindow(QMainWindow):
             daemon=True,
         )
         self.single_hole_thread.start()
+
+    def _stop_single_hole_for_pause(self) -> None:
+        try:
+            self.controller.stop()
+        except Exception as exc:
+            self.status_signal.emit(f"Pause stop request failed: {exc}")
 
     def _set_single_hole_controls_locked(self, locked: bool) -> None:
         for control in (
@@ -8699,17 +8709,30 @@ class CraniotomyWindow(QMainWindow):
                 outcome = "error"
                 detail = f"Stop or retract could not be verified: {exc}. Use physical Stop and verify position."
         except Exception as exc:
-            outcome = "error"
-            detail = f"Drilling stopped: {exc}. Verify physical position before restarting."
-            try:
-                self.controller.stop()
-                self.controller.wait_until_stopped()
-            except Exception:
-                pass
-            try:
-                self.controller.turn_drill_off()
-            except Exception:
-                pass
+            if self.single_hole_pause_requested.is_set() and not self.single_hole_cancel_requested.is_set():
+                outcome = "paused"
+                try:
+                    actual = tuple(self.controller.get_current_axis_position())
+                    depth = max(0.0, min(target_depth, actual[2] - origin[2]))
+                    self.single_hole_current_depth_mm = depth
+                    self.controller.turn_drill_off()
+                    self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+                    detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
+                except Exception as pause_exc:
+                    outcome = "error"
+                    detail = f"Pause retract failed: {pause_exc}. Verify physical position before moving."
+            else:
+                outcome = "error"
+                detail = f"Drilling stopped: {exc}. Verify physical position before restarting."
+                try:
+                    self.controller.stop()
+                    self.controller.wait_until_stopped()
+                except Exception:
+                    pass
+                try:
+                    self.controller.turn_drill_off()
+                except Exception:
+                    pass
         finally:
             self.single_hole_finished_signal.emit(outcome, self.single_hole_current_depth_mm, detail)
 
