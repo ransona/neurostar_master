@@ -8691,7 +8691,7 @@ class CraniotomyWindow(QMainWindow):
             self.single_hole_status_signal.emit("Turning drill off and verifying power state.")
             self.controller.turn_drill_off()
             self.single_hole_status_signal.emit("Drill off; retracting to the safe clearance position.")
-            self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+            self._retract_single_hole_to_clearance(origin, clearance, stop_first=False, fast=True)
         except pulsed_protocol.PulsePaused:
             outcome = "paused"
             try:
@@ -8743,7 +8743,7 @@ class CraniotomyWindow(QMainWindow):
         finally:
             self.single_hole_finished_signal.emit(outcome, self.single_hole_current_depth_mm, detail)
 
-    def _retract_single_hole_to_clearance(self, origin, clearance, *, stop_first: bool) -> None:
+    def _retract_single_hole_to_clearance(self, origin, clearance, *, stop_first: bool, fast: bool = False) -> None:
         if stop_first:
             self.controller.stop()
             self.controller.wait_until_stopped()
@@ -8756,7 +8756,11 @@ class CraniotomyWindow(QMainWindow):
                 raise StereoDriveError("Drill power is still reported ON; retract was not started.")
             self.controller.prepare_motion()
         safe_dv = origin[2] - clearance
-        self.controller.move_axis_to_target("DV", safe_dv, step_mm=0.005, dwell_seconds=0)
+        # A completed hole can leave the tool in one full-speed clearance move;
+        # interrupted operations retain the small verified-step retract.
+        self.controller.move_axis_to_target(
+            "DV", safe_dv, step_mm=clearance if fast else 0.005, dwell_seconds=0
+        )
         self.controller.wait_until_stopped()
         actual = tuple(self.controller.get_current_axis_position())
         expected = (origin[0], origin[1], safe_dv)
