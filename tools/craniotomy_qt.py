@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QFileDialog,
     QLabel,
     QLineEdit,
@@ -8589,7 +8590,12 @@ class CraniotomyWindow(QMainWindow):
                 raise StereoDriveError("Target depth must be greater than the already drilled depth.")
             safe_retract = (origin[0], origin[1], origin[2] - clearance)
             plan = pulsed_protocol.single_hole_drilling_plan(
-                current, origin, start_depth, target_depth, depth_rate
+                current,
+                origin,
+                start_depth,
+                target_depth,
+                depth_rate,
+                reentry_step_mm=clearance if self.single_hole_paused else None,
             )
             target_position = (origin[0], origin[1], origin[2] + target_depth)
             retract_path = pulsed_protocol.line(target_position, safe_retract, 0.005)
@@ -8799,10 +8805,35 @@ class CraniotomyWindow(QMainWindow):
         if outcome == "completed":
             self.single_hole_progress.setValue(1000)
             self.status_signal.emit("Single-hole drilling completed.")
+            QTimer.singleShot(0, lambda completed_depth=depth: self._offer_single_hole_extension(completed_depth))
         elif outcome == "cancelled":
             self.status_signal.emit("Single-hole operation cancelled.")
         else:
             self.status_signal.emit("Single-hole stop requires position verification.")
+
+    def _offer_single_hole_extension(self, completed_depth: float) -> None:
+        """Offer a deeper pass from the verified, retracted hole position."""
+        if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
+            QTimer.singleShot(100, lambda: self._offer_single_hole_extension(completed_depth))
+            return
+        target, accepted = QInputDialog.getDouble(
+            self,
+            "Go Deeper?",
+            "New hole depth (mm):",
+            float(completed_depth),
+            float(completed_depth + 0.005),
+            5.0,
+            3,
+        )
+        if not accepted or target <= completed_depth + 0.0005:
+            return
+        self.single_hole_current_depth_mm = completed_depth
+        self.single_hole_paused = True
+        self._set_single_hole_status(
+            f"Extending hole from {completed_depth:.3f} mm to {target:.3f} mm."
+        )
+        self.single_hole_depth_mm.setValue(target)
+        self.start_pause_single_hole()
 
     def cancel_single_hole(self, *, emergency: bool = False) -> None:
         if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
