@@ -1306,8 +1306,6 @@ class CraniotomyWindow(QMainWindow):
         self.bregma_mode_btn = QPushButton("Bregma")
         self.axis_mode_btn.clicked.connect(lambda: self.set_coordinate_mode("axis"))
         self.bregma_mode_btn.clicked.connect(lambda: self.set_coordinate_mode("bregma"))
-        position_layout.addWidget(self.axis_mode_btn)
-        position_layout.addWidget(self.bregma_mode_btn)
         quick_specs = (
             ("A", "quick-green"),
             ("B", "quick-blue"),
@@ -1325,16 +1323,38 @@ class CraniotomyWindow(QMainWindow):
                 button.style().unpolish(button)
                 button.style().polish(button)
                 quick_buttons.append(button)
+        options_btn = QPushButton("Options")
+        options_btn.clicked.connect(self.open_options_dialog)
+        usb_setup_btn = QPushButton("USB setup / zero calibration")
+        usb_setup_btn.clicked.connect(self.open_direct_usb_setup)
+        update_btn = QPushButton("Update")
+        update_btn.clicked.connect(self.update_from_github)
+        self.overlay_combo = QComboBox()
+        self.overlay_combo.addItem("None", None)
+        overlay_dir = Path(__file__).resolve().parents[1] / "assets" / "background_images"
+        for image_path in sorted(overlay_dir.glob("*.png")):
+            self.overlay_combo.addItem(image_path.stem, str(image_path))
+        self.overlay_combo.currentIndexChanged.connect(self.select_overlay)
         position_layout.addWidget(header_stop_btn)
         position_layout.addWidget(drill_toggle_btn)
         position_layout.addWidget(clear_project_btn)
+        position_layout.addWidget(usb_setup_btn)
+        position_layout.addWidget(options_btn)
+        position_layout.addWidget(update_btn)
+        position_layout.addWidget(QLabel("Overlay:"))
+        position_layout.addWidget(self.overlay_combo)
         position_layout.addStretch(1)
         # Keep the live coordinates and step control together in the right
         # half of the top bar, where they remain visible during operation.
+        position_layout.addWidget(self.axis_mode_btn)
+        position_layout.addWidget(self.bregma_mode_btn)
+        self._coordinate_axis_labels = []
         for axis, readout in (("AP", self.current_ap_label),
                               ("ML", self.current_ml_label),
                               ("DV", self.current_dv_label)):
-            position_layout.addWidget(QLabel(axis))
+            axis_label = QLabel(axis)
+            self._coordinate_axis_labels.append(axis_label)
+            position_layout.addWidget(axis_label)
             position_layout.addWidget(readout)
         position_layout.addWidget(self.move_speed_label)
         header_layout.addWidget(set_bregma_local_btn)
@@ -1349,23 +1369,6 @@ class CraniotomyWindow(QMainWindow):
             header_layout.addWidget(button)
         header_layout.addWidget(self.set_relative_coordinates_btn)
         header_layout.addStretch(1)
-        options_btn = QPushButton("Options")
-        options_btn.clicked.connect(self.open_options_dialog)
-        usb_setup_btn = QPushButton("USB setup / zero calibration")
-        usb_setup_btn.clicked.connect(self.open_direct_usb_setup)
-        header_layout.addWidget(usb_setup_btn)
-        header_layout.addWidget(options_btn)
-        update_btn = QPushButton("Update")
-        update_btn.clicked.connect(self.update_from_github)
-        header_layout.addWidget(update_btn)
-        header_layout.addWidget(QLabel("Overlay:"))
-        self.overlay_combo = QComboBox()
-        self.overlay_combo.addItem("None", None)
-        overlay_dir = Path(__file__).resolve().parents[1] / "assets" / "background_images"
-        for image_path in sorted(overlay_dir.glob("*.png")):
-            self.overlay_combo.addItem(image_path.stem, str(image_path))
-        self.overlay_combo.currentIndexChanged.connect(self.select_overlay)
-        header_layout.addWidget(self.overlay_combo)
         header_container.addLayout(position_layout)
         header_container.addLayout(header_layout)
         header_container.addWidget(self.action_status_label)
@@ -2010,12 +2013,17 @@ class CraniotomyWindow(QMainWindow):
         # The step label is the visual anchor; keep it legible while allowing
         # the coordinate readouts to share the right-hand half responsively.
         step_size = max(18, min(42, int(available / 24)))
-        readout_font = max(14, int(step_size * 0.48))
+        readout_font = step_size
         for readout in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
             font = readout.font()
             font.setPointSize(readout_font)
             font.setBold(True)
             readout.setFont(font)
+        for axis_label in getattr(self, "_coordinate_axis_labels", []):
+            font = axis_label.font()
+            font.setPointSize(step_size)
+            font.setBold(True)
+            axis_label.setFont(font)
         self.move_speed_label.setStyleSheet(
             f"color: {self._step_size_color()}; font-size: {step_size}px; font-weight: 900; "
             "padding: 2px 12px; border: 2px solid #315a8a; "
