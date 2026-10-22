@@ -8627,6 +8627,7 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_safe_retract_axis = tuple(safe_retract)
         self.single_hole_pause_requested.clear()
         self.single_hole_cancel_requested.clear()
+        self._single_hole_target_update_pending = False
         self.single_hole_paused = False
         self.single_hole_start_btn.setText("Pause")
         self.single_hole_cancel_btn.setEnabled(True)
@@ -8655,13 +8656,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, "Update target", "New target depth must be deeper than the verified current depth.")
             return
         self._single_hole_target_update_pending = True
-        self.single_hole_pause_requested.set()
-        self.single_hole_start_btn.setText("Updating target...")
-        self.single_hole_start_btn.setEnabled(False)
         self.single_hole_status_signal.emit(
-            f"Updating target to {target:.3f} mm; retracting before resuming."
+            f"Target updated to {target:.3f} mm; continuing from the current depth."
         )
-        threading.Thread(target=self._stop_single_hole_for_pause, daemon=True).start()
 
     def _stop_single_hole_for_pause(self) -> None:
         try:
@@ -8682,7 +8679,7 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_cancel_btn.setEnabled(locked or self.single_hole_paused)
 
     def _run_single_hole_drilling(self, plan, origin, target_depth, depth_rate, clearance,
-                                  delay_at_depth: float = 3.0) -> None:
+                                  delay_at_depth: float = 3.0, *, _continuation: bool = False) -> None:
         outcome = "completed"
         detail = "Hole depth reached; drill is off and tool is retracted."
         try:
@@ -8718,6 +8715,21 @@ class CraniotomyWindow(QMainWindow):
                 self.single_hole_progress_signal.emit(depth)
                 self.single_hole_status_signal.emit(f"Drilling at {depth:.2f} mm.")
                 self.status_signal.emit(f"Single hole drilling at {depth:.2f} mm.")
+            if self._single_hole_target_update_pending:
+                requested_depth = float(self.single_hole_depth_mm.value())
+                if requested_depth > target_depth + 0.0005:
+                    current = tuple(self.controller.get_current_axis_position())
+                    current_depth = max(0.0, min(requested_depth, current[2] - origin[2]))
+                    self._single_hole_target_update_pending = False
+                    continuation = pulsed_protocol.single_hole_drilling_plan(
+                        current, origin, current_depth, requested_depth, depth_rate
+                    )
+                    self._run_single_hole_drilling(
+                        continuation, origin, requested_depth, depth_rate, clearance,
+                        delay_at_depth, _continuation=True,
+                    )
+                    return
+                self._single_hole_target_update_pending = False
             delay_deadline = time.monotonic() + delay_at_depth
             while time.monotonic() < delay_deadline:
                 if self.single_hole_cancel_requested.is_set():
@@ -8782,7 +8794,8 @@ class CraniotomyWindow(QMainWindow):
                 except Exception:
                     pass
         finally:
-            self.single_hole_finished_signal.emit(outcome, self.single_hole_current_depth_mm, detail)
+            if not _continuation:
+                self.single_hole_finished_signal.emit(outcome, self.single_hole_current_depth_mm, detail)
 
     def _retract_single_hole_to_clearance(self, origin, clearance, *, stop_first: bool, fast: bool = False) -> None:
         if stop_first:
