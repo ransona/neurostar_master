@@ -977,6 +977,7 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_safe_retract_axis: tuple[float, float, float] | None = None
         self.single_hole_current_depth_mm = 0.0
         self.single_hole_paused = False
+        self._single_hole_target_update_pending = False
         self.drill_completed_points = 0
         self.drilling_progress_reset_requires_ack = False
         self.restart_drill_round_after_pause = False
@@ -1640,8 +1641,10 @@ class CraniotomyWindow(QMainWindow):
         grid = QGridLayout(setup)
         grid.addWidget(QLabel(
             "Place the drill tip at the hole start surface. Start records the current calibrated Axis position; depth advances in DV."
-        ), 0, 0, 1, 4)
+        ), 0, 0, 1, 5)
         self.single_hole_depth_mm = self._double_spinbox(value=0.20, minimum=0.01, maximum=5.0)
+        self.single_hole_update_target_btn = QPushButton("Update target")
+        self.single_hole_update_target_btn.clicked.connect(self.update_single_hole_target)
         self.single_hole_rate_mm_per_s = self._double_spinbox(
             value=float(self.drill_rate_mm_per_s.value()), minimum=0.001, maximum=5.0
         )
@@ -1656,15 +1659,16 @@ class CraniotomyWindow(QMainWindow):
             field.setFixedWidth(112)
         grid.addWidget(QLabel("Depth to drill (mm)"), 1, 0)
         grid.addWidget(self.single_hole_depth_mm, 1, 1)
-        grid.addWidget(QLabel("Drill rate (mm/s)"), 1, 2)
-        grid.addWidget(self.single_hole_rate_mm_per_s, 1, 3)
+        grid.addWidget(self.single_hole_update_target_btn, 1, 2)
+        grid.addWidget(QLabel("Drill rate (mm/s)"), 1, 3)
+        grid.addWidget(self.single_hole_rate_mm_per_s, 1, 4)
         grid.addWidget(QLabel("Retract above start (mm)"), 2, 0)
         grid.addWidget(self.single_hole_clearance_mm, 2, 1)
         grid.addWidget(QLabel("Delay at Depth (s)"), 2, 2)
         grid.addWidget(self.single_hole_delay_at_depth, 2, 3)
         self.single_hole_origin_label = QLabel("Start position: not captured")
         self.single_hole_origin_label.setProperty("role", "muted")
-        grid.addWidget(self.single_hole_origin_label, 3, 0, 1, 4)
+        grid.addWidget(self.single_hole_origin_label, 3, 0, 1, 5)
         setup.setMaximumWidth(760)
         layout.addWidget(setup, 0, Qt.AlignmentFlag.AlignHCenter)
 
@@ -8631,6 +8635,24 @@ class CraniotomyWindow(QMainWindow):
         )
         self.single_hole_thread.start()
 
+    def update_single_hole_target(self) -> None:
+        """Apply the depth field as a new target during a running hole."""
+        if self.single_hole_thread is None or not self.single_hole_thread.is_alive():
+            self.set_status("Start a single-hole drill before updating its target.")
+            return
+        target = float(self.single_hole_depth_mm.value())
+        if target <= self.single_hole_current_depth_mm + 0.0005:
+            QMessageBox.warning(self, "Update target", "New target depth must be deeper than the verified current depth.")
+            return
+        self._single_hole_target_update_pending = True
+        self.single_hole_pause_requested.set()
+        self.single_hole_start_btn.setText("Updating target...")
+        self.single_hole_start_btn.setEnabled(False)
+        self.single_hole_status_signal.emit(
+            f"Updating target to {target:.3f} mm; retracting before resuming."
+        )
+        threading.Thread(target=self._stop_single_hole_for_pause, daemon=True).start()
+
     def _stop_single_hole_for_pause(self) -> None:
         try:
             self.controller.stop()
@@ -8639,12 +8661,13 @@ class CraniotomyWindow(QMainWindow):
 
     def _set_single_hole_controls_locked(self, locked: bool) -> None:
         for control in (
-            self.single_hole_depth_mm,
             self.single_hole_rate_mm_per_s,
             self.single_hole_clearance_mm,
             self.single_hole_delay_at_depth,
         ):
             control.setEnabled(not locked)
+        self.single_hole_depth_mm.setEnabled(True)
+        self.single_hole_update_target_btn.setEnabled(locked)
         self.single_hole_start_btn.setEnabled(not self.single_hole_pause_requested.is_set())
         self.single_hole_cancel_btn.setEnabled(locked or self.single_hole_paused)
 
@@ -8795,6 +8818,9 @@ class CraniotomyWindow(QMainWindow):
             self.single_hole_cancel_btn.setEnabled(True)
             self._set_single_hole_status(detail)
             self.status_signal.emit("Single hole paused and retracted.")
+            if self._single_hole_target_update_pending:
+                self._single_hole_target_update_pending = False
+                QTimer.singleShot(100, self.start_pause_single_hole)
             return
         self.single_hole_paused = False
         self.single_hole_pause_requested.clear()
