@@ -2019,6 +2019,13 @@ class CraniotomyWindow(QMainWindow):
             font.setPointSize(readout_font)
             font.setBold(True)
             readout.setFont(font)
+            # The global coord stylesheet sets a small default; override it
+            # here so the live values exactly match the Step/rate display.
+            readout.setStyleSheet(
+                f"font-size: {step_size}px; font-weight: 900; "
+                "background: rgba(255,255,255,0.92); border: 1px solid #d4ded3; "
+                "border-radius: 8px; padding: 2px 8px;"
+            )
         for axis_label in getattr(self, "_coordinate_axis_labels", []):
             font = axis_label.font()
             font.setPointSize(step_size)
