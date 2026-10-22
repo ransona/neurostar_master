@@ -4723,6 +4723,16 @@ class CraniotomyWindow(QMainWindow):
     def set_local_bregma(self) -> None:
         if not self._require_idle("Set Bregma"):
             return
+        response = QMessageBox.warning(
+            self,
+            "Confirm Set Bregma",
+            "Set the current physical position as the GUI Bregma origin? "
+            "This changes all Bregma-based coordinates and clears the stored anchor.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
         try:
             # GUI Bregma is deliberately independent of StereoDrive's native
             # Bregma reference. Preserve the mechanical Axis values and use
@@ -4820,16 +4830,16 @@ class CraniotomyWindow(QMainWindow):
     def set_anchor(self) -> None:
         if not self._require_idle("Set Anchor"):
             return
-        if self.anchor_axis is not None or self.anchor_bregma is not None:
-            response = QMessageBox.warning(
-                self,
-                "Change Existing Anchor?",
-                "An anchor is already set. Are you sure you want to change it?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if response != QMessageBox.Yes:
-                return
+        response = QMessageBox.warning(
+            self,
+            "Confirm Set Anchor",
+            "Store the current physical position as the anchor? "
+            "This replaces any existing anchor.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
         try:
             if self.bregma_axis is None:
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
