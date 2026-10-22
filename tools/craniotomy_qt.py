@@ -8700,7 +8700,7 @@ class CraniotomyWindow(QMainWindow):
                 self.single_hole_current_depth_mm = depth
                 self.controller.prepare_motion()
                 self.controller.turn_drill_off()
-                self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+                self._retract_single_hole_to_clearance(origin, clearance, stop_first=False, fast=True)
                 detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
             except Exception as exc:
                 outcome = "error"
@@ -8725,7 +8725,7 @@ class CraniotomyWindow(QMainWindow):
                     self.single_hole_current_depth_mm = depth
                     self.controller.prepare_motion()
                     self.controller.turn_drill_off()
-                    self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
+                    self._retract_single_hole_to_clearance(origin, clearance, stop_first=False, fast=True)
                     detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
                 except Exception as pause_exc:
                     outcome = "error"
