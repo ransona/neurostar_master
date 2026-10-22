@@ -8698,6 +8698,7 @@ class CraniotomyWindow(QMainWindow):
                 actual = tuple(self.controller.get_current_axis_position())
                 depth = max(0.0, min(target_depth, actual[2] - origin[2]))
                 self.single_hole_current_depth_mm = depth
+                self.controller.prepare_motion()
                 self.controller.turn_drill_off()
                 self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
                 detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
@@ -8722,6 +8723,7 @@ class CraniotomyWindow(QMainWindow):
                     actual = tuple(self.controller.get_current_axis_position())
                     depth = max(0.0, min(target_depth, actual[2] - origin[2]))
                     self.single_hole_current_depth_mm = depth
+                    self.controller.prepare_motion()
                     self.controller.turn_drill_off()
                     self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
                     detail = "Paused; drill is off and tool is retracted. Resume returns to the saved depth."
