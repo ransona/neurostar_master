@@ -8852,6 +8852,16 @@ class CraniotomyWindow(QMainWindow):
         if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
             QTimer.singleShot(100, lambda: self._offer_single_hole_extension(completed_depth))
             return
+        choice = QMessageBox(self)
+        choice.setWindowTitle("Hole depth reached")
+        choice.setText(f"The hole has reached {completed_depth:.3f} mm and the tool is retracted.")
+        choice.setInformativeText("Do you want to continue deeper?")
+        deeper_button = choice.addButton("Go deeper", QMessageBox.AcceptRole)
+        choice.addButton("Finish", QMessageBox.RejectRole)
+        choice.setDefaultButton(deeper_button)
+        choice.exec()
+        if choice.clickedButton() is not deeper_button:
+            return
         target, accepted = QInputDialog.getDouble(
             self,
             "Go Deeper?",
