@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "source": "passive TShark capture of USBPcap1 and USBPcap2, filtered to bus 2 device address 3",
+  "source_sha256": "95a37f21dd169db3fe610aa8f8bcb758bb5314bd22b6a3986047d49c9c183d41",
+  "archive_sha256": "8e10a8ddf0a67b93479633a46986f7cabcc1c5bf21ac4cbfd93e03a1bb4ea894",
+  "device_identity": {
+    "vid": "0483",
+    "pid": "5743",
+    "usb_serial": "206334AC5031",
+    "session_bus": 2,
+    "session_address": 3,
+    "windows_com_port_at_capture": "COM4"
+  },
+  "scope": "Read-only passive capture; selected controller traffic only. No device commands or movement were sent.",
+  "utc_start": "2026-10-22T04:58:14.005025000Z",
+  "utc_end": "2026-10-22T04:58:43.862808000Z",
+  "source_frame_count_both_root_hubs": 9105,
+  "filtered_frame_count": 842,
+  "decoded_serial_transfers": 418,
+  "motor_target_count": 0,
+  "auxiliary_queries": {
+    "AF4500_count": 23,
+    "AF4500_replies": 23,
+    "AF53_count": 23,
+    "AF53_replies": 23
+  },
+  "AF4500_reply_variants": [
+    {
+      "payload_hex": "4501020358040200005a00590000025804e14cff000000005a0059000000",
+      "count": 2
+    },
+    {
+      "payload_hex": "4501020358040200005a00590000025804e44cff000000005a0059000000",
+      "count": 21
+    }
+  ],
+  "AF53_reply_variants": [
+    {
+      "payload_hex": "5342030110011101120213020000",
+      "count": 23
+    }
+  ],
+  "findings": [
+    "AF 45 00 was followed by a 28-byte reply beginning 45 01 02 03; 23 query/reply cycles were observed at roughly 1.3-second intervals.",
+    "AF 45 reply payloads differed only at zero-based byte offset 17: 0xE4 in 21 replies and 0xE1 in 2 replies; remaining bytes were identical.",
+    "AF 53 was followed by a constant 14-byte reply beginning 53 42 03 01; 23 query/reply cycles were observed.",
+    "The small AF 45 variation is a candidate changing field, but no resistance value was deliberately varied or timestamp-correlated to the application display. Its meaning and units remain unverified.",
+    "No motor target or drill write was captured."
+  ],
+  "limitations": [
+    "USB device addresses are session-specific.",
+    "The capture was passive and did not manipulate the resistance sensor or its contact.",
+    "No mapping from AF 45 byte offset 17 to displayed resistance, units, sign, scale or calibration is established.",
+    "Controller telemetry does not independently verify physical resistance or contact."
+  ]
+}

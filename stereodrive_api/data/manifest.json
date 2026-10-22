@@ -607,5 +607,12 @@
     "source": "usb-20261010/speed-unknown-01/ML-nudge-050-16b9b02b/ap-out-back-01.pcap",
     "sha256": "4e3df392e652c806fad3b50acd3942b7d70130c5bea477be109b3de4df3c9551",
     "motor_targets": 2
+  },
+  {
+    "capture": "captures/usb-20261022/resistance-passive/capture.pcapng",
+    "metadata": "captures/usb-20261022/resistance-passive/metadata.json",
+    "source": "passive capture 2026-10-22, both USBPcap root hubs, filtered to bus 2 device 3",
+    "sha256": "8e10a8ddf0a67b93479633a46986f7cabcc1c5bf21ac4cbfd93e03a1bb4ea894",
+    "motor_targets": 0
   }
 ]

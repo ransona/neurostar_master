@@ -106,9 +106,11 @@ not alter the configured speed. The GUI serializes queued motion. Consecutive
 pending steps in the same direction on one axis combine into a longer move;
 steps separated by another axis remain in order. An opposite-direction press
 removes stale pending moves on that axis and stops an active move on that axis,
-then waits for Stop reconciliation and idle verification before continuing in
-the new direction. Escape cancels the whole pending queue and stops the active
-move. Preserve this distinction when changing queue behavior.
+then waits for Stop reconciliation and idle verification. The first
+opposite-direction press is cancellation-only; a
+second press is required to start motion in the new direction. Escape cancels
+the whole pending queue and stops the active move. Preserve this distinction
+when changing queue behavior.
 
 The manual piston-step queue is separate: pulses execute serially, and Stop or
 Escape cancels pending pulses and reconciles the active step. Automated injection
@@ -173,8 +175,9 @@ the same axis and in the same direction are summed into one longer command;
 steps with an intervening axis move stay separate to preserve input order. A
 direction reversal removes stale pending steps for that axis, stops its active
 move if needed, waits for stopped-count reconciliation and idle verification,
-then starts the reverse command. Other axes' pending work stays in order. Escape
-has broader meaning: cancel the entire pending queue and stop the active move.
+then waits for the operator to press the reverse direction again. Other axes'
+pending work stays in order. Escape has broader meaning: cancel the entire
+pending queue and stop the active move.
 Do not merge across a reversal, across another axis command, or across an
 already-started motor command.
 

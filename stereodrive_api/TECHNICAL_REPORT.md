@@ -57,6 +57,22 @@ captured packets; this is not a claim about every command or firmware family.
 | OUT `AF 12`; IN `12 state ...`, 14 bytes | Drill reported power query/reply |
 | OUT `AF 45 00` and `AF 53` | Recurring auxiliary queries; remaining semantics opaque |
 
+### Passive capture of the auxiliary telemetry
+
+A passive 30-second capture on 22 October 2026 covered both USBPcap root hubs and
+was filtered to the controller (VID 0483 / PID 5743, USB serial 206334AC5031;
+bus 2 address 3 during this session). It contained 23 `AF 45 00` queries and 23
+28-byte replies, plus 23 `AF 53` queries and 23 14-byte replies. The `AF 53`
+reply was constant. The `AF 45` payload was constant except at zero-based byte
+offset 17: `0xE4` in 21 replies and `0xE1` in two. No motor target or drill write
+was present.
+
+That small changing field is a candidate telemetry value, but this capture did
+not include a controlled resistance change or synchronized observation of the
+application's displayed resistance. Its meaning, units, and relationship to
+resistance remain unverified. The capture and per-file metadata are archived at
+[`data/captures/usb-20261022/resistance-passive/`](data/captures/usb-20261022/resistance-passive/).
+
 Target offsets: bytes 0–2 are AF, 0C and selector; 3–6 signed int32 little-endian
 target; 7–8, 9–10 and 11–12 three little-endian uint16 profile fields; 13–16 four
 profile/flag bytes. Selectors are AP 0x40, ML 0x50, DV 0x60, piston 0x70.

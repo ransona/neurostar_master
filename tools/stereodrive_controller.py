@@ -67,6 +67,7 @@ INJECTION_PLUNGER_POSITION_ID = 10017
 INJECTION_STATUS_RATE_ID = 10028
 INJECTION_STATUS_TIME_ELAPSED_ID = 10020
 INJECTION_STATUS_TIME_REMAINING_ID = 10021
+RESISTANCE_AVG_ID = 1274
 SYRINGE_TYPE_ID = 10006
 SYRINGE_STEP_UP_ID = 10000
 SYRINGE_STEP_DOWN_ID = 10002
@@ -914,6 +915,33 @@ class StereoDriveController:
                     }
                 )
         return candidates
+
+    def get_resistance_avg(self) -> float | None:
+        """Read StereoDrive's visible GUI ``Avg:`` value."""
+        # The native resistance panel currently exposes this as fixed Static
+        # control 1274 (verified by its live 3160-ish value). Prefer the ID;
+        # retain the text/geometry fallback for alternate StereoDrive builds.
+        try:
+            text = self._window_text(self._control_handle(RESISTANCE_AVG_ID, timeout_seconds=0.2))
+            match = re.search(r"-?\d+(?:\.\d+)?", text.replace(',', ''))
+            if match:
+                return float(match.group(0))
+        except StereoDriveError:
+            pass
+        controls = self._child_controls()
+        labels = [c for c in controls if re.search(r"\bAvg\s*:", c.text, re.I)]
+        if not labels:
+            return None
+        anchor = max(labels, key=lambda c: c.top)
+        nearby = [c for c in controls
+                  if abs(c.top - anchor.top) <= max(8, anchor.bottom - anchor.top + 4)
+                  and c.left >= anchor.right - 10]
+        for control in sorted(nearby, key=lambda c: c.left):
+            match = re.search(r"-?\d+(?:\.\d+)?", control.text.replace(',', ''))
+            if match:
+                return float(match.group(0))
+        match = re.search(r"Avg\s*:\s*(-?\d+(?:\.\d+)?)", anchor.text, re.I)
+        return float(match.group(1)) if match else None
 
     def get_mmc_depth_gauge_rect(self) -> tuple[int, int, int, int] | None:
         gauge = self._mmc_depth_gauge_control()

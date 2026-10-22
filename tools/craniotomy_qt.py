@@ -3770,6 +3770,7 @@ class CraniotomyWindow(QMainWindow):
             return
         step = float(self.move_speed_step_mm)
         reverse_active = False
+        reversal_cleared = False
         with self._keyboard_move_lock:
             removed = 0
             # A reversal supersedes stale, not-yet-started steps on this axis.
@@ -3783,45 +3784,63 @@ class CraniotomyWindow(QMainWindow):
                 retained = [move for move in self._keyboard_move_queue if move[0] != axis]
                 removed = len(self._keyboard_move_queue) - len(retained)
                 self._keyboard_move_queue = retained
+                reversal_cleared = True
             if (self._keyboard_move_active and self._keyboard_move_current_axis == axis
                     and self._keyboard_move_cancelled):
                 retained = [move for move in self._keyboard_move_queue if move[0] != axis]
                 removed += len(self._keyboard_move_queue) - len(retained)
                 self._keyboard_move_queue = retained
+                reversal_cleared = True
             elif (self._keyboard_move_active and self._keyboard_move_current_axis == axis
                   and self._keyboard_move_current_positive != positive):
                 retained = [move for move in self._keyboard_move_queue if move[0] != axis]
                 removed += len(self._keyboard_move_queue) - len(retained)
                 self._keyboard_move_queue = retained
                 self._keyboard_move_cancelled = True
-                self._keyboard_move_resume_after_cancel = True
+                # The first opposite-direction pulse is cancellation-only.  Do
+                # not enqueue a reverse move until the user presses again after
+                # Stop has reconciled the current position.
+                self._keyboard_move_resume_after_cancel = False
                 reverse_active = True
+                reversal_cleared = True
             combined = False
-            if (self._keyboard_move_queue
-                    and self._keyboard_move_queue[-1][0] == axis
-                    and self._keyboard_move_queue[-1][1] == positive):
-                previous_axis, previous_positive, previous_label, previous_step = self._keyboard_move_queue[-1]
-                self._keyboard_move_queue[-1] = (
-                    previous_axis, previous_positive, previous_label,
-                    round(previous_step + step, 12),
-                )
-                combined = True
-            else:
-                self._keyboard_move_queue.append((axis, positive, label, step))
+            if not reversal_cleared:
+                if (self._keyboard_move_queue
+                        and self._keyboard_move_queue[-1][0] == axis
+                        and self._keyboard_move_queue[-1][1] == positive):
+                    previous_axis, previous_positive, previous_label, previous_step = self._keyboard_move_queue[-1]
+                    self._keyboard_move_queue[-1] = (
+                        previous_axis, previous_positive, previous_label,
+                        round(previous_step + step, 12),
+                    )
+                    combined = True
+                else:
+                    self._keyboard_move_queue.append((axis, positive, label, step))
             pending = len(self._keyboard_move_queue)
-            queued_distance = self._keyboard_move_queue[-1][3]
-        if removed:
+            queued_distance = self._keyboard_move_queue[-1][3] if self._keyboard_move_queue else 0.0
+        if reverse_active:
+            self.set_status(
+                f"{axis} direction changed; stopping the current move and clearing its queue. "
+                f"Press again to move {label.lower()}."
+            )
+        elif reversal_cleared:
             self.set_status(
                 f"{axis} direction changed; cleared {removed} pending move(s). "
-                f"{label} queued for {queued_distance:g} mm ({pending} pending)."
+                f"Press again to move {label.lower()}."
+            )
+        elif removed:
+            self.set_status(
+                f"{axis} direction changed; cleared {removed} pending move(s). "
+                f"Press again to move {label.lower()}."
             )
         elif combined:
             self.set_status(f"Combined {label} steps into a {queued_distance:g} mm move ({pending} pending).")
         else:
             self.set_status(f"{label} queued for {step:g} mm ({pending} pending).")
         if reverse_active:
-            self.set_status(f"{axis} direction changed; stopping the current move before reversing.")
             threading.Thread(target=self._stop_keyboard_move_for_reversal, daemon=True).start()
+            return
+        if reversal_cleared:
             return
         if not self._keyboard_move_active:
             self._start_next_keyboard_move()

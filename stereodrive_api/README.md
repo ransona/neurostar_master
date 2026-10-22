@@ -46,6 +46,22 @@ Nano 5 µL configuration and is approximate; validate volume independently.
 
 ## Import and try simulation
 
+## Passive resistance monitoring
+
+`scripts/resistance_monitor.py` continuously records the controller's received
+`AF 12` and `AF 45` telemetry without opening COM4 or sending any commands. Run
+it from an elevated PowerShell while StereoDrive is open:
+
+```powershell
+py -3 stereodrive_api/scripts/resistance_monitor.py --output resistance.csv
+```
+
+Use `--duration 60` for a bounded capture. The CSV contains UTC/epoch timestamps,
+raw payloads, and the `AF 12` byte-5/byte-6 fields for later correlation with the
+GUI `Avg:` value. USBPcap device addresses are session-specific; confirm the
+interface with `tshark -D`. This is passive telemetry evidence, not a calibrated
+resistance API. Do not replay captured packets or run a second USB controller.
+
 Run from the repository root, or put that root on your program's Python import path:
 
 ```python
