@@ -6879,9 +6879,16 @@ class CraniotomyWindow(QMainWindow):
         self.insertion_confirmation_event = threading.Event()
         self.insertion_confirmation_result = "pause"
         self.insertion_confirmation_signal.emit()
+        next_alert = 0.0
         while not self.insertion_confirmation_event.wait(timeout=0.1):
             if self.injection_stop_requested.is_set():
                 return "stop"
+            now = time.monotonic()
+            if now >= next_alert:
+                # Use the same audible alert as blockage checking while the
+                # pipette-insertion confirmation remains unanswered.
+                self.beep_signal.emit()
+                next_alert = now + 1.0
         return self.insertion_confirmation_result
 
     def _confirm_pipette_insertion(self, planned_target_dv: float, settings: InjectionProtocolSettings) -> tuple[bool, float]:
@@ -6889,6 +6896,9 @@ class CraniotomyWindow(QMainWindow):
         started = time.monotonic()
         extra_mm = 0.0
         step_mm, dwell_s = self._slow_axis_step_and_dwell(settings)
+        # Announce the start of insertion with a short double audible alert.
+        self.beep_signal.emit()
+        self.beep_signal.emit()
         while not self.injection_stop_requested.is_set():
             result = self._wait_for_insertion_confirmation_choice()
             if result == "stop":
