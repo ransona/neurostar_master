@@ -8680,10 +8680,12 @@ class CraniotomyWindow(QMainWindow):
                     raise pulsed_protocol.PulseCancelled("Single-hole operation cancelled during depth delay.")
                 if self.single_hole_pause_requested.is_set():
                     raise pulsed_protocol.PulsePaused("Single-hole operation paused during depth delay.")
-                self.single_hole_status_signal.emit("Waiting at depth.")
                 remaining = delay_deadline - time.monotonic()
+                self.single_hole_status_signal.emit(f"Waiting at depth ({remaining:.1f}s remaining).")
                 time.sleep(min(0.03, remaining))
+            self.single_hole_status_signal.emit("Turning drill off and verifying power state.")
             self.controller.turn_drill_off()
+            self.single_hole_status_signal.emit("Drill off; retracting to the safe clearance position.")
             self._retract_single_hole_to_clearance(origin, clearance, stop_first=False)
         except pulsed_protocol.PulsePaused:
             outcome = "paused"
