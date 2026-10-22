@@ -941,6 +941,7 @@ class CraniotomyWindow(QMainWindow):
         self._keyboard_move_current_axis = None
         self._keyboard_move_current_positive = None
         self._keyboard_move_resume_after_cancel = False
+        self._estimated_move = None
         self._keyboard_move_lock = threading.Lock()
         self._move_speed_audio_sink = None
         self._move_speed_audio_buffer = None
@@ -3913,6 +3914,16 @@ class CraniotomyWindow(QMainWindow):
             self._keyboard_move_current_axis = axis
             self._keyboard_move_current_positive = positive
         try:
+            start_position = self.get_gui_position()
+            target_position = list(start_position)
+            target_position[("AP", "ML", "DV").index(axis)] += step if positive else -step
+            self._estimated_move = {
+                "axis": axis,
+                "start": start_position,
+                "target": tuple(target_position),
+                "started": time.monotonic(),
+                "duration": max(0.12, abs(step) / 2.0),
+            }
             self.controller.prepare_motion()
             self.controller.set_nudge_step(axis, step)
             self.controller.nudge_axis(axis, positive)
@@ -3929,6 +3940,7 @@ class CraniotomyWindow(QMainWindow):
             self.keyboard_move_finished_signal.emit(exc)
 
     def _keyboard_move_finished(self, error) -> None:
+        self._estimated_move = None
         with self._keyboard_move_lock:
             cancelled = self._keyboard_move_cancelled
             resume_after_cancel = self._keyboard_move_resume_after_cancel
@@ -7489,13 +7501,21 @@ class CraniotomyWindow(QMainWindow):
         if self.validation_move_active:
             return
         try:
-            if getattr(self.controller, "direct_api", False) and self.controller.has_active_motion():
-                return
-            axis_position = self.controller.get_current_axis_position()
-            if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
-                ap, ml, dv = self._axis_to_bregma(axis_position)
+            estimated = self._estimated_move
+            if estimated is not None and self._keyboard_move_active:
+                fraction = min(1.0, (time.monotonic() - estimated["started"]) / estimated["duration"])
+                position = list(estimated["start"])
+                index = ("AP", "ML", "DV").index(estimated["axis"])
+                position[index] = estimated["start"][index] + (estimated["target"][index] - estimated["start"][index]) * fraction
+                ap, ml, dv = position
             else:
-                ap, ml, dv = axis_position
+                if getattr(self.controller, "direct_api", False) and self.controller.has_active_motion():
+                    return
+                axis_position = self.controller.get_current_axis_position()
+                if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
+                    ap, ml, dv = self._axis_to_bregma(axis_position)
+                else:
+                    ap, ml, dv = axis_position
             self.current_ap_label.setText(f"{ap:.2f}")
             self.current_ml_label.setText(f"{ml:.2f}")
             self.current_dv_label.setText(f"{dv:.2f}")
