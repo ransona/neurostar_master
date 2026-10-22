@@ -1325,17 +1325,18 @@ class CraniotomyWindow(QMainWindow):
                 button.style().unpolish(button)
                 button.style().polish(button)
                 quick_buttons.append(button)
-        position_layout.addWidget(QLabel("AP"))
-        position_layout.addWidget(self.current_ap_label)
-        position_layout.addWidget(QLabel("ML"))
-        position_layout.addWidget(self.current_ml_label)
-        position_layout.addWidget(QLabel("DV"))
-        position_layout.addWidget(self.current_dv_label)
-        position_layout.addWidget(self.move_speed_label)
         position_layout.addWidget(header_stop_btn)
         position_layout.addWidget(drill_toggle_btn)
         position_layout.addWidget(clear_project_btn)
         position_layout.addStretch(1)
+        # Keep the live coordinates and step control together in the right
+        # half of the top bar, where they remain visible during operation.
+        for axis, readout in (("AP", self.current_ap_label),
+                              ("ML", self.current_ml_label),
+                              ("DV", self.current_dv_label)):
+            position_layout.addWidget(QLabel(axis))
+            position_layout.addWidget(readout)
+        position_layout.addWidget(self.move_speed_label)
         header_layout.addWidget(set_bregma_local_btn)
         header_layout.addWidget(set_anchor_btn)
         header_layout.addWidget(at_anchor_btn)
@@ -1999,6 +2000,35 @@ class CraniotomyWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         QTimer.singleShot(0, self._size_injection_action_buttons)
+        QTimer.singleShot(0, self._fit_coordinate_header)
+
+    def _fit_coordinate_header(self) -> None:
+        """Scale the coordinate/step readouts to the available top-bar width."""
+        if not hasattr(self, "move_speed_label"):
+            return
+        available = max(180, self.width() // 2)
+        # The step label is the visual anchor; keep it legible while allowing
+        # the coordinate readouts to share the right-hand half responsively.
+        step_size = max(18, min(42, int(available / 24)))
+        readout_font = max(14, int(step_size * 0.48))
+        for readout in (self.current_ap_label, self.current_ml_label, self.current_dv_label):
+            font = readout.font()
+            font.setPointSize(readout_font)
+            font.setBold(True)
+            readout.setFont(font)
+        self.move_speed_label.setStyleSheet(
+            f"color: {self._step_size_color()}; font-size: {step_size}px; font-weight: 900; "
+            "padding: 2px 12px; border: 2px solid #315a8a; "
+            "border-radius: 8px; background: #eef5ff;"
+        )
+
+    def _step_size_color(self) -> str:
+        try:
+            speed_index = MOVE_SPEED_OPTIONS_MM.index(self.move_speed_step_mm)
+        except ValueError:
+            speed_index = 0
+        ratio = speed_index / max(1, len(MOVE_SPEED_OPTIONS_MM) - 1)
+        return f"#{int(37 + ratio * 183):02x}{int(99 - ratio * 61):02x}{int(235 - ratio * 197):02x}"
 
     def _build_injection_map(self, parent_layout: QHBoxLayout) -> None:
         """Place the injection map in the full-height right-hand column."""
@@ -3504,24 +3534,8 @@ class CraniotomyWindow(QMainWindow):
             self.action_status_label.setText(f"Status: {brief_message}")
 
     def update_move_speed_label(self) -> None:
-        try:
-            speed_index = MOVE_SPEED_OPTIONS_MM.index(self.move_speed_step_mm)
-        except ValueError:
-            speed_index = min(
-                range(len(MOVE_SPEED_OPTIONS_MM)),
-                key=lambda index: abs(MOVE_SPEED_OPTIONS_MM[index] - self.move_speed_step_mm),
-            )
-        ratio = speed_index / max(1, len(MOVE_SPEED_OPTIONS_MM) - 1)
-        red = int(37 + ratio * 183)
-        green = int(99 - ratio * 61)
-        blue = int(235 - ratio * 197)
-        color = f"#{red:02x}{green:02x}{blue:02x}"
         self.move_speed_label.setText(f"Step size: {self.move_speed_step_mm:g} mm")
-        self.move_speed_label.setStyleSheet(
-            f"color: {color}; font-size: 42px; font-weight: 900; "
-            "padding: 2px 12px; border: 2px solid #315a8a; "
-            "border-radius: 8px; background: #eef5ff;"
-        )
+        self._fit_coordinate_header()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() != QEvent.Type.KeyPress:
