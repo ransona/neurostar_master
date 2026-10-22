@@ -3518,7 +3518,7 @@ class CraniotomyWindow(QMainWindow):
         color = f"#{red:02x}{green:02x}{blue:02x}"
         self.move_speed_label.setText(f"Step size: {self.move_speed_step_mm:g} mm")
         self.move_speed_label.setStyleSheet(
-            f"color: {color}; font-size: 56px; font-weight: 900; "
+            f"color: {color}; font-size: 42px; font-weight: 900; "
             "padding: 2px 12px; border: 2px solid #315a8a; "
             "border-radius: 8px; background: #eef5ff;"
         )
