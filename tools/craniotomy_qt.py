@@ -1646,6 +1646,13 @@ class CraniotomyWindow(QMainWindow):
         )
         self.single_hole_clearance_mm = self._double_spinbox(value=2.0, minimum=0.1, maximum=10.0)
         self.single_hole_delay_at_depth = self._double_spinbox(value=3.0, minimum=0.0, maximum=3600.0)
+        for field in (
+            self.single_hole_depth_mm,
+            self.single_hole_rate_mm_per_s,
+            self.single_hole_clearance_mm,
+            self.single_hole_delay_at_depth,
+        ):
+            field.setFixedWidth(112)
         grid.addWidget(QLabel("Depth to drill (mm)"), 1, 0)
         grid.addWidget(self.single_hole_depth_mm, 1, 1)
         grid.addWidget(QLabel("Drill rate (mm/s)"), 1, 2)
@@ -1657,7 +1664,8 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_origin_label = QLabel("Start position: not captured")
         self.single_hole_origin_label.setProperty("role", "muted")
         grid.addWidget(self.single_hole_origin_label, 3, 0, 1, 4)
-        layout.addWidget(setup)
+        setup.setMaximumWidth(760)
+        layout.addWidget(setup, 0, Qt.AlignmentFlag.AlignHCenter)
 
         progress_box = QGroupBox("Progress")
         progress_layout = QVBoxLayout(progress_box)
@@ -1669,7 +1677,8 @@ class CraniotomyWindow(QMainWindow):
         progress_layout.addWidget(self.single_hole_status_label)
         progress_layout.addWidget(self.single_hole_depth_label)
         progress_layout.addWidget(self.single_hole_progress)
-        layout.addWidget(progress_box)
+        progress_box.setMaximumWidth(760)
+        layout.addWidget(progress_box, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
 
         actions = QHBoxLayout()
@@ -1681,7 +1690,10 @@ class CraniotomyWindow(QMainWindow):
         self.single_hole_cancel_btn.setEnabled(False)
         actions.addWidget(self.single_hole_start_btn, 1)
         actions.addWidget(self.single_hole_cancel_btn, 1)
-        layout.addLayout(actions)
+        actions_widget = QWidget()
+        actions_widget.setLayout(actions)
+        actions_widget.setMaximumWidth(500)
+        layout.addWidget(actions_widget, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self.single_hole_progress_signal.connect(self._update_single_hole_progress)
         self.single_hole_status_signal.connect(self._set_single_hole_status)
