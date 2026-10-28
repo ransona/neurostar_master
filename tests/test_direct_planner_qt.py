@@ -345,6 +345,22 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.current_ml_label.text(),'-5.67')
         self.assertEqual(self.window.current_dv_label.text(),'8.90')
 
+    def test_pulsed_drilling_events_update_map_position_between_holes(self):
+        self.window.coordinate_mode='axis'
+        self.window.controller.supports_drilling_protocol=True
+        self.window.controller.reported_drill_state=Mock(return_value=True)
+        target=(12.0,-3.5,8.25)
+        event=planner.pulsed_protocol.Pulse(
+            0.0,'borehole_approach',target=target,point_index=1,surface_dv=8.0
+        )
+        with patch.object(planner.pulsed_protocol,'sample_boreholes',return_value=[(12.0,-3.5,8.0,False)]), \
+             patch.object(self.window,'_preflight_pulsed_drilling',return_value=[event]), \
+             patch.object(planner.pulsed_protocol,'execute',side_effect=lambda _controller,_plan,**kwargs:kwargs['on_event'](event)), \
+             patch.object(self.window.controller,'get_current_axis_position',return_value=target):
+            self.window._run_pulsed_drilling([],[],[],[],0.0,(0.0,0.0,0.0))
+        self.assertEqual(self.window.top_view.current_point,(-3.5,12.0))
+        self.assertEqual(self.window.injection_sites_view.current_point,(-3.5,12.0))
+
     def test_drill_power_prompt_defaults_yes_and_places_it_first(self):
         observed={}
         def inspect_and_choose_yes():

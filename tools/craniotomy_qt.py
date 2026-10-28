@@ -9653,8 +9653,20 @@ class CraniotomyWindow(QMainWindow):
                 plan=self._preflight_pulsed_drilling(surfaces,current_depths,target_depths,frozen,seconds,center)
                 count=len(surfaces)-1
                 completion_phase = "point_complete"
+            position_update = {"time": 0.0, "phase": None, "point_index": None}
             def on_event(event):
                 if event.surface_dv is not None:self.active_surface_dv=event.surface_dv
+                if event.target is not None:
+                    now = time.monotonic()
+                    transition = (event.phase != position_update["phase"]
+                                  or event.point_index != position_update["point_index"])
+                    if transition or now - position_update["time"] >= 0.1:
+                        # Each target is reached and verified before execute()
+                        # calls on_event. Forward it to the GUI so the map
+                        # marker follows movement between closely spaced holes.
+                        self.validation_move_position_signal.emit(tuple(event.target))
+                        position_update.update(time=now, phase=event.phase,
+                                               point_index=event.point_index)
                 if event.phase == "borehole_complete" and event.point_index is not None:
                     index = event.point_index
                     if index < len(self.borehole_depths):
