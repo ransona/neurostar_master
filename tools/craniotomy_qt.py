@@ -3801,6 +3801,7 @@ class CraniotomyWindow(QMainWindow):
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
         key = event.key()
+        combined_key = int(key) | event.modifiers().value
         if self.validation_move_active and key == Qt.Key.Key_Escape:
             if self.validation_move_cancel_callback is not None:
                 self.validation_move_cancel_callback()
@@ -3863,6 +3864,20 @@ class CraniotomyWindow(QMainWindow):
                     button = modal.findChild(QPushButton, "calibrationJogPISTON" + direction)
                     if button is not None and button.isEnabled(): button.click()
                     return True
+        if (
+            modal is not None
+            and modal.property("craniotomy_surface_dialog")
+            and self._key_matches_binding(self.movement_key_bindings["drill_toggle"], key, combined_key)
+        ):
+            try:
+                if self.controller.has_active_motion():
+                    self.set_status("Wait for movement to finish before turning the drill off.")
+                else:
+                    self.controller.turn_drill_off()
+                    self.set_status("Drill power off.")
+            except Exception as exc:
+                self.set_status(f"Drill could not be turned off: {exc}")
+            return True
         if modal is not None and not (self.validation_modal_active and modal.property("allow_motor_shortcuts")):
             return super().eventFilter(watched,event)
         if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
@@ -8612,10 +8627,13 @@ class CraniotomyWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Set Craniotomy Seed Surface")
         dialog.setProperty("allow_motor_shortcuts", True)
+        dialog.setProperty("craniotomy_surface_dialog", True)
         dialog.setProperty("allowed_motor_axes", "DV")
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Move to surface"))
+        drill_off_shortcut = QKeySequence(self.movement_key_bindings["drill_toggle"]).toString()
+        layout.addWidget(QLabel(f"Press {drill_off_shortcut} to turn the drill off."))
         position_label = QLabel("Current Bregma position: reading…")
         layout.addWidget(position_label)
         button_row = QHBoxLayout()
@@ -8692,7 +8710,10 @@ class CraniotomyWindow(QMainWindow):
     def _confirm_start_drilling_after_surfaces(self) -> bool:
         prompt = QMessageBox(self)
         prompt.setWindowTitle("Seed Surfaces Complete")
-        prompt.setText("All seed surfaces have been set. Would you like to start drilling now?")
+        prompt.setText(
+            "All seed surfaces have been set. Start drilling now? "
+            "The drill will be checked, and you will be asked before it is turned on."
+        )
         yes_button = prompt.addButton("Yes", QMessageBox.AcceptRole)
         prompt.addButton("No", QMessageBox.RejectRole)
         prompt.setDefaultButton(yes_button)

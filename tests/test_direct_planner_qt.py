@@ -420,6 +420,20 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(observed['default'],['Set and Move to Next'])
         self.assertFalse(observed['previous_enabled'])
 
+    def test_drill_shortcut_turns_drill_off_inside_seed_surface_dialog(self):
+        dialog=QDialog(self.window)
+        dialog.setProperty('craniotomy_surface_dialog',True)
+        dialog.setModal(True)
+        dialog.show()
+        self.app.processEvents()
+        event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_D,Qt.KeyboardModifier.NoModifier)
+        with patch.object(self.window.controller,'has_active_motion',return_value=False):
+            with patch.object(self.window.controller,'turn_drill_off') as turn_off:
+                handled=self.window.eventFilter(self.window,event)
+        turn_off.assert_called_once_with()
+        self.assertTrue(handled)
+        dialog.close()
+
     def test_craniotomy_surface_dialog_can_return_to_previous_hole(self):
         def inspect_and_choose_previous():
             dialog=self.app.activeModalWidget()
