@@ -674,6 +674,42 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(stage["goto_closed"])
         self.assertTrue(stage["anchor_closed"])
 
+    def test_anchor_saved_position_ok_uses_modal_aware_movement(self):
+        self.connect()
+        self.window.bregma_axis=(0.0,0.0,0.0)
+        self.window.named_locations={"Saved":planner.StoredLocation(0.1,0.2,-0.3)}
+        stage={"goto_accepted":False,"anchor_closed":False}
+        def visible_dialog(title):
+            return next((widget for widget in QApplication.topLevelWidgets()
+                         if isinstance(widget,QDialog) and widget.isVisible()
+                         and widget.windowTitle()==title),None)
+        def accept_goto():
+            dialog=visible_dialog("Go to Position")
+            self.assertIsNotNone(dialog)
+            dialog.findChild(QComboBox).setCurrentIndex(1)
+            stage["goto_accepted"]=True
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text()=="OK").click()
+        def close_anchor():
+            dialog=visible_dialog("Set Anchor")
+            if dialog is not None:
+                stage["anchor_closed"]=True
+                dialog.reject()
+        def click_saved_location():
+            dialog=visible_dialog("Set Anchor")
+            self.assertIsNotNone(dialog)
+            QTimer.singleShot(100,accept_goto)
+            QTimer.singleShot(200,close_anchor)
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text()=="Go to Saved Location").click()
+        QTimer.singleShot(50,click_saved_location)
+        with patch.object(self.window,"_move_to_axis_position_with_progress",return_value=True) as move:
+            self.window.open_anchor_setup_dialog()
+        self.assertTrue(stage["goto_accepted"])
+        self.assertTrue(stage["anchor_closed"])
+        move.assert_called_once()
+        self.assertTrue(move.call_args.kwargs["allow_validation_dialog"])
+
     def test_invalid_later_path_leg_is_rejected_before_any_target(self):
         self.connect()
         drive=self.window.controller.drive

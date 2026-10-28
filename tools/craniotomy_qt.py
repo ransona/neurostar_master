@@ -5513,6 +5513,7 @@ class CraniotomyWindow(QMainWindow):
                     target_axis,
                     title="Moving to Position",
                     message="Moving to the requested Bregma position. Waiting for StereoDrive to report arrival…",
+                    allow_validation_dialog=from_anchor_setup,
                 ):
                     return
                 self.set_status(f"Moved to Bregma AP {ap:.2f}, ML {ml:.2f}, DV {dv:.2f}.")
@@ -6174,12 +6175,14 @@ class CraniotomyWindow(QMainWindow):
         message: str,
         delay_seconds: float = 0.75,
         stage_messages: list[str] | None = None,
+        allow_validation_dialog: bool = False,
     ) -> bool:
         return self._move_through_axis_positions_with_progress(
             self._axis_clearance_path(target_axis, self.bregma_axis[2] - 0.5)
             if self.bregma_axis is not None else [target_axis],
             title=title, message=message, delay_seconds=delay_seconds,
             stage_messages=stage_messages,
+            allow_validation_dialog=allow_validation_dialog,
         )
 
     def _move_through_axis_positions_with_progress(
@@ -6190,11 +6193,12 @@ class CraniotomyWindow(QMainWindow):
         message: str,
         delay_seconds: float = 0.75,
         stage_messages: list[str] | None = None,
+        allow_validation_dialog: bool = False,
     ) -> bool:
         """Move through one or more Axis targets with one cancellable progress dialog."""
         if not target_axes:
             return True
-        if not self._require_idle(title):
+        if not self._require_idle(title, allow_validation_dialog=allow_validation_dialog):
             return False
         if getattr(self.controller,"direct_api",False):
             self.controller.validate_axis_path(target_axes)
