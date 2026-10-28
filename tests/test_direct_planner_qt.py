@@ -231,6 +231,27 @@ class PlannerTests(unittest.TestCase):
         self.window.drilling_mode_combo.setCurrentIndex(boreholes_index)
         self.assertFalse(self.window.trajectory_points.isEnabled())
 
+    def test_start_drilling_offers_seed_surface_workflow_from_first_unset_seed(self):
+        self.window.controller.supports_drilling_protocol=True
+        self.window.drilling_progress_reset_requires_ack=False
+        self.window.seeds=[
+            planner.SeedPoint(0,0.0,0.0,0.0,dv=0.0),
+            planner.SeedPoint(1,180.0,1.0,0.0,dv=None),
+        ]
+        self.window.trajectory=[(0.0,0.0,0.0),(1.0,0.0,0.0)]
+        self.window.craniotomy_surface_validated=[False,False]
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
+        with patch.object(self.window,'_require_idle',return_value=True):
+            with patch.object(self.window,'_require_project_coordinates'):
+                with patch.object(self.window,'set_selected_craniotomy_surface') as set_surfaces:
+                    self.window.start_drilling_round()
+
+        self.dialogs.question.assert_called_once()
+        self.assertIn('Set Seed Surfaces',self.dialogs.question.call_args.args[2])
+        self.assertEqual(self.window.current_seed_index,1)
+        self.assertEqual(self.window.selected_craniotomy_point_index,1)
+        set_surfaces.assert_called_once_with()
+
     def test_single_hole_waits_after_drill_plan_reaches_depth(self):
         self.window.controller.turn_drill_off=Mock()
         self.window._retract_single_hole_to_clearance=Mock()

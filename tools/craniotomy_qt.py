@@ -9336,11 +9336,29 @@ class CraniotomyWindow(QMainWindow):
             and len(self.craniotomy_surface_validated) == len(self.trajectory)
             and all(self.craniotomy_surface_validated)
         )
+        if self.seeds and not seed_surfaces_ready and not perimeter_surfaces_ready:
+            answer = QMessageBox.question(
+                self,
+                "Seed Surfaces Required",
+                "Craniotomy seed surfaces have not all been set. Would you like to enter the Set Seed Surfaces workflow now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                first_unset_seed = next(
+                    (index for index, seed in enumerate(self.seeds) if seed.dv is None),
+                    0,
+                )
+                self.current_seed_index = first_unset_seed
+                self.selected_craniotomy_point_index = first_unset_seed
+                self.current_seed_spin.setValue(first_unset_seed + 1)
+                self.set_selected_craniotomy_surface()
+            return
         if spaced_boreholes and not seed_surfaces_ready:
             QMessageBox.information(
                 self,
                 "Craniotomy Seed Surfaces Required",
-                "Set the surface for every craniotomy seed first. The surface at each spaced burr hole is then inferred from the interpolated seed-surface profile.",
+                "Generate craniotomy seed points first, then set their surfaces. The surface at each spaced burr hole is inferred from the interpolated seed-surface profile.",
             )
             return
         if not self.trajectory or not (seed_surfaces_ready or (not spaced_boreholes and perimeter_surfaces_ready)):
