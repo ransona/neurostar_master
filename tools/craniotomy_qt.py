@@ -5031,8 +5031,53 @@ class CraniotomyWindow(QMainWindow):
             self.refresh_live_position()
             self._zoom_craniotomy_to_mid_range()
             self.set_status("GUI Bregma set at the current Axis position; any previous anchor was cleared.")
+            response = QMessageBox.question(
+                self,
+                "Set Anchor?",
+                "Would you like to set an anchor now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if response == QMessageBox.Yes:
+                self.open_anchor_setup_dialog()
         except Exception as exc:
             QMessageBox.critical(self, "Bregma Coordinates", str(exc))
+
+    def open_anchor_setup_dialog(self) -> None:
+        if not self._require_idle("Set Anchor"):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Anchor")
+        dialog.setProperty("allow_motor_shortcuts", True)
+        layout = QVBoxLayout(dialog)
+        instructions = QLabel(
+            "Use the keyboard movement shortcuts to position the tool, or go to a saved location."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        button_row = QHBoxLayout()
+        set_anchor_button = QPushButton("Set Current Position as Anchor")
+        goto_button = QPushButton("Go to Saved Location")
+        cancel_button = QPushButton("Cancel")
+        button_row.addWidget(set_anchor_button)
+        button_row.addWidget(goto_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        def record_anchor() -> None:
+            if self._record_current_anchor():
+                dialog.accept()
+
+        set_anchor_button.clicked.connect(record_anchor)
+        goto_button.clicked.connect(self.open_goto_dialog)
+        cancel_button.clicked.connect(dialog.reject)
+        previous_validation_modal_active = self.validation_modal_active
+        self.validation_modal_active = True
+        try:
+            dialog.exec()
+        finally:
+            self.validation_modal_active = previous_validation_modal_active
 
     def set_relative_coordinates(self) -> None:
         if not self._require_idle("Set Relative Coordinates"):
@@ -5123,6 +5168,9 @@ class CraniotomyWindow(QMainWindow):
         )
         if response != QMessageBox.Yes:
             return
+        self._record_current_anchor()
+
+    def _record_current_anchor(self) -> bool:
         try:
             if self.bregma_axis is None:
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
@@ -5134,8 +5182,10 @@ class CraniotomyWindow(QMainWindow):
             self.set_status(
                 f"Anchor set at Bregma [{self.anchor_bregma[0]:.2f}, {self.anchor_bregma[1]:.2f}, {self.anchor_bregma[2]:.2f}]."
             )
+            return True
         except Exception as exc:
             QMessageBox.critical(self, "Anchor", str(exc))
+            return False
 
     def at_anchor(self) -> None:
         if not self._require_idle("At Anchor"):
@@ -5296,6 +5346,7 @@ class CraniotomyWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Go to Position")
+        dialog.setProperty("allow_motor_shortcuts", True)
         layout = QGridLayout(dialog)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setHorizontalSpacing(8)
@@ -5418,7 +5469,13 @@ class CraniotomyWindow(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons, 6, 0, 1, 2)
 
-        if dialog.exec() != QDialog.Accepted:
+        previous_validation_modal_active = self.validation_modal_active
+        self.validation_modal_active = True
+        try:
+            dialog_result = dialog.exec()
+        finally:
+            self.validation_modal_active = previous_validation_modal_active
+        if dialog_result != QDialog.Accepted:
             return
 
         ap = ap_box.value()

@@ -597,6 +597,7 @@ class PlannerTests(unittest.TestCase):
     def test_keyboard_absolute_progress_and_internal_bregma(self):
         self.connect()
         self.window.top_view.set_overlay_image(QImage(2,2,QImage.Format.Format_ARGB32), {})
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
         self.window.set_local_bregma()
         self.assertEqual(self.window.coordinate_mode,"bregma")
         self.assertTrue(self.window.top_view.coordinate_mode_bregma)
@@ -606,6 +607,39 @@ class PlannerTests(unittest.TestCase):
         self.window.controller.prepare_motion()
         self.assertTrue(self.window._move_through_axis_positions_with_progress([(.02,.02,-.01)],title='test',message='simulated move'))
         self.assertAlmostEqual(self.window.get_bregma_position()[0],.02,delta=1/5225)
+
+    def test_set_bregma_offers_anchor_setup(self):
+        self.connect()
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
+        with patch.object(self.window,'open_anchor_setup_dialog') as open_anchor:
+            self.window.set_local_bregma()
+        open_anchor.assert_called_once_with()
+
+    def test_anchor_setup_dialog_keeps_movement_shortcuts_and_has_saved_location(self):
+        self.connect()
+        self.window.bregma_axis=(0.0,0.0,0.0)
+        timer=QTimer();timer.setSingleShot(True)
+        observed={"dialog":False,"saved_location":False}
+        def finish_dialog():
+            dialog=QApplication.activeModalWidget()
+            self.assertEqual(dialog.windowTitle(),"Set Anchor")
+            observed["dialog"]=dialog.property("allow_motor_shortcuts")
+            observed["saved_location"]=any(
+                button.text()=="Go to Saved Location" for button in dialog.findChildren(QPushButton)
+            )
+            from PySide6.QtGui import QKeyEvent
+            event=QKeyEvent(QEvent.Type.KeyPress,self.window.movement_key_bindings["ap_anterior"],Qt.KeyboardModifier.NoModifier)
+            self.window.eventFilter(dialog,event)
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text()=="Set Current Position as Anchor").click()
+        timer.timeout.connect(finish_dialog);timer.start(50)
+        with patch.object(self.window,"keyboard_nudge") as nudge:
+            self.window.open_anchor_setup_dialog()
+        self.assertTrue(observed["dialog"])
+        self.assertTrue(observed["saved_location"])
+        nudge.assert_called_once()
+        self.assertIsNotNone(self.window.anchor_axis)
 
     def test_invalid_later_path_leg_is_rejected_before_any_target(self):
         self.connect()
