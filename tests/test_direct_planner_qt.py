@@ -293,15 +293,30 @@ class PlannerTests(unittest.TestCase):
             observed['buttons']=buttons
             observed['widths']={button.width() for button in buttons}
             observed['default']=[button.text() for button in buttons if button.isDefault()]
+            observed['previous_enabled']=next(
+                button.isEnabled() for button in buttons if button.text()=='Return to Previous Hole'
+            )
             buttons[-1].click()
         from PySide6.QtCore import QPoint
         QTimer.singleShot(0,inspect_and_close)
         action=self.window._craniotomy_surface_dialog(0,0.0,0.0,-1.0)
         self.assertEqual(action,'cancel')
         self.assertEqual([button.text() for button in observed['buttons']],
-                         ['Set and Move to Next','Move to Next','Cancel'])
+                         ['Set and Move to Next','Move to Next','Return to Previous Hole','Cancel'])
         self.assertEqual(len(observed['widths']),1)
         self.assertEqual(observed['default'],['Set and Move to Next'])
+        self.assertFalse(observed['previous_enabled'])
+
+    def test_craniotomy_surface_dialog_can_return_to_previous_hole(self):
+        def inspect_and_choose_previous():
+            dialog=self.app.activeModalWidget()
+            button=next(button for button in dialog.findChildren(QPushButton)
+                        if button.text()=='Return to Previous Hole')
+            self.assertTrue(button.isEnabled())
+            button.click()
+        QTimer.singleShot(0,inspect_and_choose_previous)
+        action=self.window._craniotomy_surface_dialog(1,0.0,0.0,-1.0)
+        self.assertEqual(action,'previous')
 
     def test_start_drilling_prompt_defaults_yes_and_places_it_first(self):
         observed={}

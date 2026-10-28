@@ -8517,9 +8517,13 @@ class CraniotomyWindow(QMainWindow):
         button_row = QHBoxLayout()
         surface_button = QPushButton("Set and Move to Next")
         next_button = QPushButton("Move to Next")
+        previous_button = QPushButton("Return to Previous Hole")
         cancel_button = QPushButton("Cancel")
-        button_width = max(button.sizeHint().width() for button in (surface_button, next_button, cancel_button))
-        for button in (surface_button, next_button, cancel_button):
+        previous_button.setEnabled(index > 0)
+        button_width = max(button.sizeHint().width() for button in (
+            surface_button, next_button, previous_button, cancel_button
+        ))
+        for button in (surface_button, next_button, previous_button, cancel_button):
             button.setFixedWidth(button_width)
             button_row.addWidget(button, 1)
         surface_button.setDefault(True)
@@ -8556,8 +8560,16 @@ class CraniotomyWindow(QMainWindow):
             result["action"] = "next"
             dialog.accept()
 
+        def move_previous() -> None:
+            if self.controller.has_active_motion():
+                self.set_status("Wait for the current movement to finish before returning to the previous seed.")
+                return
+            result["action"] = "previous"
+            dialog.accept()
+
         surface_button.clicked.connect(capture)
         next_button.clicked.connect(move_next)
+        previous_button.clicked.connect(move_previous)
         cancel_button.clicked.connect(dialog.reject)
         self.validation_modal_active = True
         position_timer.timeout.connect(update_position)
@@ -8630,7 +8642,8 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             self._require_project_coordinates("craniotomy")
-            for seed_index in range(index, len(self.seeds)):
+            seed_index = index
+            while seed_index < len(self.seeds):
                 seed = self.seeds[seed_index]
                 ap, ml = seed.ap, seed.ml
                 plan_dv = seed.dv - self.validation_clearance_mm if seed.dv is not None else -1.0
@@ -8648,6 +8661,7 @@ class CraniotomyWindow(QMainWindow):
                     self.set_status(f"Seed-surface workflow cancelled at seed {seed_index + 1}.")
                     return
                 self.current_seed_index = seed_index
+                self.selected_craniotomy_point_index = seed_index
                 if action == "set":
                     actual_ap, actual_ml, actual_dv = self._axis_to_bregma(self.controller.get_current_axis_position())
                     seed.dv = actual_dv
@@ -8656,8 +8670,15 @@ class CraniotomyWindow(QMainWindow):
                     self.compute_trajectory()
                     self._autosave_project_session()
                     self.set_status(f"Recorded surface at seed {seed_index + 1}; moving to the next seed.")
+                    seed_index += 1
+                elif action == "previous":
+                    seed_index = max(0, seed_index - 1)
+                    self.current_seed_index = seed_index
+                    self.selected_craniotomy_point_index = seed_index
+                    self.set_status(f"Returning to seed {seed_index + 1} to set its surface.")
                 else:
                     self.set_status(f"Skipped seed {seed_index + 1} without changing its surface.")
+                    seed_index += 1
                 self.refresh_craniotomy_points_list()
             self.set_status("Seed-surface workflow complete.")
             if self.seeds and all(seed.dv is not None for seed in self.seeds):
