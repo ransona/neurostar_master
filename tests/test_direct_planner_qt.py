@@ -1308,6 +1308,7 @@ class PlannerTests(unittest.TestCase):
             def close(self):pass
 
         stage={"axis":0,"moves":0,"saved":False,"timeout":False,"initialized":False,
+               "qualified_after_init":False,
                "invalid_checked":False,"corrected":False}
         timer=QTimer();deadline=time.monotonic()+12
         axes=("AP","ML","DV","PISTON")
@@ -1326,7 +1327,12 @@ class PlannerTests(unittest.TestCase):
             status=dialog.findChild(planner.QLabel,"calibrationUsbConnectionStatus")
             if status is None or status.text()!="Connected to hardware USB system":return
             history=dialog.findChild(planner.QLabel,"calibrationDirectionHistoryStatus")
-            if history is not None and history.text()=="Movement direction history initialized":stage["initialized"]=True
+            if history is not None and history.text()=="Movement direction history initialized":
+                stage["initialized"]=True
+                stage["qualified_after_init"] = stage["qualified_after_init"] or all(
+                    dialog.findChild(planner.QLineEdit,"calibratePosition"+axis).isEnabled()
+                    for axis in axes
+                )
             axis=axes[stage["axis"]] if stage["axis"]<len(axes) else None
             if axis is not None:
                 if axis=="PISTON":dialog.findChild(planner.QComboBox,"calibrationPlungerStep").setCurrentText("100")
@@ -1366,6 +1372,7 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(stage["timeout"],stage)
         self.assertTrue(stage["saved"])
         self.assertTrue(stage["initialized"])
+        self.assertTrue(stage["qualified_after_init"])
         self.assertTrue(stage["invalid_checked"])
         self.assertTrue(stage["corrected"])
         self.assertTrue(self.window.controller.live)
@@ -1374,7 +1381,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(any("below 500 nL is invalid" in text and "3500 nL" in text for text in warning_messages))
         self.assertEqual(reconnect_calls[0][1],None)
         self.assertEqual(reconnect_calls[0][2],live_root/"api-state.json")
-        self.assertEqual(fake_drivers[0].moves[:4],[("AP",.1),("ML",.1),("DV",.1),("PISTON",50.)])
+        self.assertEqual(fake_drivers[0].moves[:4],[("AP",.2),("ML",.2),("DV",.2),("PISTON",50.)])
         profile=json.loads((live_root/"direct-control.json").read_text())
         self.assertEqual(profile["calibration"]["axis_zero_counts"]["AP"],fake_drivers[0].raw["AP"]+round(42.75*5225))
         state=json.loads((live_root/"api-state.json").read_text())

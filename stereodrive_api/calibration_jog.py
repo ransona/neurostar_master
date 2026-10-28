@@ -7,7 +7,7 @@ from .protocol import AXES,BACKLASH,SIGNS,poll,stop,target,decode_status,validat
 from .transport import Simulator,WindowsSerial
 
 MIN_CALIBRATION_TRAVEL = dict(AP=0.2, ML=0.2, DV=0.2, PISTON=50.0)
-INITIAL_DIRECTION_MOVE = dict(AP=0.1, ML=0.1, DV=0.1, PISTON=50.0)
+INITIAL_DIRECTION_MOVE = dict(MIN_CALIBRATION_TRAVEL)
 
 class CalibrationJog:
     def __init__(self,states=None,*,simulate=True,journal_path):

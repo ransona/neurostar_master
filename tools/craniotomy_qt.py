@@ -2349,6 +2349,7 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("USB setup / calibration"):
             return
         from stereodrive_api import Calibration
+        from stereodrive_api.calibration_jog import INITIAL_DIRECTION_MOVE, MIN_CALIBRATION_TRAVEL
         from stereodrive_api.protocol import AXES, BACKLASH, SIGNS
         live_config_root = self._app_data_root_dir() / "DirectUSB" / "live"
         _copy_legacy_user_file(
@@ -2524,7 +2525,7 @@ class CraniotomyWindow(QMainWindow):
                 else:
                     normalized = raw[axis] - (state or 0)
                     position_labels[axis].setText(f"{normalized} counts")
-                threshold = 50 if axis == "PISTON" else 0.2
+                threshold = MIN_CALIBRATION_TRAVEL[axis]
                 input_qualified[axis] = travelled.get(axis, 0) >= threshold - 1e-9
                 field = inputs[axis]
                 field.setEnabled(input_qualified[axis] and not jog_context["busy"])
@@ -2538,7 +2539,8 @@ class CraniotomyWindow(QMainWindow):
             pending = [a for a in AXES if not input_qualified[a]]
             if pending:
                 axis = pending[0]
-                requirement = "50 nL" if axis == "PISTON" else "200 µm"
+                requirement = (f"{MIN_CALIBRATION_TRAVEL[axis]:g} nL" if axis == "PISTON"
+                              else f"{MIN_CALIBRATION_TRAVEL[axis] * 1000:g} µm")
                 message.setText(f"Move {axis} at least {requirement}; its physical reading field will then unlock.")
             elif not all(input_entered.values()):
                 message.setText("Enter the physical scale reading beside each axis, then Save Calibration.")
@@ -2583,7 +2585,7 @@ class CraniotomyWindow(QMainWindow):
             if driver is None or jog_context["busy"] or jog_context["stopped"]: return
             answer = QMessageBox.question(
                 dialog, "Initialize movement direction history?",
-                "The system will move AP, ML and DV by +0.100 mm (100 µm) each, then eject +50 nL on the plunger. "
+                "The system will move AP, ML and DV by +0.200 mm (200 µm) each, then eject +50 nL on the plunger. "
                 "Confirm that all four movements are safe, the tool is clear, and Stop is accessible.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
@@ -2596,7 +2598,6 @@ class CraniotomyWindow(QMainWindow):
             save_button.setEnabled(False)
             def worker():
                 try:
-                    from stereodrive_api.calibration_jog import INITIAL_DIRECTION_MOVE
                     for axis in AXES:
                         driver.move(axis, INITIAL_DIRECTION_MOVE[axis], int(axis_rate.currentText()))
                     action_result.update(snapshot=driver.capture_calibration_counts(), initialization=True,
