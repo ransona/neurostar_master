@@ -53,6 +53,17 @@ class APITests(unittest.TestCase):
             d.move_mm(axis,-.1)
             self.assertAlmostEqual(d.position()['axes_mm'][axis],0,delta=1/5225)
 
+    def test_event_log_records_requested_and_completed_motion_with_utc(self):
+        d=self.drive();d.move_mm('AP',.01)
+        records=[json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+        requested=next(record for record in records if record['event']=='MOVE_REQUESTED')
+        arrived=next(record for record in records if record['event']=='ARRIVED')
+        self.assertEqual(requested['axis'],'AP')
+        self.assertEqual(requested['target_raw'],arrived['raw'])
+        self.assertTrue(requested['utc'].endswith('+00:00'))
+        self.assertTrue(any(record['event']=='OUT' for record in records))
+        self.assertTrue(any(record['event']=='IN' for record in records))
+
     def test_piston_reversal_and_three_same_direction_moves(self):
         d=self.drive(allow_piston=True)
         # 20 nL triples remain inside the cumulative 100 nL envelope.
@@ -167,6 +178,10 @@ class APITests(unittest.TestCase):
         with self.assertRaises(RuntimeError):d.move_mm('AP',.01)
         self.assertFalse(json.loads(self.path.read_text())['valid'])
         self.assertEqual(sum(p[1]==0x0c for p in d._session.transport.packets),1)
+        records=[json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+        failed=next(record for record in records if record['event']=='MOVE_FAILED')
+        self.assertTrue(failed['error'])
+        self.assertTrue(any(record['event']=='STOP_COMMAND_WRITE_COMPLETED' for record in records))
 
     def test_stop_failure_invalidates_saved_state(self):
         d=self.drive();original=d._session.transport.write

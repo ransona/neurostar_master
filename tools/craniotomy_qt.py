@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
     QLockFile,
+    qInstallMessageHandler,
 )
 from PySide6.QtGui import QColor, QCursor, QDoubleValidator, QFont, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap
 try:
@@ -65,6 +67,7 @@ from PySide6.QtWidgets import (
 
 from direct_api_controller import StereoDriveController, StereoDriveError
 import pulsed_protocol
+from stereodrive_api.event_log import EventLog
 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
@@ -103,6 +106,122 @@ def _copy_legacy_user_file(source: Path, destination: Path) -> None:
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
+
+
+_QtMessageBox = QMessageBox
+_active_event_log = None
+_exception_hooks_installed = False
+_previous_qt_message_handler = None
+
+
+def _log_dialog_event(parent, event, **fields):
+    logger = getattr(parent, "event_log", None)
+    candidate = parent
+    while logger is None and candidate is not None:
+        try:
+            candidate = candidate.parentWidget()
+        except AttributeError:
+            candidate = None
+        logger = getattr(candidate, "event_log", None) if candidate is not None else None
+    logger = logger or _active_event_log
+    if logger is not None:
+        logger.write(event, **fields)
+
+
+class LoggedMessageBox(_QtMessageBox):
+    """Record both the text and outcome of all standard message boxes."""
+
+    @staticmethod
+    def _run_logged_dialog(method, parent, title, text, *args, **kwargs):
+        details = {"level": method, "title": str(title), "text": str(text)}
+        _log_dialog_event(parent, "ui.dialog.open", **details)
+        result = getattr(_QtMessageBox, method)(parent, title, text, *args, **kwargs)
+        result_value = getattr(result, "value", result)
+        _log_dialog_event(parent, "ui.dialog.close", **details, result=result_value)
+        return result
+
+    @staticmethod
+    def information(parent, title, text, *args, **kwargs):
+        return LoggedMessageBox._run_logged_dialog("information", parent, title, text, *args, **kwargs)
+
+    @staticmethod
+    def warning(parent, title, text, *args, **kwargs):
+        return LoggedMessageBox._run_logged_dialog("warning", parent, title, text, *args, **kwargs)
+
+    @staticmethod
+    def critical(parent, title, text, *args, **kwargs):
+        return LoggedMessageBox._run_logged_dialog("critical", parent, title, text, *args, **kwargs)
+
+    @staticmethod
+    def question(parent, title, text, *args, **kwargs):
+        return LoggedMessageBox._run_logged_dialog("question", parent, title, text, *args, **kwargs)
+
+    def exec(self, *args, **kwargs):
+        details = {"title": self.windowTitle(), "text": self.text()}
+        _log_dialog_event(self.parentWidget(), "ui.dialog.open", level="custom", **details)
+        result = super().exec(*args, **kwargs)
+        result_value = getattr(result, "value", result)
+        clicked = self.clickedButton()
+        _log_dialog_event(
+            self.parentWidget(),
+            "ui.dialog.close",
+            level="custom",
+            **details,
+            result=result_value,
+            clicked_button=clicked.text() if clicked is not None else None,
+        )
+        return result
+
+
+QMessageBox = LoggedMessageBox
+
+
+def _install_exception_event_logging():
+    global _exception_hooks_installed, _previous_qt_message_handler
+    if _exception_hooks_installed:
+        return
+    previous_sys_hook = sys.excepthook
+    previous_thread_hook = threading.excepthook
+
+    def log_uncaught_exception(exc_type, exc_value, exc_traceback):
+        if _active_event_log is not None:
+            _active_event_log.write(
+                "python.uncaught_exception",
+                exception_type=getattr(exc_type, "__name__", str(exc_type)),
+                message=str(exc_value),
+                traceback="".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+            )
+        previous_sys_hook(exc_type, exc_value, exc_traceback)
+
+    def log_uncaught_thread_exception(args):
+        if _active_event_log is not None:
+            _active_event_log.write(
+                "thread.uncaught_exception",
+                thread_name=args.thread.name if args.thread else None,
+                exception_type=getattr(args.exc_type, "__name__", str(args.exc_type)),
+                message=str(args.exc_value),
+                traceback="".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)),
+            )
+        previous_thread_hook(args)
+
+    def log_qt_message(message_type, context, message):
+        if _active_event_log is not None:
+            _active_event_log.write(
+                "qt.message",
+                severity=getattr(message_type, "value", message_type),
+                message=str(message),
+                category=getattr(context, "category", None),
+                file=getattr(context, "file", None),
+                line=getattr(context, "line", None),
+                function=getattr(context, "function", None),
+            )
+        if _previous_qt_message_handler is not None:
+            _previous_qt_message_handler(message_type, context, message)
+
+    sys.excepthook = log_uncaught_exception
+    threading.excepthook = log_uncaught_thread_exception
+    _previous_qt_message_handler = qInstallMessageHandler(log_qt_message)
+    _exception_hooks_installed = True
 
 
 class BITMAPINFO(ctypes.Structure):
@@ -923,6 +1042,15 @@ class CraniotomyWindow(QMainWindow):
     def __init__(self, controller=None) -> None:
         super().__init__()
         self.controller = controller or StereoDriveController()
+        global _active_event_log
+        self.event_log = _active_event_log or EventLog(_user_app_data_root() / "app-events.jsonl")
+        _active_event_log = self.event_log
+        _install_exception_event_logging()
+        self.event_log.write(
+            "app.start",
+            mode="live" if self.controller.live else "simulation",
+            process_id=os.getpid(),
+        )
         self.setWindowTitle("Neurostar — Direct USB API Planner · "+("LIVE (calibration required)" if self.controller.live else "SIMULATION"))
         self.seeds: list[SeedPoint] = []
         self.trajectory: list[tuple[float, float, float]] = []
@@ -1100,6 +1228,7 @@ class CraniotomyWindow(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.event_log.write("app.close_requested", operation_active=self._motion_is_active())
         if self._motion_is_active():
             self.stop_motion()
             try:
@@ -1127,14 +1256,16 @@ class CraniotomyWindow(QMainWindow):
             self._save_last_used_configs()
             self._save_general_settings()
             self._autosave_project_session()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.event_log.write("app.close_state_save_failed", error_type=type(exc).__name__, error=str(exc))
         self.warning_auto_confirm_stop.set()
         if getattr(self.controller,"direct_api",False):
             try:self.controller.close()
             except Exception as exc:
+                self.event_log.write("app.close_failed", error=str(exc))
                 QMessageBox.warning(self,"USB shutdown",str(exc)+" Use physical Stop if needed.")
                 event.ignore(); return
+        self.event_log.write("app.closed")
         super().closeEvent(event)
 
     def _build_ui(self) -> None:
@@ -3544,6 +3675,8 @@ class CraniotomyWindow(QMainWindow):
 
     def set_status(self, message: str) -> None:
         self.current_action = message or "Trajectory"
+        if hasattr(self, "event_log"):
+            self.event_log.write("ui.status", message=self.current_action)
         if hasattr(self, "action_status_label"):
             brief_source = " ".join(self.current_action.split())
             is_injection_summary = brief_source.startswith("Injection ") and ":" in brief_source
@@ -3571,6 +3704,37 @@ class CraniotomyWindow(QMainWindow):
         self._fit_coordinate_header()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if hasattr(self, "event_log"):
+            if event.type() == QEvent.Type.FocusOut and isinstance(
+                watched, (QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox)
+            ):
+                if isinstance(watched, QComboBox):
+                    value = {"text": watched.currentText(), "data": watched.currentData()}
+                elif isinstance(watched, (QDoubleSpinBox, QSpinBox)):
+                    value = watched.value()
+                else:
+                    value = watched.text()
+                self.event_log.write(
+                    "ui.field_commit",
+                    widget_type=type(watched).__name__,
+                    object_name=watched.objectName() or None,
+                    value=value,
+                )
+            elif event.type() == QEvent.Type.KeyPress:
+                self.event_log.write(
+                    "ui.key_press",
+                    key=QKeySequence(int(event.key()) | event.modifiers().value).toString(),
+                    auto_repeat=bool(event.isAutoRepeat()),
+                    focus=type(QApplication.focusWidget()).__name__ if QApplication.focusWidget() else None,
+                    operation_active=self._motion_is_active(),
+                )
+            elif event.type() == QEvent.Type.MouseButtonRelease and isinstance(watched, QAbstractButton):
+                self.event_log.write(
+                    "ui.button_click",
+                    text=watched.text(),
+                    object_name=watched.objectName() or None,
+                    checked=watched.isChecked() if watched.isCheckable() else None,
+                )
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)
         key = event.key()
@@ -3813,18 +3977,27 @@ class CraniotomyWindow(QMainWindow):
         self._play_move_speed_tone()
 
     def keyboard_nudge(self, axis: str, positive: bool, label: str, *, auto_repeat: bool = False) -> None:
-        if getattr(self,"restart_required",False):return
+        step = float(self.move_speed_step_mm)
+        if hasattr(self, "event_log"):
+            self.event_log.write("movement.keyboard_request", axis=axis, positive=positive,
+                                 step_mm=step, auto_repeat=auto_repeat)
+        if getattr(self,"restart_required",False):
+            self.event_log.write("movement.keyboard_ignored", reason="restart_required", axis=axis)
+            return
         if self.injection_thread is not None and self.injection_thread.is_alive() and not self.validation_modal_active:
+            self.event_log.write("movement.keyboard_ignored", reason="injection_active", axis=axis)
             return
         if self._focus_is_editable():
+            self.event_log.write("movement.keyboard_ignored", reason="editable_field_focused", axis=axis)
             return
         if auto_repeat and self._cancelled_nudge_direction == (axis, positive):
+            self.event_log.write("movement.keyboard_ignored", reason="cancelled_direction_repeat", axis=axis)
             return
         if not auto_repeat:
             self._cancelled_nudge_direction = None
         if self._motion_is_active() and not self._keyboard_move_active and not self.validation_modal_active:
+            self.event_log.write("movement.keyboard_ignored", reason="another_operation_active", axis=axis)
             return
-        step = float(self.move_speed_step_mm)
         reverse_active = False
         reversal_cleared = False
         with self._keyboard_move_lock:
@@ -3898,6 +4071,9 @@ class CraniotomyWindow(QMainWindow):
             return
         if reversal_cleared:
             return
+        self.event_log.write("movement.keyboard_queued", axis=axis, positive=positive,
+                             step_mm=step, queued_distance_mm=queued_distance,
+                             pending_count=pending)
         if not self._keyboard_move_active:
             self._start_next_keyboard_move()
 
@@ -3927,6 +4103,7 @@ class CraniotomyWindow(QMainWindow):
             move = self._keyboard_move_queue.pop(0)
             self._keyboard_move_active = True
         axis, positive, label, step = move
+        self.event_log.write("movement.keyboard_started", axis=axis, positive=positive, step_mm=step)
         with self._keyboard_move_lock:
             self._keyboard_move_current_axis = axis
             self._keyboard_move_current_positive = positive
@@ -3958,6 +4135,10 @@ class CraniotomyWindow(QMainWindow):
 
     def _keyboard_move_finished(self, error) -> None:
         self._estimated_move = None
+        if error is not None:
+            self.event_log.write("movement.keyboard_failed", error=str(error))
+        else:
+            self.event_log.write("movement.keyboard_finished")
         with self._keyboard_move_lock:
             cancelled = self._keyboard_move_cancelled
             resume_after_cancel = self._keyboard_move_resume_after_cancel
@@ -6444,6 +6625,17 @@ class CraniotomyWindow(QMainWindow):
         # Saved sites stay GUI-Bregma-relative; workers receive frozen Axis targets.
         sites = [InjectionSite(*self._bregma_to_axis((site.ap, site.ml, site.dv)), generated=site.generated)
                  for site in sites]
+        self.event_log.write(
+            "injection.sequence_requested",
+            sites=[{"ap_axis_mm": site.ap, "ml_axis_mm": site.ml, "dv_axis_mm": site.dv}
+                   for site in sites],
+            settings=vars(settings),
+            injection_steps_nl=list(injection_plan),
+            check_blocked=bool(check_blocked),
+            test_volume_nl=test_volume_nl,
+            start_site_offset=start_site_offset,
+            total_site_count=total_site_count,
+        )
         self.injection_clearance_axis_dv = self.bregma_axis[2] - self.validation_clearance_mm
         self.pulsed_clearance_mm=self.validation_clearance_mm
         if getattr(self.controller,"pulsed_protocol",False):
@@ -6476,21 +6668,27 @@ class CraniotomyWindow(QMainWindow):
             daemon=True,
         )
         self.injection_thread.start()
+        self.event_log.write("injection.sequence_started", site_count=len(sites),
+                             start_site_offset=start_site_offset)
         self.set_injection_sequence_controls_active(True)
 
     def pause_resume_injection(self) -> None:
         if self.injection_thread is None or not self.injection_thread.is_alive():
             return
         if self.injection_pause_requested.is_set():
+            self.event_log.write("injection.resume_requested")
             self.injection_pause_requested.clear()
             self.start_injection_btn.setText("Pause")
             self.set_status("Injection resumed")
         else:
+            self.event_log.write("injection.pause_requested")
             self.injection_pause_requested.set()
             self.start_injection_btn.setText("Resume")
             self.set_status("Injection paused")
 
     def stop_injection(self) -> None:
+        self.event_log.write("injection.stop_requested", operation_active=self.injection_thread is not None
+                             and self.injection_thread.is_alive())
         with self._manual_syringe_queue_lock:
             manual_queue_active = self._manual_syringe_queue_active
             manual_queue_already_stopping = self._manual_syringe_queue_cancelled
@@ -7171,6 +7369,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_sites_list.setCurrentRow(-1)
 
     def finish_injection(self, message: str) -> None:
+        self.event_log.write("injection.sequence_finished", outcome=message)
         self.set_injection_sequence_controls_active(False)
         self.set_active_sequence_step(-1)
         self.set_active_injection_site(-1)
@@ -8518,6 +8717,7 @@ class CraniotomyWindow(QMainWindow):
             pattern = self._ensure_borehole_state()
             if 0 <= index < len(pattern) and self.frozen_boreholes[index] is not True:
                 self.frozen_boreholes[index] = True
+                self.event_log.write("drilling.burr_hole_frozen", index=index, coordinates=pattern[index][:3])
                 self.redraw_views()
                 self._autosave_project_session()
             return
@@ -8527,6 +8727,8 @@ class CraniotomyWindow(QMainWindow):
             self.frozen_points = [False] * len(self.trajectory)
         if not self.frozen_points[index]:
             self.frozen_points[index] = True
+            self.event_log.write("drilling.trajectory_point_frozen", index=index,
+                                 coordinates=self.trajectory[index])
             self.redraw_views()
 
     def unmark_frozen_point(self, index: int) -> None:
@@ -8534,6 +8736,7 @@ class CraniotomyWindow(QMainWindow):
             pattern = self._ensure_borehole_state()
             if 0 <= index < len(pattern) and self.frozen_boreholes[index] is not False:
                 self.frozen_boreholes[index] = False
+                self.event_log.write("drilling.burr_hole_unfrozen", index=index, coordinates=pattern[index][:3])
                 self.redraw_views()
                 self._autosave_project_session()
             return
@@ -8541,6 +8744,8 @@ class CraniotomyWindow(QMainWindow):
             return
         if self.frozen_points[index]:
             self.frozen_points[index] = False
+            self.event_log.write("drilling.trajectory_point_unfrozen", index=index,
+                                 coordinates=self.trajectory[index])
             self.redraw_views()
 
     def interpolate_periodic(self, theta: float, angles: list[float], values: list[float]) -> float:
@@ -8914,6 +9119,7 @@ class CraniotomyWindow(QMainWindow):
             self._set_single_hole_status("Paused hole cancelled; tool remains retracted.")
 
     def stop_motion(self) -> None:
+        self.event_log.write("movement.stop_requested", operation_active=self._motion_is_active())
         self.drill_stop_requested.set()
         if self.single_hole_thread is not None and self.single_hole_thread.is_alive():
             self.single_hole_cancel_requested.set()
@@ -8937,6 +9143,13 @@ class CraniotomyWindow(QMainWindow):
         self.redraw_views()
 
     def start_drilling_round(self) -> None:
+        self.event_log.write(
+            "drilling.round_requested",
+            target_depth_mm=self.current_target_depth_mm,
+            max_depth_mm=float(self.drill_depth.value()),
+            mode=str(self.drilling_mode_combo.currentData()),
+            drill_rate_mm_per_s=float(self.drill_rate_mm_per_s.value()),
+        )
         if not getattr(self.controller,"supports_drilling_protocol",True):
             QMessageBox.warning(self,"Direct USB setup","Connect with calibrated USB first. Continuous-speed drilling is not implemented.")
             return
@@ -9061,13 +9274,31 @@ class CraniotomyWindow(QMainWindow):
             daemon=True,
         )
         self._set_borehole_controls_locked(True)
+        self.event_log.write(
+            "drilling.round_started",
+            target_depth_mm=depth,
+            mode=str(self.drilling_mode_combo.currentData()),
+            settings=vars(self._craniotomy_config()),
+            surface_targets_axis=surface_targets,
+            current_depths_mm=current_depths,
+            target_depths_mm=target_depths,
+            frozen_points=frozen_points,
+            centre_above_axis=center_above_position,
+        )
         self.drill_thread.start()
 
     def pause_drilling_round(self) -> None:
+        self.event_log.write("drilling.pause_requested")
         self.drill_pause_requested.set()
         self.set_status("Pausing at verified idle and retracting to configured clearance.")
 
     def on_drill_round_finished(self, outcome: str) -> None:
+        self.event_log.write(
+            "drilling.round_finished",
+            outcome=outcome,
+            target_depth_mm=self.current_target_depth_mm,
+            progress_reset_ack_required=self.drilling_progress_reset_requires_ack,
+        )
         self._set_borehole_controls_locked(False)
         self.drill_round_started_at = None
         self.drill_round_target_seconds = 0.0
@@ -9804,6 +10035,11 @@ def main() -> None:
     parser.add_argument("--simulation",action="store_true",help="Skip USB and start the in-memory simulator")
     args=parser.parse_args()
     app = QApplication(sys.argv)
+    global _active_event_log
+    _active_event_log = EventLog(_user_app_data_root() / "app-events.jsonl")
+    _install_exception_event_logging()
+    _active_event_log.write("app.process_start", process_id=os.getpid(),
+                            requested_mode="simulation" if args.simulation else "live_or_simulation_fallback")
     app.setApplicationName("Craniotomy Planner")
     application_font = QFont("Segoe UI")
     application_font.setPointSize(9)
@@ -9839,10 +10075,13 @@ def main() -> None:
                     travel_limits=profile.get("travel_limits"))
             except Exception as exc:
                 startup_failure=str(exc)
+                _active_event_log.write("startup.live_connection_failed", error_type=type(exc).__name__, error=str(exc))
                 controller.close()
                 controller=StereoDriveController(live=False)
         window=CraniotomyWindow(controller)
     except Exception as exc:
+        _active_event_log.write("startup.failed", error_type=type(exc).__name__, error=str(exc),
+                                traceback=traceback.format_exc())
         instance_lock.unlock()
         QMessageBox.warning(None,"Direct USB setup",f"Planner could not start: {exc}")
         return

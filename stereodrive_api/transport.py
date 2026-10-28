@@ -87,7 +87,13 @@ class WindowsSerial:
             if data[:2] != b'\xaf\x0f' and data != b'\xaf\x11\x00': raise
         sent = wintypes.DWORD(); buf = ctypes.create_string_buffer(data)
         if not self.k.WriteFile(self.handle, buf, len(data), ctypes.byref(sent), None) or sent.value != len(data):
-            raise RuntimeError('Serial write failed or was partial; no retransmission.')
+            error = RuntimeError('Serial write failed or was partial; no retransmission.')
+            try: self.log('OUT_WRITE_FAILED', hex=data.hex(), requested_bytes=len(data), written_bytes=sent.value,
+                          os_error=ctypes.get_last_error())
+            except Exception: pass
+            raise error
+        try: self.log('OUT_WRITE_COMPLETED', hex=data.hex(), written_bytes=sent.value)
+        except Exception: pass
 
     def exchange(self, data, size):
         self.write(data)
@@ -95,10 +101,15 @@ class WindowsSerial:
         while len(reply) < size and time.monotonic() < deadline:
             buf = ctypes.create_string_buffer(size - len(reply)); got = wintypes.DWORD()
             if not self.k.ReadFile(self.handle, buf, len(buf), ctypes.byref(got), None):
-                raise ctypes.WinError(ctypes.get_last_error())
+                error = ctypes.WinError(ctypes.get_last_error())
+                try: self.log('IN_READ_FAILED', expected_bytes=size, received_bytes=len(reply), error=str(error))
+                except Exception: pass
+                raise error
             reply.extend(buf.raw[:got.value])
         self.log('IN', hex=reply.hex())
         if len(reply) != size:
+            try: self.log('IN_REPLY_INCOMPLETE', expected_bytes=size, received_bytes=len(reply), hex=reply.hex())
+            except Exception: pass
             raise RuntimeError('Incomplete serial reply; no automatic retry.')
         return bytes(reply)
 

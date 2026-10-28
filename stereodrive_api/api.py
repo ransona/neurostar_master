@@ -119,6 +119,9 @@ class StereoDrive:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.with_suffix('.jsonl').open('a', encoding='utf-8') as f:
             f.write(json.dumps(record, allow_nan=False) + '\n')
+            if event not in ('OUT', 'IN', 'OUT_WRITE_COMPLETED'):
+                f.flush()
+                os.fsync(f.fileno())
 
     def _simulation_raw(self, backlash_state):
         # Start from realistic synthetic counts. Absolute calibration, if supplied,
@@ -170,6 +173,12 @@ class StereoDrive:
                                         self.calibration.reference(self.scales) if self.calibration else None,
                                         self.speed_mm_s, True, self.travel_limits,
                                         self.simulation_start_position if self.simulate else None)
+                try:
+                    self._log('API_CONNECTED', mode='simulation' if self.simulate else 'live',
+                              identity=transport.identity, speed_mm_s=self.speed_mm_s,
+                              travel_limits=self.travel_limits)
+                except Exception:
+                    pass
             except Exception:
                 transport.close()
                 raise
@@ -465,6 +474,7 @@ class StereoDrive:
         if not self._lock.acquire(blocking=False): raise RuntimeError('Controller busy; use stop() to cancel')
         try:
             s = self._require()
+            self._log('DRILL_POWER_REQUESTED', enabled=enabled)
             if enabled:
                 self._require_zero_calibration(s)
                 if s.fault: raise RuntimeError('Session fault: ' + s.fault)
@@ -481,6 +491,9 @@ class StereoDrive:
                     time.sleep(.1)
                 raise RuntimeError('Drill power state did not match; no automatic ON retry')
             except Exception as exc:
+                try: self._log('DRILL_POWER_FAILED', enabled=enabled,
+                               error_type=type(exc).__name__, error=str(exc))
+                except Exception: pass
                 # A lost ON response must always attempt OFF, including faulted sessions.
                 try:
                     with s.io_lock: s.transport.write(drill_power(False))
@@ -525,6 +538,8 @@ class StereoDrive:
     def close(self):
         s = self._session
         if s is None: return
+        try: self._log('API_DISCONNECT_REQUESTED', mode='simulation' if self.simulate else 'live')
+        except Exception: pass
         self._stopping.set()
         s.cancel.set()
         with self._lock:
@@ -534,6 +549,8 @@ class StereoDrive:
                 finally:
                     self._session = None
                     self._stopping.clear()
+                    try: self._log('API_DISCONNECTED', mode='simulation' if self.simulate else 'live')
+                    except Exception: pass
 
     def __enter__(self):
         self._require()

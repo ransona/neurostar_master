@@ -104,15 +104,30 @@ class Session:
 
     def emergency_stop(self):
         errors = []
+        def record(event, **details):
+            try: self.log(event, **details)
+            except Exception: pass
+
+        record('STOP_REQUESTED', axes=list(AXES), drill_enabled=self.drill_enabled)
         for a in AXES:
             try:
                 with self.io_lock: self.transport.write(stop(a))
-            except Exception as exc: errors.append(f'{a}: {exc}')
+                record('STOP_COMMAND_WRITE_COMPLETED', axis=a)
+            except Exception as exc:
+                errors.append(f'{a}: {exc}')
+                record('STOP_COMMAND_WRITE_FAILED', axis=a, error=str(exc))
         if self.drill_enabled:
             try:
                 with self.io_lock: self.transport.write(bytes((0xaf, 0x11, 0)))
-            except Exception as exc: errors.append(f'DRILL: {exc}')
-        if errors: raise RuntimeError('Stop could not be confirmed: ' + '; '.join(errors))
+                record('DRILL_OFF_COMMAND_WRITE_COMPLETED', source='emergency_stop')
+            except Exception as exc:
+                errors.append(f'DRILL: {exc}')
+                record('DRILL_OFF_COMMAND_WRITE_FAILED', source='emergency_stop', error=str(exc))
+        if errors:
+            record('STOP_COMMANDS_FAILED', errors=errors)
+            raise RuntimeError('Stop could not be confirmed: ' + '; '.join(errors))
+        record('STOP_COMMAND_WRITES_COMPLETED', axes=list(AXES), drill_enabled=self.drill_enabled,
+               note='Command writes completed; stationary hardware state is not confirmed by this event.')
 
     def invalidate(self, reason):
         self.fault = str(reason)
@@ -142,8 +157,20 @@ class Session:
             raise ValueError('Target exceeds signed 32-bit motor count range.')
         # A crash/disconnect anywhere after this write must not restore stale state.
         self.save(False, 'Movement in progress; completion not yet verified.')
+        self.log(
+            'MOVE_REQUESTED',
+            axis=axis,
+            direction=direction,
+            step=step,
+            speed_mm_s=self.speed_mm_s,
+            start_position=self.positions(),
+            target_position={**self.positions(), axis: estimate},
+            start_raw=old[axis],
+            target_raw=requested,
+        )
         self.busy = True
         self.active_axis, self.active_backlash = axis,new_state
+        move_started = time.monotonic()
         try:
             if self.cancel.is_set(): raise InterruptedError('Stopped before movement.')
             with self.io_lock:
@@ -204,6 +231,8 @@ class Session:
                          position=self.positions()[axis], relative_units=self.positions())
             except Exception as stop_exc:
                 self.fault = str(stop_exc)
+                try: self.log('MOVE_CANCEL_RECONCILIATION_FAILED', axis=axis, error=str(stop_exc))
+                except Exception: pass
                 try: self.invalidate(stop_exc)
                 except Exception: pass
                 try: self.emergency_stop()
@@ -212,6 +241,11 @@ class Session:
             raise
         except Exception as exc:
             self.fault = str(exc)
+            try:
+                self.log('MOVE_FAILED', axis=axis, direction=direction, step=step,
+                         start_raw=old[axis], target_raw=requested, error_type=type(exc).__name__,
+                         error=str(exc), elapsed_seconds=time.monotonic() - move_started)
+            except Exception: pass
             try: self.invalidate(exc)
             except Exception: pass  # A disk error must never prevent Stop.
             try: self.emergency_stop()
@@ -254,7 +288,14 @@ class Session:
         """Idle Stop verifies that no motion occurred; interrupted motion stays invalid."""
         self.emergency_stop()
         if not self.fault:
-            self.refresh(); self.save(True)
+            try:
+                position = self.refresh()
+                self.save(True)
+                self.log('STOP_STATE_VERIFIED', relative_units=position)
+            except Exception as exc:
+                try: self.log('STOP_STATE_VERIFICATION_FAILED', error_type=type(exc).__name__, error=str(exc))
+                except Exception: pass
+                raise
 
     def close(self):
         try:

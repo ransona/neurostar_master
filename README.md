@@ -176,6 +176,18 @@ in-memory controller; its current AP/ML/DV and piston positions are never saved.
 Live startup attempts a restore only when saved calibration and matching API
 state are available; otherwise it falls back to simulation with a warning.
 
+The planner now appends timestamped diagnostics to
+`%APPDATA%\Neurostar_Master\app-events.jsonl`. This includes button clicks,
+keyboard input, committed field values, full status text, message-box text and
+responses, uncaught Python exceptions, Qt messages, and craniotomy round
+requests and outcomes. The direct API log beside `DirectUSB\live\api-state.json`
+also records protocol traffic, movement targets and outcomes, drill-power events,
+and Stop command write results. Semantic API events are flushed to disk before
+the operation continues. Raw packet entries are recorded individually. These
+logs are local diagnostics, not independent hardware feedback: a logged command
+does not prove that the device acted on it, and the final log entries can be
+missing if the computer loses power or storage access.
+
 Stop/Esc/close cancel movement, stop all four channels and attempt drill OFF even
 without ON permission. Software Stop depends on the connection/process; use physical
 Stop for uncertainty. Faults invalidate state; no automatic retry/recovery reversal.
