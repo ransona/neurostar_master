@@ -924,14 +924,18 @@ class DepthLegendWidget(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.skull_thickness_mm = 0.25
+        self.target_depth_mm = 0.0
+        self.scale_max_mm = 0.25
         self.current_depth_ratio: float | None = None
         self.setMinimumWidth(90)
         self.setMaximumWidth(90)
         self.setMinimumHeight(260)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-    def set_skull_thickness_mm(self, skull_thickness_mm: float) -> None:
-        self.skull_thickness_mm = skull_thickness_mm
+    def set_depth_scale(self, skull_thickness_mm: float, target_depth_mm: float) -> None:
+        self.skull_thickness_mm = max(0.001, float(skull_thickness_mm))
+        self.target_depth_mm = max(0.0, float(target_depth_mm))
+        self.scale_max_mm = max(self.skull_thickness_mm, self.target_depth_mm)
         self.update()
 
     def set_current_depth_ratio(self, current_depth_ratio: float | None) -> None:
@@ -958,8 +962,12 @@ class DepthLegendWidget(QWidget):
         painter.drawText(
             QRectF(48, bar_rect.bottom() - 10, self.width() - 50, 28),
             Qt.AlignLeft | Qt.AlignVCenter,
-            f"{self.skull_thickness_mm:.2f} mm",
+            f"{self.scale_max_mm:.2f} mm",
         )
+        if self.scale_max_mm > self.skull_thickness_mm + 1e-9:
+            skull_y = bar_rect.top() + (self.skull_thickness_mm / self.scale_max_mm) * bar_rect.height()
+            painter.setPen(QPen(QColor("#496052"), 2))
+            painter.drawLine(QPointF(bar_rect.left() - 4, skull_y), QPointF(bar_rect.right() + 4, skull_y))
         if self.current_depth_ratio is not None:
             ratio = max(0.0, min(1.0, self.current_depth_ratio))
             y = bar_rect.top() + ratio * bar_rect.height()
@@ -1718,7 +1726,7 @@ class CraniotomyWindow(QMainWindow):
         right_panel_layout.setContentsMargins(0, 0, 0, 0)
         right_panel_layout.setSpacing(10)
         self.depth_legend = DepthLegendWidget()
-        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
+        self.depth_legend.set_depth_scale(self.skull_thickness_mm.value(), self.current_target_depth_mm)
         right_panel_layout.addWidget(self.depth_legend)
         details_panel = QWidget()
         legend_layout = QVBoxLayout(details_panel)
@@ -3511,7 +3519,7 @@ class CraniotomyWindow(QMainWindow):
         self.hole_spacing_mm.setValue(config.hole_spacing_mm)
         self.delay_at_depth.setValue(config.delay_at_depth_seconds)
         self.hole_spacing_mm.setEnabled(config.drilling_mode == "boreholes")
-        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
+        self.depth_legend.set_depth_scale(self.skull_thickness_mm.value(), self.current_target_depth_mm)
         self.update_current_target_depth_label()
         self.redraw_views()
 
@@ -9374,7 +9382,7 @@ class CraniotomyWindow(QMainWindow):
         surface_targets = [self._bregma_to_axis(point) for point in self.trajectory]
         self.pulsed_clearance_mm=self.validation_clearance_mm
         self.pulsed_drill_rate=float(self.drill_rate_mm_per_s.value()) if getattr(self.controller,"pulsed_protocol",False) else 1.0
-        self.pulsed_drill_thickness_mm=float(self.skull_thickness_mm.value()) if getattr(self.controller,"pulsed_protocol",False) else 1.0
+        self.pulsed_drill_thickness_mm=max(float(self.skull_thickness_mm.value()), float(depth), 0.001)
         clearance=self.pulsed_clearance_mm if getattr(self.controller,"pulsed_protocol",False) else 2.0
         self.drill_clearance_axis_dv = self.bregma_axis[2] - (clearance if getattr(self.controller,"pulsed_protocol",False) else .5)
         target_depths = [
@@ -9676,8 +9684,7 @@ class CraniotomyWindow(QMainWindow):
             self.drilled_depths[point_count] = target_depth
         self.active_depth_ratio = max(
             0.0,
-            min(1.0, target_depth / max(getattr(self,"pulsed_drill_thickness_mm",1.0)
-                if getattr(self.controller,"pulsed_protocol",False) else self.skull_thickness_mm.value(), 0.001)),
+            min(1.0, target_depth / max(getattr(self,"pulsed_drill_thickness_mm",1.0), 0.001)),
         )
         self.redraw_signal.emit()
         self.drill_progress_signal.emit(index + 1)
@@ -9940,7 +9947,11 @@ class CraniotomyWindow(QMainWindow):
                     self.active_surface_dv = surface_dv
                     self.active_depth_ratio = max(
                         0.0,
-                        min(1.0, current_depth / max(self.skull_thickness_mm.value(), 0.001)),
+                        min(
+                            1.0,
+                            current_depth
+                            / max(self.skull_thickness_mm.value(), self.current_target_depth_mm, 0.001),
+                        ),
                     )
                     self.redraw_signal.emit()
                     self.status_signal.emit(
@@ -10068,11 +10079,12 @@ class CraniotomyWindow(QMainWindow):
     def redraw_views(self, current_point: tuple[float, float] | None = None) -> None:
         top_points: list[tuple[float, float, float]] = []
         skull_thickness_mm = max(self.skull_thickness_mm.value(), 0.001)
+        depth_scale_max_mm = max(skull_thickness_mm, self.current_target_depth_mm, 0.001)
         current_depth_ratio = self.active_depth_ratio
         map_trajectory = self.trajectory if self.craniotomy_coordinate_system == "bregma" else []
         for index, (ap, ml, _dv) in enumerate(map_trajectory):
             depth_mm = self.drilled_depths[index] if index < len(self.drilled_depths) else 0.0
-            point_depth_ratio = max(0.0, min(1.0, depth_mm / skull_thickness_mm))
+            point_depth_ratio = max(0.0, min(1.0, depth_mm / depth_scale_max_mm))
             display_ap, display_ml = self._project_map_position(ap, ml, self.craniotomy_coordinate_system)
             top_points.append((display_ml, display_ap, point_depth_ratio))
         top_seeds = []
@@ -10099,13 +10111,13 @@ class CraniotomyWindow(QMainWindow):
             try:
                 _current_ap, _current_ml, current_dv = self.controller.get_current_axis_position()
                 current_depth_mm = max(0.0, current_dv - self.active_surface_dv)
-                computed_ratio = max(0.0, min(1.0, current_depth_mm / skull_thickness_mm))
+                computed_ratio = max(0.0, min(1.0, current_depth_mm / depth_scale_max_mm))
                 if self.active_depth_ratio is None or abs(computed_ratio - self.active_depth_ratio) >= 0.0005:
                     self.active_depth_ratio = computed_ratio
                 current_depth_ratio = self.active_depth_ratio
             except Exception:
                 current_depth_ratio = self.active_depth_ratio
-        self.depth_legend.set_skull_thickness_mm(self.skull_thickness_mm.value())
+        self.depth_legend.set_depth_scale(skull_thickness_mm, self.current_target_depth_mm)
         self.depth_legend.set_current_depth_ratio(current_depth_ratio)
         self._update_round_status_labels()
         self.top_view.set_data(

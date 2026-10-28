@@ -128,6 +128,19 @@ class PlannerTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.drill_depth.value(),0.20)
         self.assertAlmostEqual(self.window.current_target_depth_mm,0.10)
 
+    def test_depth_legend_scale_covers_target_deeper_than_skull(self):
+        self.window.skull_thickness_mm.setValue(0.25)
+        self.window.current_target_depth_mm=0.60
+        self.window.redraw_views()
+        legend=self.window.depth_legend
+        self.assertAlmostEqual(legend.skull_thickness_mm,0.25)
+        self.assertAlmostEqual(legend.target_depth_mm,0.60)
+        self.assertAlmostEqual(legend.scale_max_mm,0.60)
+
+        self.window.current_target_depth_mm=0.15
+        self.window.redraw_views()
+        self.assertAlmostEqual(legend.scale_max_mm,0.25)
+
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.assertEqual(self.window.delay_at_depth.value(),3.0)
         session_config=self.window._project_session_dict()['craniotomy_config']
