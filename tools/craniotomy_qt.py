@@ -1576,6 +1576,7 @@ class CraniotomyWindow(QMainWindow):
         self.drilling_mode_combo.setToolTip(
             "Spaced burr-hole mode creates separate holes around the perimeter. Continuous path traces the perimeter."
         )
+        self.trajectory_points.setEnabled(False)
         self.hole_spacing_mm = self._double_spinbox(value=0.5, minimum=0.1, maximum=10.0)
         self.hole_spacing_mm.setToolTip("Maximum center-to-center distance along the perimeter between burr holes.")
         self.hole_spacing_mm.setEnabled(False)
@@ -3519,6 +3520,7 @@ class CraniotomyWindow(QMainWindow):
         self.hole_spacing_mm.setValue(config.hole_spacing_mm)
         self.delay_at_depth.setValue(config.delay_at_depth_seconds)
         self.hole_spacing_mm.setEnabled(config.drilling_mode == "boreholes")
+        self.trajectory_points.setEnabled(config.drilling_mode != "boreholes")
         self.depth_legend.set_depth_scale(self.skull_thickness_mm.value(), self.current_target_depth_mm)
         self.update_current_target_depth_label()
         self.redraw_views()
@@ -8458,6 +8460,7 @@ class CraniotomyWindow(QMainWindow):
             return
         is_borehole = self.drilling_mode_combo.currentData() == "boreholes"
         self.hole_spacing_mm.setEnabled(is_borehole)
+        self.trajectory_points.setEnabled(not is_borehole)
         self.round_time_label.setVisible(not is_borehole)
         self.round_time_seconds.setVisible(not is_borehole)
         if hasattr(self, "freeze_draw_btn"):

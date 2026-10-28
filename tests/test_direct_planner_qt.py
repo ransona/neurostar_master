@@ -169,6 +169,7 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn('Direct USB diagnostics',option_group_titles)
         self.assertNotIn('USB Controller Probe',option_group_titles)
         self.assertIn('Axis Movement Benchmark',option_group_titles)
+
         for index in (0,1):
             tab=self.window.tabs.widget(index)
             layout=tab.layout()
@@ -217,6 +218,18 @@ class PlannerTests(unittest.TestCase):
             self.window.craniotomy_surface_box.geometry().bottom(),
             self.window.craniotomy_surface_box.parentWidget().rect().bottom()-8,
         )
+
+    def test_trajectory_points_enabled_only_for_continuous_path_mode(self):
+        self.assertEqual(self.window.drilling_mode_combo.currentData(),'boreholes')
+        self.assertFalse(self.window.trajectory_points.isEnabled())
+
+        continuous_index=self.window.drilling_mode_combo.findData('continuous')
+        self.window.drilling_mode_combo.setCurrentIndex(continuous_index)
+        self.assertTrue(self.window.trajectory_points.isEnabled())
+
+        boreholes_index=self.window.drilling_mode_combo.findData('boreholes')
+        self.window.drilling_mode_combo.setCurrentIndex(boreholes_index)
+        self.assertFalse(self.window.trajectory_points.isEnabled())
 
     def test_single_hole_waits_after_drill_plan_reaches_depth(self):
         self.window.controller.turn_drill_off=Mock()
