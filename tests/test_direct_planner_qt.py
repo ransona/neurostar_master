@@ -98,6 +98,36 @@ class PlannerTests(unittest.TestCase):
         self.assertIsNone(saved['bregma_axis'])
         self.assertIsNone(saved['anchor_axis'])
 
+    def test_target_depth_above_maximum_offers_to_raise_max_depth(self):
+        self.window.drill_depth.setValue(0.20)
+        self.window.current_target_depth_mm=0.10
+        self.dialogs.question.return_value=self.dialogs.Yes
+        def enter_target():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QDialog)
+            edit=dialog.findChild(planner.QLineEdit)
+            edit.setText('0.35')
+            dialog.accept()
+        QTimer.singleShot(0,enter_target)
+        self.window.change_current_target_depth()
+        self.assertAlmostEqual(self.window.drill_depth.value(),0.35)
+        self.assertAlmostEqual(self.window.current_target_depth_mm,0.35)
+        self.assertIn('Increase Maximum Depth?',self.dialogs.question.call_args.args)
+
+    def test_declining_maximum_depth_adjustment_keeps_both_values(self):
+        self.window.drill_depth.setValue(0.20)
+        self.window.current_target_depth_mm=0.10
+        self.dialogs.question.return_value=self.dialogs.No
+        def enter_target():
+            dialog=self.app.activeModalWidget()
+            edit=dialog.findChild(planner.QLineEdit)
+            edit.setText('0.35')
+            dialog.accept()
+        QTimer.singleShot(0,enter_target)
+        self.window.change_current_target_depth()
+        self.assertAlmostEqual(self.window.drill_depth.value(),0.20)
+        self.assertAlmostEqual(self.window.current_target_depth_mm,0.10)
+
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.assertEqual(self.window.delay_at_depth.value(),3.0)
         session_config=self.window._project_session_dict()['craniotomy_config']

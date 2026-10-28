@@ -254,6 +254,9 @@ class NumericLineEdit(QLineEdit):
         self._maximum = maximum
         self.setValue(self.value())
 
+    def maximum(self) -> float | int:
+        return self._maximum
+
     def value(self) -> float | int:
         text = self.text().strip()
         try:
@@ -1109,6 +1112,7 @@ class CraniotomyWindow(QMainWindow):
         self.drill_completed_points = 0
         self.drilling_progress_reset_requires_ack = False
         self.restart_drill_round_after_pause = False
+        self.pending_max_depth_adjustment: float | None = None
         self.drill_round_started_at: float | None = None
         self.drill_round_target_seconds: float = 0.0
         self.active_surface_dv: float | None = None
@@ -8027,19 +8031,40 @@ class CraniotomyWindow(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "Set Target Depth", "Enter a numeric depth in mm.")
             return
-        if not math.isfinite(value) or value <= 0 or value > max_depth:
+        if not math.isfinite(value) or value <= 0:
             QMessageBox.warning(
                 self,
                 "Set Target Depth",
-                f"Enter a depth greater than 0 and no deeper than the configured maximum of {max_depth:.3f} mm.",
+                "Enter a numeric depth greater than 0 mm.",
+            )
+            return
+        if value > self.drill_depth.maximum():
+            QMessageBox.warning(
+                self,
+                "Set Target Depth",
+                f"The target cannot exceed the supported maximum of {self.drill_depth.maximum():.3f} mm.",
             )
             return
 
+        adjust_max_depth = value > max_depth
+        if adjust_max_depth:
+            answer = QMessageBox.question(
+                self,
+                "Increase Maximum Depth?",
+                f"The target depth ({value:.3f} mm) is greater than Max Depth ({max_depth:.3f} mm). "
+                f"Would you like to set Max Depth to {value:.3f} mm? Changing Max Depth resets drilling progress.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
         running = self.drill_thread is not None and self.drill_thread.is_alive()
+        was_paused = self.drilling_paused
         target_changed = value != self.current_target_depth_mm
-        if not target_changed:
+        if not target_changed and not adjust_max_depth:
             return
-        if running or self.drilling_paused:
+        if target_changed and (running or was_paused):
             answer = QMessageBox.warning(
                 self,
                 "Target Changed",
@@ -8050,6 +8075,15 @@ class CraniotomyWindow(QMainWindow):
             if answer != QMessageBox.Yes:
                 return
 
+        if running and adjust_max_depth:
+            self.pending_max_depth_adjustment = value
+            self.restart_drill_round_after_pause = True
+            self.pause_drilling_round()
+            self.set_status("Pausing safely before increasing Max Depth and restarting.")
+            return
+
+        if adjust_max_depth:
+            self.drill_depth.setValue(value)
         self.current_target_depth_mm = value
         self.update_current_target_depth_label()
         self.redraw_views()
@@ -8057,7 +8091,7 @@ class CraniotomyWindow(QMainWindow):
             self.restart_drill_round_after_pause = True
             self.pause_drilling_round()
             self.set_status(f"Target updated to {value:.3f} mm. Pausing before round restart.")
-        elif self.drilling_paused:
+        elif was_paused:
             self.drilling_paused = False
             self.start_round_btn.setText("Start")
             self.set_status(f"Restarting round to {value:.3f} mm.")
@@ -9410,6 +9444,12 @@ class CraniotomyWindow(QMainWindow):
         if outcome == "paused":
             self.drilling_paused = True
             self.start_round_btn.setText("Continue")
+            if self.pending_max_depth_adjustment is not None:
+                new_max_depth = self.pending_max_depth_adjustment
+                self.pending_max_depth_adjustment = None
+                self.drill_depth.setValue(new_max_depth)
+                self.current_target_depth_mm = new_max_depth
+                self.update_current_target_depth_label()
             self._autosave_project_session()
             self.redraw_views()
             if self.restart_drill_round_after_pause:
@@ -9423,6 +9463,7 @@ class CraniotomyWindow(QMainWindow):
             return
         if outcome in ("stopped", "error"):
             self.restart_drill_round_after_pause = False
+            self.pending_max_depth_adjustment = None
             self.drilling_paused = False
             self.start_round_btn.setText("Start")
             self.redraw_views()
