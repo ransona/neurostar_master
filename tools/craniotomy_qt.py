@@ -9718,6 +9718,7 @@ class CraniotomyWindow(QMainWindow):
             else:
                 self.set_status("Drilling complete; drill is off.")
             self.redraw_views()
+            self._prompt_increase_drilling_depth_or_stop()
             return
         self.current_target_depth_mm = min(max_depth, completed_depth + self.depth_per_round.value())
         self.update_current_target_depth_label()
@@ -9740,6 +9741,23 @@ class CraniotomyWindow(QMainWindow):
             self.start_round_btn.setText("Continue")
             self.set_status(f"Round complete. Next target depth is {self.current_target_depth_mm:.3f} mm.")
         self.redraw_views()
+
+    def _prompt_increase_drilling_depth_or_stop(self) -> None:
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Craniotomy Target Reached")
+        prompt.setText(
+            f"All active holes reached {self.current_target_depth_mm:.3f} mm. "
+            "Would you like to increase the depth or stop?"
+        )
+        increase_button = prompt.addButton("Increase Depth", QMessageBox.AcceptRole)
+        stop_button = prompt.addButton("Stop", QMessageBox.RejectRole)
+        prompt.setDefaultButton(stop_button)
+        prompt.setEscapeButton(stop_button)
+        prompt.exec()
+        if prompt.clickedButton() is increase_button:
+            self.change_current_target_depth()
+        else:
+            self.set_status("Craniotomy stopped at the current target depth.")
 
     def _craniotomy_center_surface_dv(self) -> float:
         captured_dvs = [seed.dv for seed in self.seeds if seed.dv is not None]

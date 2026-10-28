@@ -246,6 +246,34 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(args[1],[0.20]*4)
         self.assertEqual(args[2],[0.35]*4)
 
+    def test_target_reached_prompt_defaults_to_stop(self):
+        self.dialogs_patch.stop()
+        self.window.current_target_depth_mm=0.20
+        observed={}
+        def choose_stop():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QMessageBox)
+            observed['buttons']=[button.text() for button in dialog.buttons()]
+            observed['default']=dialog.defaultButton().text()
+            next(button for button in dialog.buttons() if button.text()=='Stop').click()
+        QTimer.singleShot(0,choose_stop)
+
+        self.window._prompt_increase_drilling_depth_or_stop()
+
+        self.assertEqual(observed['buttons'],['Increase Depth','Stop'])
+        self.assertEqual(observed['default'],'Stop')
+        self.assertIn('stopped',self.window.current_action.lower())
+
+    def test_target_reached_prompt_opens_depth_editor_when_increase_selected(self):
+        self.dialogs_patch.stop()
+        def choose_increase():
+            dialog=self.app.activeModalWidget()
+            next(button for button in dialog.buttons() if button.text()=='Increase Depth').click()
+        QTimer.singleShot(0,choose_increase)
+        with patch.object(self.window,'change_current_target_depth') as change_depth:
+            self.window._prompt_increase_drilling_depth_or_stop()
+        change_depth.assert_called_once_with()
+
     def test_depth_legend_scale_covers_target_deeper_than_skull(self):
         self.window.skull_thickness_mm.setValue(0.25)
         self.window.current_target_depth_mm=0.60
