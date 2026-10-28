@@ -72,12 +72,20 @@ class PlannerTests(unittest.TestCase):
 
     def test_anchor_requires_bregma_but_relative_coordinates_stays_available(self):
         self.window.bregma_axis=None
+        self.window.anchor_axis=None
+        self.window.anchor_bregma=None
         self.window.update_coordinate_mode_buttons()
         self.assertFalse(self.window.set_anchor_btn.isEnabled())
+        self.assertFalse(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
         self.window.bregma_axis=(1.0,2.0,3.0)
         self.window.update_coordinate_mode_buttons()
         self.assertTrue(self.window.set_anchor_btn.isEnabled())
+        self.assertFalse(self.window.at_anchor_btn.isEnabled())
+        self.window.anchor_axis=(4.0,5.0,6.0)
+        self.window.anchor_bregma=(3.0,3.0,3.0)
+        self.window.update_coordinate_mode_buttons()
+        self.assertTrue(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
 
     def test_startup_bregma_clear_prompt_persists_clearing_and_clears_anchor(self):

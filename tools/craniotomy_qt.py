@@ -1447,8 +1447,8 @@ class CraniotomyWindow(QMainWindow):
         self.set_anchor_btn.clicked.connect(self.set_anchor)
         self.set_relative_coordinates_btn = QPushButton("Set Relative Coordinates")
         self.set_relative_coordinates_btn.clicked.connect(self.set_relative_coordinates)
-        at_anchor_btn = QPushButton("At Anchor")
-        at_anchor_btn.clicked.connect(self.at_anchor)
+        self.at_anchor_btn = QPushButton("At Anchor")
+        self.at_anchor_btn.clicked.connect(self.at_anchor)
         self.axis_mode_btn = QPushButton("Axis")
         self.bregma_mode_btn = QPushButton("Bregma")
         self.axis_mode_btn.clicked.connect(lambda: self.set_coordinate_mode("axis"))
@@ -1506,7 +1506,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(self.move_speed_label)
         header_layout.addWidget(set_bregma_local_btn)
         header_layout.addWidget(self.set_anchor_btn)
-        header_layout.addWidget(at_anchor_btn)
+        header_layout.addWidget(self.at_anchor_btn)
         header_layout.addWidget(QLabel("Go to:"))
         header_layout.addWidget(bregma_btn)
         header_layout.addWidget(home_btn)
@@ -4861,6 +4861,12 @@ class CraniotomyWindow(QMainWindow):
         self.bregma_mode_btn.setStyleSheet(active if self.coordinate_mode == "bregma" else inactive)
         if hasattr(self, "set_anchor_btn"):
             self.set_anchor_btn.setEnabled(self.bregma_axis is not None)
+        if hasattr(self, "at_anchor_btn"):
+            self.at_anchor_btn.setEnabled(
+                self.bregma_axis is not None
+                and self.anchor_axis is not None
+                and self.anchor_bregma is not None
+            )
         if hasattr(self, "set_relative_coordinates_btn"):
             self.set_relative_coordinates_btn.setEnabled(True)
 
@@ -5091,6 +5097,7 @@ class CraniotomyWindow(QMainWindow):
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
             self.anchor_axis = self.controller.get_current_axis_position()
             self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
+            self.update_coordinate_mode_buttons()
             self._save_general_settings()
             self.redraw_views()
             self.set_status(
