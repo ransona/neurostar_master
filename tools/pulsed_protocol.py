@@ -1,7 +1,8 @@
 """Deterministic bench pulse plans; no device access or GUI at import.
 
 Rates are requested average ceilings, not instantaneous motor speed/flow.
-All events are serial, verified, cancellable, and never replayed to catch up.
+Events are serial, verified and cancellable. Selected drilling phases may
+coalesce overdue microsteps to the position due at the current elapsed time.
 """
 from dataclasses import dataclass, replace
 import math
@@ -292,9 +293,18 @@ def single_hole_drilling_plan(current_position, surface_position, current_depth_
 
 def execute(controller,events,*,stop_requested=lambda:False,pause_requested=lambda:False,
             retract_on_pause=False,on_event=lambda e:None,on_delivered=lambda value:None,
-            clock=time.monotonic,sleep=time.sleep):
-    base=clock();shift=0
-    for event in events:
+            clock=time.monotonic,sleep=time.sleep,catch_up_phases=()):
+    """Execute serial events, optionally coalescing overdue targets in phases.
+
+    Catch-up is opt-in so injection events retain their no-replay timing. For
+    a catch-up phase, stale intermediate targets are skipped and the latest
+    target whose deadline has passed is commanded. Schedule shift still
+    accounts for command latency at phase boundaries and for intentional
+    pauses, so later operations do not run ahead of their planned time.
+    """
+    base=clock();shift=0;events=list(events);index=0;catch_up_phases=set(catch_up_phases)
+    while index<len(events):
+        event=events[index]
         while True:
             if stop_requested():raise PulseCancelled('Pulsed workflow cancelled')
             if pause_requested():
@@ -307,8 +317,28 @@ def execute(controller,events,*,stop_requested=lambda:False,pause_requested=lamb
             remaining=base+event.due_s+shift-clock()
             if remaining<=0:break
             sleep(min(.03,remaining))
-        # Lost wall time is discarded rather than recovered by overdue pulses.
-        shift+=max(0,clock()-(base+event.due_s+shift))
+
+        # Drill-rate phases represent a desired position over elapsed time.
+        # If command overhead has made several microsteps overdue, issue only
+        # the latest due target instead of replaying stale targets one by one.
+        if (event.phase in catch_up_phases and event.target is not None
+                and event.point_index is not None):
+            latest=index;now=clock()
+            while latest+1<len(events):
+                following=events[latest+1]
+                if (following.phase!=event.phase or following.point_index!=event.point_index
+                        or following.target is None
+                        or base+following.due_s+shift>now):
+                    break
+                latest+=1
+            event=events[latest]
+            index=latest+1
+        else:
+            index+=1
+
+        lateness=max(0,clock()-(base+event.due_s+shift))
+        if event.phase not in catch_up_phases:
+            shift+=lateness
         if event.target is not None:
             controller.goto_axis_position(*event.target,stop_requested=stop_requested)
         if event.volume_nl:

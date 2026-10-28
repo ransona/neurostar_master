@@ -9709,7 +9709,8 @@ class CraniotomyWindow(QMainWindow):
                 self.status_signal.emit(status)
             completed_holes = [0]
             pulsed_protocol.execute(self.controller,plan,stop_requested=self.drill_stop_requested.is_set,
-                pause_requested=self.drill_pause_requested.is_set,retract_on_pause=True,on_event=on_event)
+                pause_requested=self.drill_pause_requested.is_set,retract_on_pause=True,on_event=on_event,
+                catch_up_phases={"borehole_drill"} if completion_phase == "borehole_complete" else ())
         except pulsed_protocol.PulsePaused:
             outcome="paused"
             try:

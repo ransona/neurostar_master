@@ -45,6 +45,18 @@ class PulseTests(unittest.TestCase):
         pulse.execute(Controller(),events,clock=lambda:now[0],sleep=lambda s:now.__setitem__(0,now[0]+s))
         self.assertEqual(starts,[1,3,5])
 
+    def test_burr_hole_scheduler_skips_stale_steps_to_catch_up_to_rate(self):
+        now=[0.0];targets=[]
+        class Controller:
+            def goto_axis_position(self,ap,ml,dv,**kwargs):
+                targets.append(dv)
+                now[0]+=.2 # Simulate slow command/settle overhead.
+        events=[pulse.Pulse(i*.1,'borehole_drill',target=(0,0,i*.005),point_index=0)
+                for i in range(1,7)]
+        pulse.execute(Controller(),events,catch_up_phases={'borehole_drill'},
+            clock=lambda:now[0],sleep=lambda s:now.__setitem__(0,now[0]+s))
+        self.assertEqual(targets,[.005,.015,.025,.03])
+
     def test_pause_waits_at_idle_and_shifts_timeline(self):
         now=[0];starts=[]
         class Controller:
