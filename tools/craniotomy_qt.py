@@ -1202,6 +1202,7 @@ class CraniotomyWindow(QMainWindow):
             except Exception as exc:
                 self.set_status(f"Could not start the in-memory simulator: {exc}")
         self._offer_project_session_restore()
+        self._offer_clear_saved_bregma()
         self.restore_saved_window_geometry()
         QApplication.instance().installEventFilter(self)
         self.refresh_live_position()
@@ -1430,8 +1431,8 @@ class CraniotomyWindow(QMainWindow):
         clear_project_btn.clicked.connect(self.clear_project)
         set_bregma_local_btn = QPushButton("Set Bregma")
         set_bregma_local_btn.clicked.connect(self.set_local_bregma)
-        set_anchor_btn = QPushButton("Set Anchor")
-        set_anchor_btn.clicked.connect(self.set_anchor)
+        self.set_anchor_btn = QPushButton("Set Anchor")
+        self.set_anchor_btn.clicked.connect(self.set_anchor)
         self.set_relative_coordinates_btn = QPushButton("Set Relative Coordinates")
         self.set_relative_coordinates_btn.clicked.connect(self.set_relative_coordinates)
         at_anchor_btn = QPushButton("At Anchor")
@@ -1492,7 +1493,7 @@ class CraniotomyWindow(QMainWindow):
             position_layout.addWidget(readout)
         position_layout.addWidget(self.move_speed_label)
         header_layout.addWidget(set_bregma_local_btn)
-        header_layout.addWidget(set_anchor_btn)
+        header_layout.addWidget(self.set_anchor_btn)
         header_layout.addWidget(at_anchor_btn)
         header_layout.addWidget(QLabel("Go to:"))
         header_layout.addWidget(bregma_btn)
@@ -3165,6 +3166,38 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Restore Previous Project", f"Could not restore the saved project. {exc}")
 
+    def _offer_clear_saved_bregma(self) -> None:
+        """Let the user discard a Bregma calibration loaded for this session."""
+        if self.bregma_axis is None:
+            self.coordinate_mode = "axis"
+            self.top_view.set_coordinate_mode_bregma(False)
+            self.injection_sites_view.set_coordinate_mode_bregma(False)
+            self.update_coordinate_mode_buttons()
+            return
+        response = QMessageBox.question(
+            self,
+            "Clear Saved Bregma?",
+            "A GUI Bregma calibration is currently available. Do you want to clear it?\n\n"
+            "Clearing Bregma also clears its anchor; set a new Bregma before using Bregma coordinates.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if response != QMessageBox.Yes:
+            self.update_coordinate_mode_buttons()
+            return
+        self.bregma_axis = None
+        self.anchor_axis = None
+        self.anchor_bregma = None
+        self.coordinate_mode = "axis"
+        self.update_coordinate_mode_buttons()
+        self.top_view.set_coordinate_mode_bregma(False)
+        self.injection_sites_view.set_coordinate_mode_bregma(False)
+        self._save_general_settings()
+        self._autosave_project_session()
+        self.refresh_live_position()
+        self.redraw_views()
+        self.set_status("Saved Bregma cleared; set a new reference before using Bregma coordinates.")
+
     def _restore_project_session(self, payload: dict[str, object]) -> None:
         config = payload.get("craniotomy_config")
         if isinstance(config, dict):
@@ -4799,6 +4832,10 @@ class CraniotomyWindow(QMainWindow):
         inactive = ""
         self.axis_mode_btn.setStyleSheet(active if self.coordinate_mode == "axis" else inactive)
         self.bregma_mode_btn.setStyleSheet(active if self.coordinate_mode == "bregma" else inactive)
+        if hasattr(self, "set_anchor_btn"):
+            self.set_anchor_btn.setEnabled(self.bregma_axis is not None)
+        if hasattr(self, "set_relative_coordinates_btn"):
+            self.set_relative_coordinates_btn.setEnabled(True)
 
     def set_coordinate_mode(self, mode: str) -> None:
         if not self._require_idle("Coordinate Mode"):

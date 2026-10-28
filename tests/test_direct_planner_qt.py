@@ -70,6 +70,34 @@ class PlannerTests(unittest.TestCase):
         self.window._load_general_settings()
         self.assertEqual(self.window.named_locations['Cortex'],planner.StoredLocation(1.25,-2.5,0.75))
 
+    def test_anchor_requires_bregma_but_relative_coordinates_stays_available(self):
+        self.window.bregma_axis=None
+        self.window.update_coordinate_mode_buttons()
+        self.assertFalse(self.window.set_anchor_btn.isEnabled())
+        self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
+        self.window.bregma_axis=(1.0,2.0,3.0)
+        self.window.update_coordinate_mode_buttons()
+        self.assertTrue(self.window.set_anchor_btn.isEnabled())
+        self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
+
+    def test_startup_bregma_clear_prompt_persists_clearing_and_clears_anchor(self):
+        self.window.bregma_axis=(1.0,2.0,3.0)
+        self.window.anchor_axis=(4.0,5.0,6.0)
+        self.window.anchor_bregma=(3.0,3.0,3.0)
+        self.dialogs.question.return_value=self.dialogs.Yes
+        self.window._offer_clear_saved_bregma()
+        self.dialogs.question.assert_called_once()
+        self.assertEqual(self.dialogs.question.call_args.args[-1],self.dialogs.No)
+        self.assertIsNone(self.window.bregma_axis)
+        self.assertIsNone(self.window.anchor_axis)
+        self.assertIsNone(self.window.anchor_bregma)
+        self.assertEqual(self.window.coordinate_mode,'axis')
+        self.assertFalse(self.window.set_anchor_btn.isEnabled())
+        self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
+        saved=self.window._read_config_file(self.window._general_settings_path())
+        self.assertIsNone(saved['bregma_axis'])
+        self.assertIsNone(saved['anchor_axis'])
+
     def test_craniotomy_and_injection_tabs_use_side_by_side_columns(self):
         self.assertEqual(self.window.delay_at_depth.value(),3.0)
         session_config=self.window._project_session_dict()['craniotomy_config']
