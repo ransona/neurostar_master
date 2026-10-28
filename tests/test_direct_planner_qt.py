@@ -270,9 +270,12 @@ class PlannerTests(unittest.TestCase):
             dialog=self.app.activeModalWidget()
             next(button for button in dialog.buttons() if button.text()=='Increase Depth').click()
         QTimer.singleShot(0,choose_increase)
-        with patch.object(self.window,'change_current_target_depth') as change_depth:
+        with patch.object(self.window,'change_current_target_depth',side_effect=lambda: setattr(self.window,'current_target_depth_mm',0.30)) as change_depth, \
+             patch.object(planner.QTimer,'singleShot') as schedule:
             self.window._prompt_increase_drilling_depth_or_stop()
         change_depth.assert_called_once_with()
+        self.assertFalse(self.window.drilling_paused)
+        schedule.assert_called_once_with(150,self.window.start_drilling_round)
 
     def test_depth_legend_scale_covers_target_deeper_than_skull(self):
         self.window.skull_thickness_mm.setValue(0.25)

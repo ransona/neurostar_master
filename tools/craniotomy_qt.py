@@ -9755,7 +9755,14 @@ class CraniotomyWindow(QMainWindow):
         prompt.setEscapeButton(stop_button)
         prompt.exec()
         if prompt.clickedButton() is increase_button:
+            previous_target = self.current_target_depth_mm
             self.change_current_target_depth()
+            if self.current_target_depth_mm > previous_target + 0.0005:
+                self.drilling_paused = False
+                self.set_status(
+                    f"Continuing drilling to {self.current_target_depth_mm:.3f} mm."
+                )
+                QTimer.singleShot(150, self.start_drilling_round)
         else:
             self.set_status("Craniotomy stopped at the current target depth.")
 
