@@ -88,6 +88,28 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
 
+    def test_setting_relative_coordinates_preserves_and_recalculates_anchor(self):
+        self.connect()
+        current_axis=tuple(self.window.controller.get_current_axis_position())
+        saved_anchor=tuple(value+0.1 for value in current_axis)
+        self.window.bregma_axis=tuple(value-1.0 for value in current_axis)
+        self.window.anchor_axis=saved_anchor
+        self.window.anchor_bregma=(1.1,1.1,1.1)
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
+        def accept_coordinates():
+            dialog=QApplication.activeModalWidget()
+            self.assertEqual(dialog.windowTitle(),"Set Relative Coordinates")
+            dialog.accept()
+        QTimer.singleShot(50,accept_coordinates)
+
+        self.window.set_relative_coordinates()
+
+        self.assertEqual(self.window.anchor_axis,saved_anchor)
+        self.assertEqual(self.window.anchor_bregma,tuple(saved_anchor[i]-current_axis[i] for i in range(3)))
+        saved=self.window._read_config_file(self.window._general_settings_path())
+        self.assertEqual(tuple(saved["anchor_axis"]),saved_anchor)
+        self.assertEqual(tuple(saved["anchor_bregma"]),self.window.anchor_bregma)
+
     def test_craniotomy_coordinate_actions_can_reset_map_to_mid_range(self):
         self.window.zoom_mode_combo.setCurrentIndex(0)
         self.window.top_view.navigation_zoom=4.0
