@@ -1058,6 +1058,39 @@ class PlannerTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
         self.assertTrue(self.window.drilling_paused)
 
+    def test_changing_drill_rate_while_paused_preserves_progress_and_resume_uses_new_rate(self):
+        self.window.bregma_axis=(30.0,30.0,30.0)
+        self.window.craniotomy_coordinate_system='bregma'
+        self.window.seeds=[
+            planner.SeedPoint(0,0,0.01,0,0),
+            planner.SeedPoint(1,180,-0.01,0,0),
+        ]
+        self.window.trajectory=[(0,0,0),(.01,0,0),(0,.01,0),(0,0,0)]
+        self.window.frozen_points=[False]*4
+        pattern=self.window._ensure_borehole_state(reset=True)
+        self.window.borehole_depths[0]=0.01
+        self.window.drilling_paused=True
+        self.window.start_round_btn.setText('Continue')
+        self.window.current_target_depth_mm=0.05
+        self.window.drill_progress_reset_requires_ack=False
+
+        new_rate=0.25
+        self.window.drill_rate_mm_per_s.setValue(new_rate)
+        self.assertTrue(self.window.drilling_paused)
+        self.assertEqual(self.window.start_round_btn.text(),'Continue')
+        self.assertAlmostEqual(self.window.borehole_depths[0],0.01)
+        self.assertFalse(self.window.drilling_progress_reset_requires_ack)
+
+        self.window.controller.supports_drilling_protocol=True
+        with patch.object(self.window,'_ensure_drill_on_for_drilling',return_value=True), \
+             patch.object(self.window.controller,'reported_drill_state',return_value=True), \
+             patch.object(self.window,'_preflight_pulsed_drilling',return_value=[]), \
+             patch.object(planner.threading,'Thread') as thread:
+            self.window.start_drilling_round()
+        self.assertAlmostEqual(self.window.pulsed_drill_rate,new_rate)
+        thread.return_value.start.assert_called_once_with()
+        self.assertEqual(len(pattern),len(self.window.borehole_depths))
+
     def test_pulsed_drilling_start_completes_closed_perimeter(self):
         self.connect(allow_pulsed=True,allow_drill=True)
         self.window.set_local_bregma();self.window.controller.drive.drill_on()

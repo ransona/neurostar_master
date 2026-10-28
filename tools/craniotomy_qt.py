@@ -1550,7 +1550,9 @@ class CraniotomyWindow(QMainWindow):
             "Command and settling overhead can make actual elapsed time longer."
         )
         self.drill_rate_mm_per_s = self._double_spinbox(value=0.01, minimum=0.001, maximum=5.0)
-        self.drill_rate_mm_per_s.setToolTip("Configured depth advance rate used by the pulsed drilling workflow.")
+        self.drill_rate_mm_per_s.setToolTip(
+            "Depth advance rate for the next drilling round. A changed rate is used when a paused round resumes."
+        )
         self.delay_at_depth = self._double_spinbox(value=3.0, minimum=0.0, maximum=3600.0)
         self.delay_at_depth.setToolTip("Seconds to wait after the drill reaches its target depth, before retracting or continuing.")
         self.drilling_mode_combo = QComboBox()
@@ -1570,7 +1572,6 @@ class CraniotomyWindow(QMainWindow):
         for control in (
             self.mid_ap, self.mid_ml, self.diameter, self.trajectory_points,
             self.cut_offset, self.depth_per_round, self.skull_thickness_mm,
-            self.drill_rate_mm_per_s,
         ):
             control.valueChanged.connect(self._on_drilling_geometry_changed)
         self.auto_start_rounds = QCheckBox("Auto start next round")
@@ -9308,6 +9309,7 @@ class CraniotomyWindow(QMainWindow):
             target_depth_mm=depth,
             mode=str(self.drilling_mode_combo.currentData()),
             settings=vars(self._craniotomy_config()),
+            drill_rate_mm_per_s=self.pulsed_drill_rate,
             surface_targets_axis=surface_targets,
             current_depths_mm=current_depths,
             target_depths_mm=target_depths,
