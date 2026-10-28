@@ -2602,6 +2602,21 @@ class CraniotomyWindow(QMainWindow):
             except ValueError:
                 QMessageBox.warning(dialog, "Calibration required", "Enter a valid number in every physical scale field.")
                 return
+            if plunger_position < 500:
+                QMessageBox.warning(
+                    dialog,
+                    "Invalid piston position",
+                    "Enter the piston position in nL. A value below 500 nL is invalid. "
+                    "Move the piston to the middle of its range, 3500 nL (3.5 on the scale), "
+                    "then enter 3500.",
+                )
+                return
+            QMessageBox.warning(
+                dialog,
+                "Piston calibration units",
+                "Confirm that the piston position is entered in nL. For example, 3.5 on the "
+                "syringe scale must be entered as 3500 nL.",
+            )
             jog_context["busy"] = True; action_done.clear(); action_result.clear()
             message.setText("Reading stable idle counters and saving calibration…")
             for field in inputs.values(): field.setEnabled(False)

@@ -1184,10 +1184,11 @@ class PlannerTests(unittest.TestCase):
             def stop(self):pass
             def close(self):pass
 
-        stage={"axis":0,"moves":0,"saved":False,"timeout":False,"initialized":False}
+        stage={"axis":0,"moves":0,"saved":False,"timeout":False,"initialized":False,
+               "invalid_checked":False,"corrected":False}
         timer=QTimer();deadline=time.monotonic()+12
         axes=("AP","ML","DV","PISTON")
-        values=dict(AP="42.75",ML="39.47",DV="32.01",PISTON="2983.25")
+        values=dict(AP="42.75",ML="39.47",DV="32.01",PISTON="3.5")
         live_root=self.root/"AppData"/"Roaming"/"Neurostar_Master"/"DirectUSB"/"live"
         def automate():
             visible_dialogs=[d for d in QApplication.topLevelWidgets() if isinstance(d,QDialog) and d.isVisible()]
@@ -1217,6 +1218,12 @@ class PlannerTests(unittest.TestCase):
                     stage["axis"]+=1;stage["moves"]=0;return
             save=dialog.findChild(QPushButton,"saveCalibrationButton")
             if save is not None and save.isEnabled():
+                if not stage["invalid_checked"]:
+                    save.click();stage["invalid_checked"]=True;return
+                if not stage["corrected"]:
+                    field=dialog.findChild(planner.QLineEdit,"calibratePositionPISTON")
+                    field.setText("2983.25");field.textEdited.emit("2983.25")
+                    stage["corrected"]=True;return
                 save.click();stage["saved"]=True
         self.dialogs.question.return_value=planner.QMessageBox.Yes
         reconnect_calls=[]
@@ -1236,7 +1243,12 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(stage["timeout"],stage)
         self.assertTrue(stage["saved"])
         self.assertTrue(stage["initialized"])
+        self.assertTrue(stage["invalid_checked"])
+        self.assertTrue(stage["corrected"])
         self.assertTrue(self.window.controller.live)
+        warning_messages=[call.args[2] for call in self.dialogs.warning.call_args_list if len(call.args)>=3]
+        self.assertTrue(any("entered in nL" in text for text in warning_messages))
+        self.assertTrue(any("below 500 nL is invalid" in text and "3500 nL" in text for text in warning_messages))
         self.assertEqual(reconnect_calls[0][1],None)
         self.assertEqual(reconnect_calls[0][2],live_root/"api-state.json")
         self.assertEqual(fake_drivers[0].moves[:4],[("AP",.1),("ML",.1),("DV",.1),("PISTON",50.)])
