@@ -202,6 +202,45 @@ class PlannerTests(unittest.TestCase):
         self.assertAlmostEqual(self.window.drill_depth.value(),0.20)
         self.assertAlmostEqual(self.window.current_target_depth_mm,0.10)
 
+    def test_completed_drilling_stays_continue_and_deeper_target_preserves_hole_depths(self):
+        self.window.drilling_mode_combo.setCurrentIndex(self.window.drilling_mode_combo.findData('continuous'))
+        self.window.drill_depth.setValue(0.20)
+        self.window.current_target_depth_mm=0.20
+        self.window.trajectory=[(0.0,0.0,0.0),(0.01,0.0,0.0),(0.0,0.01,0.0),(0.0,0.0,0.0)]
+        self.window.drilled_depths=[0.20]*4
+        self.window.frozen_points=[False]*4
+        self.window.drilling_paused=True
+        self.window.start_round_btn.setText('Continue')
+        self.assertTrue(self.window._all_active_drilling_points_reached_target())
+        self.dialogs.question.return_value=self.dialogs.Yes
+        def enter_target():
+            dialog=self.app.activeModalWidget()
+            edit=dialog.findChild(planner.QLineEdit)
+            edit.setText('0.35')
+            dialog.accept()
+        QTimer.singleShot(0,enter_target)
+
+        self.window.change_current_target_depth()
+
+        self.assertAlmostEqual(self.window.drill_depth.value(),0.35)
+        self.assertAlmostEqual(self.window.current_target_depth_mm,0.35)
+        self.assertEqual(self.window.drilled_depths,[0.20]*4)
+        self.assertFalse(self.window.drilling_progress_reset_requires_ack)
+        self.assertEqual(self.window.start_round_btn.text(),'Continue')
+
+        self.window.bregma_axis=(30.0,30.0,30.0)
+        self.window.craniotomy_coordinate_system='bregma'
+        self.window.seeds=[planner.SeedPoint(0,0,0.01,0.0,0.0),planner.SeedPoint(1,180,-0.01,0.0,0.0)]
+        self.window.controller.supports_drilling_protocol=True
+        with patch.object(self.window,'_ensure_drill_on_for_drilling',return_value=True), \
+             patch.object(self.window.controller,'prepare_motion'), \
+             patch.object(self.window.controller,'reported_drill_state',return_value=True), \
+             patch.object(planner.threading,'Thread') as thread:
+            self.window.start_drilling_round()
+        args=thread.call_args.kwargs['args']
+        self.assertEqual(args[1],[0.20]*4)
+        self.assertEqual(args[2],[0.35]*4)
+
     def test_depth_legend_scale_covers_target_deeper_than_skull(self):
         self.window.skull_thickness_mm.setValue(0.25)
         self.window.current_target_depth_mm=0.60
@@ -1437,6 +1476,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_pulsed_drilling_start_completes_closed_perimeter(self):
         self.connect(allow_pulsed=True,allow_drill=True)
+        self.dialogs.warning.return_value=planner.QMessageBox.Yes
         self.window.set_local_bregma();self.window.controller.drive.drill_on()
         self.window.validation_clearance_mm=.02
         self.window.trajectory=[(0,0,0),(.01,0,0),(0,.01,0),(0,0,0)]
@@ -1457,7 +1497,9 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(self.window.drill_thread.is_alive());self.app.processEvents()
         self.assertEqual(outcomes,['completed'])
         self.assertIsNone(self.window.controller.error)
-        self.assertEqual(self.window.drilled_depths,[.005]*4)
+        self.assertTrue(self.window.borehole_depths)
+        self.assertTrue(all(abs(depth-.005)<1e-9 for depth in self.window.borehole_depths))
+        self.assertEqual(self.window.start_round_btn.text(),'Continue')
         self.assertAlmostEqual(self.window.controller.get_current_axis('DV'),-.02,delta=1/5225)
         self.assertFalse(self.window.controller.reported_drill_state())
 

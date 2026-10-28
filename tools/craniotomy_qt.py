@@ -1132,6 +1132,7 @@ class CraniotomyWindow(QMainWindow):
         self._single_hole_target_update_pending = False
         self.drill_completed_points = 0
         self.drilling_progress_reset_requires_ack = False
+        self._preserve_drilling_progress_on_max_depth_change = False
         self.restart_drill_round_after_pause = False
         self.pending_max_depth_adjustment: float | None = None
         self.drill_round_started_at: float | None = None
@@ -8196,7 +8197,7 @@ class CraniotomyWindow(QMainWindow):
                 self,
                 "Increase Maximum Depth?",
                 f"The target depth ({value:.3f} mm) is greater than Max Depth ({max_depth:.3f} mm). "
-                f"Would you like to set Max Depth to {value:.3f} mm? Changing Max Depth resets drilling progress.",
+                f"Would you like to set Max Depth to {value:.3f} mm? Progress is retained only if all active holes have reached the current target depth.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -8205,10 +8206,13 @@ class CraniotomyWindow(QMainWindow):
 
         running = self.drill_thread is not None and self.drill_thread.is_alive()
         was_paused = self.drilling_paused
+        completed_at_current_target = (
+            not running and self._all_active_drilling_points_reached_target()
+        )
         target_changed = value != self.current_target_depth_mm
         if not target_changed and not adjust_max_depth:
             return
-        if target_changed and (running or was_paused):
+        if target_changed and (running or was_paused) and not completed_at_current_target:
             answer = QMessageBox.warning(
                 self,
                 "Target Changed",
@@ -8227,14 +8231,28 @@ class CraniotomyWindow(QMainWindow):
             return
 
         if adjust_max_depth:
-            self.drill_depth.setValue(value)
+            preserve_completed_progress = (
+                not running and completed_at_current_target
+            )
+            self._preserve_drilling_progress_on_max_depth_change = preserve_completed_progress
+            try:
+                self.drill_depth.setValue(value)
+            finally:
+                self._preserve_drilling_progress_on_max_depth_change = False
         self.current_target_depth_mm = value
         self.update_current_target_depth_label()
         self.redraw_views()
+        if adjust_max_depth and preserve_completed_progress:
+            self.drilling_paused = True
+            self.start_round_btn.setText("Continue")
         if running:
             self.restart_drill_round_after_pause = True
             self.pause_drilling_round()
             self.set_status(f"Target updated to {value:.3f} mm. Pausing before round restart.")
+        elif was_paused and completed_at_current_target:
+            self.drilling_paused = True
+            self.start_round_btn.setText("Continue")
+            self.set_status(f"Target updated to {value:.3f} mm. Continue when ready.")
         elif was_paused:
             self.drilling_paused = False
             self.start_round_btn.setText("Start")
@@ -8657,10 +8675,33 @@ class CraniotomyWindow(QMainWindow):
             self.drilling_progress_reset_requires_ack = True
             self.set_status("Plan changed; restart required.")
 
+    def _all_active_drilling_points_reached_target(self) -> bool:
+        """Return whether every non-frozen hole has verified the current target depth."""
+        target = max(0.0, float(self.current_target_depth_mm))
+        if target <= 0.0:
+            return False
+        if self.drilling_mode_combo.currentData() == "boreholes":
+            pattern = self._ensure_borehole_state()
+            depths = self.borehole_depths
+            frozen = [hole[3] for hole in pattern]
+        else:
+            depths = self.drilled_depths
+            frozen = self.frozen_points
+        active_depths = [
+            depth for depth, is_frozen in zip(depths, frozen, strict=False)
+            if not is_frozen
+        ]
+        return (
+            bool(depths)
+            and any(depth > 0.0 for depth in depths)
+            and all(depth + 0.0005 >= target for depth in active_depths)
+        )
+
     def _on_max_drill_depth_changed(self, value: float) -> None:
         maximum = max(0.0, float(value))
         self._last_configured_max_depth_mm = maximum
-        self._invalidate_drilling_progress()
+        if not self._preserve_drilling_progress_on_max_depth_change:
+            self._invalidate_drilling_progress()
         if hasattr(self, "top_view"):
             self.redraw_views()
 
@@ -9657,8 +9698,8 @@ class CraniotomyWindow(QMainWindow):
         completed_depth = self.current_target_depth_mm
         if completed_depth >= max_depth - 0.0005:
             self.current_target_depth_mm = max_depth
-            self.drilling_paused = False
-            self.start_round_btn.setText("Start")
+            self.drilling_paused = True
+            self.start_round_btn.setText("Continue")
             self.update_current_target_depth_label()
             try:
                 self.controller.turn_drill_off()
