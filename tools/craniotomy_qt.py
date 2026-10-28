@@ -5335,7 +5335,7 @@ class CraniotomyWindow(QMainWindow):
     def open_goto_dialog(self) -> None:
         parent_modal = QApplication.activeModalWidget()
         from_anchor_setup = parent_modal is not None and parent_modal.property("anchor_setup_dialog")
-        if not self._require_idle("Go to Position", allow_validation_dialog=from_anchor_setup):
+        if not from_anchor_setup and not self._require_idle("Go to Position"):
             return
         try:
             axis_position = self.controller.get_current_axis_position()
@@ -5479,6 +5479,9 @@ class CraniotomyWindow(QMainWindow):
         finally:
             self.validation_modal_active = previous_validation_modal_active
         if dialog_result != QDialog.Accepted:
+            return
+
+        if not self._require_idle("Go to Position", allow_validation_dialog=from_anchor_setup):
             return
 
         ap = ap_box.value()

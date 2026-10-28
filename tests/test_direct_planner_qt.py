@@ -665,8 +665,9 @@ class PlannerTests(unittest.TestCase):
             stage["goto_opened"]=True
             QTimer.singleShot(100,close_goto)
             QTimer.singleShot(200,close_anchor)
-            next(button for button in dialog.findChildren(QPushButton)
-                 if button.text()=="Go to Saved Location").click()
+            with patch.object(self.window,"_motion_is_active",return_value=True):
+                next(button for button in dialog.findChildren(QPushButton)
+                     if button.text()=="Go to Saved Location").click()
         QTimer.singleShot(50,click_saved_location)
         self.window.open_anchor_setup_dialog()
         self.assertTrue(stage["goto_opened"])
