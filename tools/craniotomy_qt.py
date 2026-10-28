@@ -5088,7 +5088,7 @@ class CraniotomyWindow(QMainWindow):
             "Replace Bregma Calibration?",
             "This will replace the current GUI Bregma calibration, if one is set. Existing Bregma-based craniotomy "
             "and injection targets will then resolve to different mechanical positions, and any saved "
-            "anchor will be kept and recalculated relative to the new Bregma. Continue?",
+            "anchor will keep its Bregma-relative coordinates. Continue?",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -5130,7 +5130,7 @@ class CraniotomyWindow(QMainWindow):
             "Set the current physical position to Bregma "
             f"AP {requested[0]:.3f}, ML {requested[1]:.3f}, DV {requested[2]:.3f} mm? "
             "This replaces the previous calibration and changes where saved Bregma-based targets "
-            "resolve physically. Any saved anchor will be kept and recalculated relative to this Bregma.",
+            "resolve physically. Any saved anchor will keep its Bregma-relative coordinates.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -5139,9 +5139,15 @@ class CraniotomyWindow(QMainWindow):
 
         try:
             current_axis = tuple(self.controller.get_current_axis_position())
+            preserved_anchor_bregma = self.anchor_bregma
+            if preserved_anchor_bregma is None and self.anchor_axis is not None and self.bregma_axis is not None:
+                preserved_anchor_bregma = self._axis_to_bregma(self.anchor_axis)
             self.bregma_axis = tuple(current_axis[index] - requested[index] for index in range(3))
-            if self.anchor_axis is not None:
-                self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
+            if preserved_anchor_bregma is not None:
+                self.anchor_bregma = tuple(preserved_anchor_bregma)
+                self.anchor_axis = tuple(
+                    self.bregma_axis[index] + self.anchor_bregma[index] for index in range(3)
+                )
             self.coordinate_mode = "bregma"
             self.update_coordinate_mode_buttons()
             self.top_view.set_coordinate_mode_bregma(True)

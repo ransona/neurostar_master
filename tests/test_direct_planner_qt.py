@@ -88,7 +88,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
 
-    def test_setting_relative_coordinates_preserves_and_recalculates_anchor(self):
+    def test_setting_relative_coordinates_preserves_anchor_bregma_position(self):
         self.connect()
         current_axis=tuple(self.window.controller.get_current_axis_position())
         saved_anchor=tuple(value+0.1 for value in current_axis)
@@ -104,10 +104,14 @@ class PlannerTests(unittest.TestCase):
 
         self.window.set_relative_coordinates()
 
-        self.assertEqual(self.window.anchor_axis,saved_anchor)
-        self.assertEqual(self.window.anchor_bregma,tuple(saved_anchor[i]-current_axis[i] for i in range(3)))
+        self.assertEqual(self.window.anchor_bregma,(1.1,1.1,1.1))
+        self.assertEqual(
+            self.window.anchor_axis,
+            tuple(self.window.bregma_axis[i]+self.window.anchor_bregma[i] for i in range(3)),
+        )
+        self.assertNotEqual(self.window.anchor_axis,saved_anchor)
         saved=self.window._read_config_file(self.window._general_settings_path())
-        self.assertEqual(tuple(saved["anchor_axis"]),saved_anchor)
+        self.assertEqual(tuple(saved["anchor_axis"]),self.window.anchor_axis)
         self.assertEqual(tuple(saved["anchor_bregma"]),self.window.anchor_bregma)
 
     def test_craniotomy_coordinate_actions_can_reset_map_to_mid_range(self):
