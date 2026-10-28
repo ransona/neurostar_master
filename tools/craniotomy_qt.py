@@ -8736,14 +8736,22 @@ class CraniotomyWindow(QMainWindow):
         prompt = QMessageBox(self)
         prompt.setWindowTitle("Seed Surfaces Complete")
         prompt.setText(
-            "All seed surfaces have been set. Start drilling now? "
-            "The drill will be checked, and you will be asked before it is turned on."
+            "All seed surfaces are set. Would you like to start drilling or close this workflow?"
         )
-        yes_button = prompt.addButton("Yes", QMessageBox.AcceptRole)
-        prompt.addButton("No", QMessageBox.RejectRole)
-        prompt.setDefaultButton(yes_button)
+        start_button = prompt.addButton("Start Drilling", QMessageBox.AcceptRole)
+        close_button = prompt.addButton("Close Workflow", QMessageBox.RejectRole)
+        prompt.setDefaultButton(close_button)
         prompt.exec()
-        return prompt.clickedButton() is yes_button
+        return prompt.clickedButton() is start_button
+
+    def _finish_craniotomy_surface_workflow(self) -> None:
+        self.set_status("Seed-surface workflow complete.")
+        if not self.seeds or not all(seed.dv is not None for seed in self.seeds):
+            return
+        if not self._move_above_craniotomy_center():
+            return
+        if self._confirm_start_drilling_after_surfaces():
+            self.start_drilling_round()
 
     def _move_above_craniotomy_center(self) -> bool:
         """Return to the centre at the configured safe clearance before drilling."""
@@ -8792,6 +8800,9 @@ class CraniotomyWindow(QMainWindow):
             return
         try:
             self._require_project_coordinates("craniotomy")
+            if all(seed.dv is not None for seed in self.seeds):
+                self._finish_craniotomy_surface_workflow()
+                return
             seed_index = index
             while seed_index < len(self.seeds):
                 seed = self.seeds[seed_index]
@@ -8830,12 +8841,7 @@ class CraniotomyWindow(QMainWindow):
                     self.set_status(f"Skipped seed {seed_index + 1} without changing its surface.")
                     seed_index += 1
                 self.refresh_craniotomy_points_list()
-            self.set_status("Seed-surface workflow complete.")
-            if self.seeds and all(seed.dv is not None for seed in self.seeds):
-                if not self._move_above_craniotomy_center():
-                    return
-                if self._confirm_start_drilling_after_surfaces():
-                    self.start_drilling_round()
+            self._finish_craniotomy_surface_workflow()
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy Surface", str(exc))
 

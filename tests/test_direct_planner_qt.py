@@ -276,6 +276,22 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.selected_craniotomy_point_index,1)
         set_surfaces.assert_called_once_with()
 
+    def test_completed_seed_surface_workflow_skips_seed_adjustment_and_offers_drilling(self):
+        self.window.bregma_axis=(0.0,0.0,0.0)
+        self.window.seeds=[
+            planner.SeedPoint(0,0.0,0.0,0.0,dv=0.1),
+            planner.SeedPoint(1,180.0,1.0,0.0,dv=0.2),
+        ]
+        self.window.selected_craniotomy_point_index=1
+        with patch.object(self.window,'_require_idle',return_value=True):
+            with patch.object(self.window,'_require_project_coordinates'):
+                with patch.object(self.window,'_finish_craniotomy_surface_workflow') as finish:
+                    with patch.object(self.window,'_craniotomy_surface_dialog') as surface_dialog:
+                        self.window.set_selected_craniotomy_surface()
+
+        finish.assert_called_once_with()
+        surface_dialog.assert_not_called()
+
     def test_single_hole_waits_after_drill_plan_reaches_depth(self):
         self.window.controller.turn_drill_off=Mock()
         self.window._retract_single_hole_to_clearance=Mock()
