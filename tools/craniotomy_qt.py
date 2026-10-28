@@ -2799,7 +2799,7 @@ class CraniotomyWindow(QMainWindow):
         dialog.finished.connect(lambda _result: (timer.stop(), cleanup()))
         dialog.exec()
 
-    def _motion_is_active(self) -> bool:
+    def _motion_is_active(self, *, include_validation_modal: bool = True) -> bool:
         return bool(
             (self.drill_thread is not None and self.drill_thread.is_alive())
             or (self.single_hole_thread is not None and self.single_hole_thread.is_alive())
@@ -2808,7 +2808,7 @@ class CraniotomyWindow(QMainWindow):
             or self._manual_syringe_queue_active
             or (self.benchmark_thread is not None and self.benchmark_thread.is_alive())
             or self.validation_move_active
-            or self.validation_modal_active
+            or (include_validation_modal and self.validation_modal_active)
             or self.controller.has_active_motion()
         )
 
@@ -2837,11 +2837,11 @@ class CraniotomyWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Direct control settings", str(exc))
 
-    def _require_idle(self, title: str = "Movement") -> bool:
+    def _require_idle(self, title: str = "Movement", *, allow_validation_dialog: bool = False) -> bool:
         if getattr(self,"restart_required",False):
             QMessageBox.information(self,title,"Restart the app after updating before reconnecting or starting another operation.")
             return False
-        if self._motion_is_active():
+        if self._motion_is_active(include_validation_modal=not allow_validation_dialog):
             QMessageBox.information(self, title, "Finish or stop the current operation first.")
             return False
         return True
@@ -5049,6 +5049,7 @@ class CraniotomyWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Set Anchor")
         dialog.setProperty("allow_motor_shortcuts", True)
+        dialog.setProperty("anchor_setup_dialog", True)
         layout = QVBoxLayout(dialog)
         instructions = QLabel(
             "Use the keyboard movement shortcuts to position the tool, or go to a saved location."
@@ -5332,7 +5333,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def open_goto_dialog(self) -> None:
-        if not self._require_idle("Go to Position"):
+        parent_modal = QApplication.activeModalWidget()
+        from_anchor_setup = parent_modal is not None and parent_modal.property("anchor_setup_dialog")
+        if not self._require_idle("Go to Position", allow_validation_dialog=from_anchor_setup):
             return
         try:
             axis_position = self.controller.get_current_axis_position()

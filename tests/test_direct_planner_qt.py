@@ -641,6 +641,38 @@ class PlannerTests(unittest.TestCase):
         nudge.assert_called_once()
         self.assertIsNotNone(self.window.anchor_axis)
 
+    def test_anchor_saved_location_button_opens_goto_dialog(self):
+        self.connect()
+        self.window.bregma_axis=(0.0,0.0,0.0)
+        stage={"goto_opened":False,"goto_closed":False,"anchor_closed":False}
+        def visible_dialog(title):
+            return next((widget for widget in QApplication.topLevelWidgets()
+                         if isinstance(widget,QDialog) and widget.isVisible()
+                         and widget.windowTitle()==title),None)
+        def close_goto():
+            dialog=visible_dialog("Go to Position")
+            if dialog is not None:
+                stage["goto_closed"]=True
+                dialog.reject()
+        def close_anchor():
+            dialog=visible_dialog("Set Anchor")
+            if dialog is not None:
+                stage["anchor_closed"]=True
+                dialog.reject()
+        def click_saved_location():
+            dialog=visible_dialog("Set Anchor")
+            self.assertIsNotNone(dialog)
+            stage["goto_opened"]=True
+            QTimer.singleShot(100,close_goto)
+            QTimer.singleShot(200,close_anchor)
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text()=="Go to Saved Location").click()
+        QTimer.singleShot(50,click_saved_location)
+        self.window.open_anchor_setup_dialog()
+        self.assertTrue(stage["goto_opened"])
+        self.assertTrue(stage["goto_closed"])
+        self.assertTrue(stage["anchor_closed"])
+
     def test_invalid_later_path_leg_is_rejected_before_any_target(self):
         self.connect()
         drive=self.window.controller.drive
