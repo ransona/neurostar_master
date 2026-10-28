@@ -157,6 +157,16 @@ class PulseTests(unittest.TestCase):
         self.assertEqual(retract.phase,'borehole_retract')
         self.assertAlmostEqual(retract.due_s-hold.due_s,3.0)
 
+    def test_borehole_resume_drills_down_from_saved_partial_depth(self):
+        hole=(1.0,2.0,3.0,False)
+        plan=pulse.borehole_drilling_plan((1.0,2.0,2.98),[hole],[.035],[.05],2.98,.02,
+            (1.0,2.0,2.98),.01)
+        drill=[event for event in plan if event.phase=='borehole_drill']
+        self.assertTrue(drill)
+        self.assertAlmostEqual(drill[0].target[2],3.04)
+        self.assertAlmostEqual(drill[-1].target[2],3.05)
+        self.assertTrue(all(event.target[2] > hole[2]+.035-1e-9 for event in drill))
+
     def test_continuous_drilling_depth_delay_is_inserted_after_reaching_depth(self):
         surfaces=[(0,0,0),(1,0,0),(0,0,0)]
         plan=pulse.drilling_plan((0,0,-.05),surfaces,[0,0,0],[.01,.01,.01],

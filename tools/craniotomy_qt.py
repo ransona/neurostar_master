@@ -9337,6 +9337,7 @@ class CraniotomyWindow(QMainWindow):
         if outcome == "paused":
             self.drilling_paused = True
             self.start_round_btn.setText("Continue")
+            self._autosave_project_session()
             self.redraw_views()
             if self.restart_drill_round_after_pause:
                 self.restart_drill_round_after_pause = False
@@ -9669,6 +9670,19 @@ class CraniotomyWindow(QMainWindow):
                         self.validation_move_position_signal.emit(tuple(event.target))
                         position_update.update(time=now, phase=event.phase,
                                                point_index=event.point_index)
+                if (event.phase == "borehole_drill" and event.point_index is not None
+                        and event.surface_dv is not None and event.target is not None):
+                    index = event.point_index
+                    if index < len(self.borehole_depths):
+                        # This target has been reached and verified. Preserve
+                        # partial depth so pause/retract resumes from the last
+                        # completed microstep rather than the top of the hole.
+                        verified_depth = max(0.0, event.target[2] - event.surface_dv)
+                        self.borehole_depths[index] = max(self.borehole_depths[index], verified_depth)
+                        self.active_depth_ratio = max(
+                            0.0,
+                            min(1.0, verified_depth / max(self.pulsed_drill_thickness_mm, 0.001)),
+                        )
                 if event.phase == "borehole_complete" and event.point_index is not None:
                     index = event.point_index
                     if index < len(self.borehole_depths):
