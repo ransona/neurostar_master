@@ -3225,15 +3225,18 @@ class CraniotomyWindow(QMainWindow):
             self.injection_sites_view.set_coordinate_mode_bregma(False)
             self.update_coordinate_mode_buttons()
             return
-        response = QMessageBox.question(
-            self,
-            "Clear Saved Bregma?",
-            "A GUI Bregma calibration is currently available. Do you want to clear it?\n\n"
-            "Clearing Bregma also clears its anchor; set a new Bregma before using Bregma coordinates.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Saved Bregma")
+        prompt.setText(
+            "A saved GUI Bregma calibration is available. Keep it for this session, or clear it?\n\n"
+            "Clearing Bregma also clears its anchor."
         )
-        if response != QMessageBox.Yes:
+        clear_button = prompt.addButton("Clear", QMessageBox.AcceptRole)
+        keep_button = prompt.addButton("Keep", QMessageBox.RejectRole)
+        prompt.setDefaultButton(keep_button)
+        prompt.setEscapeButton(keep_button)
+        prompt.exec()
+        if prompt.clickedButton() is not clear_button:
             self.update_coordinate_mode_buttons()
             return
         self.bregma_axis = None

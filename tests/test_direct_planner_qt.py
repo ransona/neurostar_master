@@ -158,10 +158,15 @@ class PlannerTests(unittest.TestCase):
         self.window.bregma_axis=(1.0,2.0,3.0)
         self.window.anchor_axis=(4.0,5.0,6.0)
         self.window.anchor_bregma=(3.0,3.0,3.0)
-        self.dialogs.question.return_value=self.dialogs.Yes
+        self.dialogs_patch.stop()
+        def choose_clear():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QMessageBox)
+            self.assertEqual([button.text() for button in dialog.buttons()],['Clear','Keep'])
+            self.assertEqual(dialog.defaultButton().text(),'Keep')
+            next(button for button in dialog.buttons() if button.text()=='Clear').click()
+        QTimer.singleShot(0,choose_clear)
         self.window._offer_clear_saved_bregma()
-        self.dialogs.question.assert_called_once()
-        self.assertEqual(self.dialogs.question.call_args.args[-1],self.dialogs.No)
         self.assertIsNone(self.window.bregma_axis)
         self.assertIsNone(self.window.anchor_axis)
         self.assertIsNone(self.window.anchor_bregma)
