@@ -88,6 +88,20 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
 
+    def test_legacy_axis_anchor_is_migrated_to_bregma_relative_location(self):
+        self.window.bregma_axis=(10.0,20.0,30.0)
+        self.window.anchor_axis=(11.5,18.0,33.0)
+        self.window.anchor_bregma=None
+        self.window._write_config_file(self.window._general_settings_path(),{
+            'bregma_axis':[10.0,20.0,30.0],
+            'anchor_axis':[11.5,18.0,33.0],
+        })
+
+        self.window._load_general_settings()
+
+        self.assertEqual(self.window.anchor_bregma,(1.5,-2.0,3.0))
+        self.assertEqual(self.window.anchor_axis,(11.5,18.0,33.0))
+
     def test_setting_relative_coordinates_preserves_anchor_bregma_position(self):
         self.connect()
         current_axis=tuple(self.window.controller.get_current_axis_position())
@@ -111,8 +125,10 @@ class PlannerTests(unittest.TestCase):
         )
         self.assertNotEqual(self.window.anchor_axis,saved_anchor)
         saved=self.window._read_config_file(self.window._general_settings_path())
-        self.assertEqual(tuple(saved["anchor_axis"]),self.window.anchor_axis)
+        self.assertNotIn("anchor_axis",saved)
         self.assertEqual(tuple(saved["anchor_bregma"]),self.window.anchor_bregma)
+        self.assertNotIn("anchor_axis",self.window._project_session_dict())
+        self.assertEqual(self.window._project_session_dict()["anchor_bregma"],self.window.anchor_bregma)
 
     def test_craniotomy_coordinate_actions_can_reset_map_to_mid_range(self):
         self.window.zoom_mode_combo.setCurrentIndex(0)
@@ -154,7 +170,7 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
         saved=self.window._read_config_file(self.window._general_settings_path())
         self.assertIsNone(saved['bregma_axis'])
-        self.assertIsNone(saved['anchor_axis'])
+        self.assertNotIn('anchor_axis',saved)
 
     def test_target_depth_above_maximum_offers_to_raise_max_depth(self):
         self.window.drill_depth.setValue(0.20)

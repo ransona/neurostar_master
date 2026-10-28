@@ -3100,7 +3100,6 @@ class CraniotomyWindow(QMainWindow):
             "injection_sites_coordinate_system": self.injection_sites_coordinate_system,
             "coordinate_mode": self.coordinate_mode,
             "bregma_axis": self.bregma_axis,
-            "anchor_axis": self.anchor_axis,
             "anchor_bregma": self.anchor_bregma,
             "craniotomy_config": {
                 "diameter_mm": self._craniotomy_config().diameter_mm,
@@ -3177,6 +3176,15 @@ class CraniotomyWindow(QMainWindow):
             return position if all(math.isfinite(item) for item in position) else None
         except (TypeError, ValueError):
             return None
+
+    def _sync_anchor_axis_from_bregma(self) -> None:
+        """Derive the transient Axis anchor from the saved Bregma-relative location."""
+        if self.bregma_axis is None or self.anchor_bregma is None:
+            self.anchor_axis = None
+            return
+        self.anchor_axis = tuple(
+            self.bregma_axis[index] + self.anchor_bregma[index] for index in range(3)
+        )
 
     def _offer_project_session_restore(self) -> None:
         path = self._project_session_path()
@@ -3266,8 +3274,13 @@ class CraniotomyWindow(QMainWindow):
         self.bregma_axis = self._session_axis(payload.get("bregma_axis"))
         self.craniotomy_coordinate_system = str(payload.get("craniotomy_coordinate_system", "unknown" if payload.get("seeds") or payload.get("trajectory") else "bregma"))
         self.injection_sites_coordinate_system = str(payload.get("injection_sites_coordinate_system", "unknown" if payload.get("injection_sites") else "bregma"))
-        self.anchor_axis = self._session_axis(payload.get("anchor_axis"))
-        self.anchor_bregma = self._session_axis(payload.get("anchor_bregma"))
+        project_anchor_bregma = self._session_axis(payload.get("anchor_bregma"))
+        legacy_anchor_axis = self._session_axis(payload.get("anchor_axis"))
+        if project_anchor_bregma is not None:
+            self.anchor_bregma = project_anchor_bregma
+        elif self.anchor_bregma is None and legacy_anchor_axis is not None and self.bregma_axis is not None:
+            self.anchor_bregma = tuple(legacy_anchor_axis[i] - self.bregma_axis[i] for i in range(3))
+        self._sync_anchor_axis_from_bregma()
         self.coordinate_mode = "bregma" if payload.get("coordinate_mode") == "bregma" and self.bregma_axis else "axis"
         center = payload.get("craniotomy_center")
         if isinstance(center, dict):
@@ -3377,7 +3390,6 @@ class CraniotomyWindow(QMainWindow):
             "syringe_keys": {name: bindings[name] for name in self.syringe_key_bindings if name in bindings},
             "coordinate_mode": self.coordinate_mode,
             "bregma_axis": self.bregma_axis,
-            "anchor_axis": self.anchor_axis,
             "anchor_bregma": self.anchor_bregma,
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "validation_clearance_mm": self.validation_clearance_mm,
@@ -3429,10 +3441,14 @@ class CraniotomyWindow(QMainWindow):
             mode = payload.get("coordinate_mode")
             if mode in {"axis", "bregma"}:
                 self.coordinate_mode = mode
-            for name in ("bregma_axis", "anchor_axis", "anchor_bregma"):
+            for name in ("bregma_axis", "anchor_bregma"):
                 value = payload.get(name)
                 if isinstance(value, list) and len(value) == 3:
                     setattr(self, name, tuple(float(item) for item in value))
+            legacy_anchor_axis = self._session_axis(payload.get("anchor_axis"))
+            if self.anchor_bregma is None and legacy_anchor_axis is not None and self.bregma_axis is not None:
+                self.anchor_bregma = tuple(legacy_anchor_axis[i] - self.bregma_axis[i] for i in range(3))
+            self._sync_anchor_axis_from_bregma()
             self.window_geometry = payload.get("window_geometry")
             self.axis_zero_reference = payload.get("axis_zero_reference")
             self.home_axis = self._session_axis(payload.get("home_axis"))
@@ -4895,7 +4911,6 @@ class CraniotomyWindow(QMainWindow):
         if hasattr(self, "at_anchor_btn"):
             self.at_anchor_btn.setEnabled(
                 self.bregma_axis is not None
-                and self.anchor_axis is not None
                 and self.anchor_bregma is not None
             )
         if hasattr(self, "set_relative_coordinates_btn"):
@@ -5145,9 +5160,7 @@ class CraniotomyWindow(QMainWindow):
             self.bregma_axis = tuple(current_axis[index] - requested[index] for index in range(3))
             if preserved_anchor_bregma is not None:
                 self.anchor_bregma = tuple(preserved_anchor_bregma)
-                self.anchor_axis = tuple(
-                    self.bregma_axis[index] + self.anchor_bregma[index] for index in range(3)
-                )
+            self._sync_anchor_axis_from_bregma()
             self.coordinate_mode = "bregma"
             self.update_coordinate_mode_buttons()
             self.top_view.set_coordinate_mode_bregma(True)
@@ -5181,8 +5194,9 @@ class CraniotomyWindow(QMainWindow):
         try:
             if self.bregma_axis is None:
                 raise StereoDriveError("Set GUI Bregma before setting an anchor.")
-            self.anchor_axis = self.controller.get_current_axis_position()
-            self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
+            current_axis = self.controller.get_current_axis_position()
+            self.anchor_bregma = self._axis_to_bregma(current_axis)
+            self._sync_anchor_axis_from_bregma()
             self.update_coordinate_mode_buttons()
             self._save_general_settings()
             self._zoom_craniotomy_to_mid_range()
@@ -5214,7 +5228,7 @@ class CraniotomyWindow(QMainWindow):
             self.bregma_axis = tuple(
                 current_anchor_axis[index] - self.anchor_bregma[index] for index in range(3)
             )
-            self.anchor_axis = current_anchor_axis
+            self._sync_anchor_axis_from_bregma()
             self.coordinate_mode = "bregma"
             self.update_coordinate_mode_buttons()
             self.top_view.set_coordinate_mode_bregma(True)
