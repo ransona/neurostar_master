@@ -402,6 +402,7 @@ class ProjectionWidget(QWidget):
         self.quick_location_points: list[tuple[str, float, float]] = []
         self.borehole_points: list[tuple[float, float, float, bool]] = []
         self.anchor_point: tuple[float, float] | None = None
+        self.bregma_point: tuple[float, float] | None = None
         self.frozen_points: list[bool] = []
         self.current_point: tuple[float, float] | None = None
         self.freeze_mode = False
@@ -506,6 +507,7 @@ class ProjectionWidget(QWidget):
         current_point: tuple[float, float] | None = None,
         injection_sites: list[tuple[float, float]] | None = None,
         anchor_point: tuple[float, float] | None = None,
+        bregma_point: tuple[float, float] | None = None,
         selected_seed_index: int | None = None,
         quick_locations: list[tuple[str, float, float]] | None = None,
         borehole_points: list[tuple[float, float, float, bool]] | None = None,
@@ -514,6 +516,7 @@ class ProjectionWidget(QWidget):
         self.seed_points = seed_points
         self.injection_site_points = injection_sites or []
         self.anchor_point = anchor_point
+        self.bregma_point = bregma_point
         self.quick_location_points = quick_locations or []
         self.borehole_points = borehole_points or []
         self.selected_seed_index = selected_seed_index
@@ -689,6 +692,7 @@ class ProjectionWidget(QWidget):
             and not self.quick_location_points
             and not self.borehole_points
             and self.anchor_point is None
+            and self.bregma_point is None
             and self.current_point is None
             and not overlay_visible
         ):
@@ -711,6 +715,9 @@ class ProjectionWidget(QWidget):
         if self.anchor_point is not None:
             xs.append(self.anchor_point[0])
             ys.append(self.anchor_point[1])
+        if self.bregma_point is not None:
+            xs.append(self.bregma_point[0])
+            ys.append(self.bregma_point[1])
         if self.view_focus_points:
             xs = [point[0] for point in self.view_focus_points]
             ys = [point[1] for point in self.view_focus_points]
@@ -899,6 +906,12 @@ class ProjectionWidget(QWidget):
             painter.setPen(marker_pen)
             painter.drawLine(pt + QPointF(-10, -10), pt + QPointF(10, 10))
             painter.drawLine(pt + QPointF(-10, 10), pt + QPointF(10, -10))
+
+        if self.bregma_point is not None:
+            pt = map_point(self.bregma_point[0], self.bregma_point[1])
+            painter.setPen(QPen(QColor("#ffffff"), 1.5))
+            painter.setBrush(QColor("#111111"))
+            painter.drawEllipse(pt, 6.0, 6.0)
 
         if overlay_hidden_for_axis:
             painter.setPen(QColor("#6b7280"))
@@ -10187,6 +10200,8 @@ class CraniotomyWindow(QMainWindow):
             current_point=current_point,
             anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
+            bregma_point=(0.0, 0.0)
+            if self.coordinate_mode == "bregma" and self.bregma_axis is not None else None,
             selected_seed_index=self.selected_craniotomy_point_index,
             borehole_points=borehole_points,
             quick_locations=[
@@ -10219,6 +10234,8 @@ class CraniotomyWindow(QMainWindow):
             injection_sites=injection_site_points,
             anchor_point=(self.anchor_bregma[1], self.anchor_bregma[0])
             if self.coordinate_mode == "bregma" and self.anchor_bregma is not None else None,
+            bregma_point=(0.0, 0.0)
+            if self.coordinate_mode == "bregma" and self.bregma_axis is not None else None,
             borehole_points=borehole_points if show_craniotomy else [],
             quick_locations=[
                 (name, display_ml, display_ap)

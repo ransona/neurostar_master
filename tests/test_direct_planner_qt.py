@@ -100,6 +100,18 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.window.top_view.navigation_zoom,1.0)
         self.assertEqual(self.window.top_view.navigation_pan,planner.QPointF(0.0,0.0))
 
+    def test_bregma_origin_is_shown_as_black_map_marker_in_bregma_mode(self):
+        self.window.bregma_axis=(10.0,20.0,30.0)
+        self.window.coordinate_mode='bregma'
+        self.window.redraw_views()
+        self.assertEqual(self.window.top_view.bregma_point,(0.0,0.0))
+        self.assertEqual(self.window.injection_sites_view.bregma_point,(0.0,0.0))
+
+        self.window.coordinate_mode='axis'
+        self.window.redraw_views()
+        self.assertIsNone(self.window.top_view.bregma_point)
+        self.assertIsNone(self.window.injection_sites_view.bregma_point)
+
     def test_startup_bregma_clear_prompt_persists_clearing_and_clears_anchor(self):
         self.window.bregma_axis=(1.0,2.0,3.0)
         self.window.anchor_axis=(4.0,5.0,6.0)
