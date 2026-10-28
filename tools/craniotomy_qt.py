@@ -8827,7 +8827,7 @@ class CraniotomyWindow(QMainWindow):
         )
         start_button = prompt.addButton("Start Drilling", QMessageBox.AcceptRole)
         close_button = prompt.addButton("Close Workflow", QMessageBox.RejectRole)
-        prompt.setDefaultButton(close_button)
+        prompt.setDefaultButton(start_button)
         prompt.exec()
         return prompt.clickedButton() is start_button
 

@@ -543,6 +543,23 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(observed['labels'],['Yes','No'])
         self.assertEqual(observed['default'],'Yes')
 
+    def test_completed_seed_surface_prompt_defaults_to_start_drilling(self):
+        observed={}
+        self.dialogs_patch.stop()
+        def inspect_prompt():
+            dialog=self.app.activeModalWidget()
+            self.assertIsInstance(dialog,QMessageBox)
+            observed['default']=dialog.defaultButton().text()
+            observed['buttons']=[button.text() for button in dialog.buttons()]
+            next(button for button in dialog.buttons() if button.text()=='Close Workflow').click()
+        QTimer.singleShot(0,inspect_prompt)
+
+        accepted=self.window._confirm_start_drilling_after_surfaces()
+
+        self.assertFalse(accepted)
+        self.assertEqual(observed['buttons'],['Start Drilling','Close Workflow'])
+        self.assertEqual(observed['default'],'Start Drilling')
+
     def test_return_above_craniotomy_centre_uses_safe_center_clearance(self):
         self.window.bregma_axis=(10.0,20.0,30.0)
         self.window.mid_ap.setValue(1.5)
