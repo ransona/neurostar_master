@@ -88,21 +88,17 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(self.window.at_anchor_btn.isEnabled())
         self.assertTrue(self.window.set_relative_coordinates_btn.isEnabled())
 
-    def test_setting_anchor_preserves_current_map_viewport(self):
-        view=self.window.top_view
-        view.set_navigation_enabled(True)
-        view.set_data([(-1.0,-1.0,0.0),(1.0,1.0,0.0)],[])
-        self.app.processEvents()
-        old_bounds=view._coordinate_bounds
-        self.assertIsNotNone(old_bounds)
+    def test_craniotomy_coordinate_actions_can_reset_map_to_mid_range(self):
+        self.window.zoom_mode_combo.setCurrentIndex(0)
+        self.window.top_view.navigation_zoom=4.0
+        self.window.top_view.navigation_pan=planner.QPointF(2.0,-1.0)
 
-        view.preserve_navigation_view()
-        view.set_data([(-1.0,-1.0,0.0),(1.0,1.0,0.0)],[],anchor_point=(8.0,7.0))
-        self.app.processEvents()
-        new_bounds=view._coordinate_bounds
-        self.assertIsNotNone(new_bounds)
-        for old_value,new_value in zip(old_bounds,new_bounds):
-            self.assertAlmostEqual(old_value,new_value,places=6)
+        self.window._zoom_craniotomy_to_mid_range()
+
+        self.assertEqual(self.window.zoom_mode_combo.currentIndex(),1)
+        self.assertEqual(self.window.top_view.zoom_level,0.5)
+        self.assertEqual(self.window.top_view.navigation_zoom,1.0)
+        self.assertEqual(self.window.top_view.navigation_pan,planner.QPointF(0.0,0.0))
 
     def test_startup_bregma_clear_prompt_persists_clearing_and_clears_anchor(self):
         self.window.bregma_axis=(1.0,2.0,3.0)

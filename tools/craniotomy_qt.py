@@ -424,7 +424,6 @@ class ProjectionWidget(QWidget):
         self.navigation_zoom = 1.0
         self._minimum_navigation_zoom = 1.0
         self.navigation_pan = QPointF(0.0, 0.0)
-        self._preserved_navigation_view: tuple[float, float, float] | None = None
         self._pan_anchor: QPointF | None = None
         self._pan_dragged = False
         self._pan_start = QPointF(0.0, 0.0)
@@ -452,17 +451,6 @@ class ProjectionWidget(QWidget):
     def set_navigation_enabled(self, enabled: bool) -> None:
         self.navigation_enabled = enabled
         self._update_navigation_cursor()
-
-    def preserve_navigation_view(self) -> None:
-        """Keep the current world-space viewport when map contents change."""
-        if self._coordinate_bounds is None:
-            return
-        min_x, max_x, min_y, max_y = self._coordinate_bounds
-        self._preserved_navigation_view = (
-            (min_x + max_x) / 2.0,
-            (min_y + max_y) / 2.0,
-            max(max_x - min_x, max_y - min_y),
-        )
 
     def set_add_site_mode(self, enabled: bool) -> None:
         self.add_site_mode = enabled
@@ -783,15 +771,6 @@ class ProjectionWidget(QWidget):
             )
             if full_skull_span > 0:
                 self._minimum_navigation_zoom = min(1.0, base_uniform_span / full_skull_span)
-        if self._preserved_navigation_view is not None:
-            preserved_cx, preserved_cy, preserved_span = self._preserved_navigation_view
-            if preserved_span > 0:
-                self.navigation_zoom = max(
-                    self._minimum_navigation_zoom,
-                    min(20.0, base_uniform_span / preserved_span),
-                )
-                self.navigation_pan = QPointF(preserved_cx - base_cx, preserved_cy - base_cy)
-            self._preserved_navigation_view = None
         uniform_span = base_uniform_span / self.navigation_zoom
         cx = base_cx + self.navigation_pan.x()
         cy = base_cy + self.navigation_pan.y()
@@ -5036,7 +5015,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_sites_view.set_coordinate_mode_bregma(True)
             self._save_general_settings()
             self.refresh_live_position()
-            self.redraw_views()
+            self._zoom_craniotomy_to_mid_range()
             self.set_status("GUI Bregma set at the current Axis position; any previous anchor was cleared.")
         except Exception as exc:
             QMessageBox.critical(self, "Bregma Coordinates", str(exc))
@@ -5112,7 +5091,7 @@ class CraniotomyWindow(QMainWindow):
             self.refresh_live_position()
             self.refresh_injection_sites_list()
             self.refresh_craniotomy_points_list()
-            self.redraw_views()
+            self._zoom_craniotomy_to_mid_range()
             self.set_status("Relative coordinates set.")
         except Exception as exc:
             QMessageBox.critical(self, "Set Relative Coordinates", str(exc))
@@ -5137,9 +5116,7 @@ class CraniotomyWindow(QMainWindow):
             self.anchor_bregma = self._axis_to_bregma(self.anchor_axis)
             self.update_coordinate_mode_buttons()
             self._save_general_settings()
-            self.top_view.preserve_navigation_view()
-            self.injection_sites_view.preserve_navigation_view()
-            self.redraw_views()
+            self._zoom_craniotomy_to_mid_range()
             self.set_status(
                 f"Anchor set at Bregma [{self.anchor_bregma[0]:.2f}, {self.anchor_bregma[1]:.2f}, {self.anchor_bregma[2]:.2f}]."
             )
@@ -5177,7 +5154,7 @@ class CraniotomyWindow(QMainWindow):
             self.current_ml_label.setText(f"{current_ml:.2f}")
             self.current_dv_label.setText(f"{current_dv:.2f}")
             self.refresh_injection_sites_list()
-            self.redraw_views(current_point=(current_ml, current_ap))
+            self._zoom_craniotomy_to_mid_range(current_point=(current_ml, current_ap))
             self.set_status("Bregma recalibrated from the current anchor position.")
         except Exception as exc:
             QMessageBox.critical(self, "At Anchor", str(exc))
@@ -7959,7 +7936,7 @@ class CraniotomyWindow(QMainWindow):
             if self.unfreeze_draw_btn.isChecked():
                 self.unfreeze_draw_btn.setChecked(False)
             self.update_current_target_depth_label()
-            self.redraw_views()
+            self._zoom_craniotomy_to_mid_range()
             self.refresh_craniotomy_points_list()
             self.set_status(f"Generated {seed_count} seed points from current AP/ML midpoint.")
             reply = QMessageBox.question(
@@ -7985,6 +7962,7 @@ class CraniotomyWindow(QMainWindow):
             position = self.get_bregma_position()
             self.mid_ap.setValue(position[0])
             self.mid_ml.setValue(position[1])
+            self._zoom_craniotomy_to_mid_range()
             self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
@@ -7993,6 +7971,16 @@ class CraniotomyWindow(QMainWindow):
         self.top_view.reset_navigation()
         self.top_view.set_zoom_level({0: 1.0, 1: 0.5, 2: 0.0}.get(index, 1.0))
         self.redraw_views()
+
+    def _zoom_craniotomy_to_mid_range(
+        self, *, current_point: tuple[float, float] | None = None
+    ) -> None:
+        self.zoom_mode_combo.blockSignals(True)
+        self.zoom_mode_combo.setCurrentIndex(1)
+        self.zoom_mode_combo.blockSignals(False)
+        self.top_view.reset_navigation()
+        self.top_view.set_zoom_level(0.5)
+        self.redraw_views(current_point=current_point)
 
     def set_injection_sites_zoom_mode(self, index: int) -> None:
         self.injection_sites_view.reset_navigation()
