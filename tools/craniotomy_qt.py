@@ -7745,13 +7745,9 @@ class CraniotomyWindow(QMainWindow):
                 position[index] = estimated["start"][index] + (estimated["target"][index] - estimated["start"][index]) * fraction
                 ap, ml, dv = position
             else:
-                single_hole_active = (
-                    self.single_hole_thread is not None and self.single_hole_thread.is_alive()
-                )
-                if (getattr(self.controller, "direct_api", False)
-                        and self.controller.has_active_motion()
-                        and not single_hole_active):
-                    return
+                # The direct controller returns motor-derived live telemetry
+                # during a move. Keep the readouts and map cursor following the
+                # tool during automated craniotomy and injection operations too.
                 axis_position = self.controller.get_current_axis_position()
                 if self.coordinate_mode == "bregma" and self.bregma_axis is not None:
                     ap, ml, dv = self._axis_to_bregma(axis_position)

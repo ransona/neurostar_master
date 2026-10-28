@@ -334,6 +334,17 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(move.call_args.args[0],[(11.5,19.5,29.2)])
         self.assertEqual(move.call_args.kwargs['title'],'Moving Above Craniotomy Centre')
 
+    def test_live_coordinate_readouts_refresh_during_automated_motion(self):
+        self.window.coordinate_mode='axis'
+        self.window._estimated_move=None
+        with patch.object(self.window.controller,'has_active_motion',return_value=True), \
+             patch.object(self.window.controller,'get_current_axis_position',return_value=(12.34,-5.67,8.9)) as position:
+            self.window.refresh_live_position()
+        position.assert_called_once_with()
+        self.assertEqual(self.window.current_ap_label.text(),'12.34')
+        self.assertEqual(self.window.current_ml_label.text(),'-5.67')
+        self.assertEqual(self.window.current_dv_label.text(),'8.90')
+
     def test_drill_power_prompt_defaults_yes_and_places_it_first(self):
         observed={}
         def inspect_and_choose_yes():
