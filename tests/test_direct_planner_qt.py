@@ -319,6 +319,21 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(observed['labels'],['Yes','No'])
         self.assertEqual(observed['default'],'Yes')
 
+    def test_return_above_craniotomy_centre_uses_safe_center_clearance(self):
+        self.window.bregma_axis=(10.0,20.0,30.0)
+        self.window.mid_ap.setValue(1.5)
+        self.window.mid_ml.setValue(-0.5)
+        self.window.seeds=[
+            planner.SeedPoint(index=0,angle_deg=0,ap=0,ml=0,dv=-0.2),
+            planner.SeedPoint(index=1,angle_deg=180,ap=0,ml=0,dv=-0.4),
+        ]
+        with patch.object(self.window,'_axis_clearance_path',side_effect=lambda target, _clearance:[target]) as safe_path, \
+             patch.object(self.window,'_move_through_axis_positions_with_progress',return_value=True) as move:
+            self.assertTrue(self.window._move_above_craniotomy_center())
+        self.assertEqual(safe_path.call_args.args[0],(11.5,19.5,29.2))
+        self.assertEqual(move.call_args.args[0],[(11.5,19.5,29.2)])
+        self.assertEqual(move.call_args.kwargs['title'],'Moving Above Craniotomy Centre')
+
     def test_drill_power_prompt_defaults_yes_and_places_it_first(self):
         observed={}
         def inspect_and_choose_yes():

@@ -8586,6 +8586,37 @@ class CraniotomyWindow(QMainWindow):
         prompt.exec()
         return prompt.clickedButton() is yes_button
 
+    def _move_above_craniotomy_center(self) -> bool:
+        """Return to the centre at the configured safe clearance before drilling."""
+        clearance = (
+            self.validation_clearance_mm
+            if getattr(self.controller, "pulsed_protocol", False)
+            else 2.0
+        )
+        center_dv = self._craniotomy_center_surface_dv() - clearance
+        target_axis = self._bregma_to_axis((
+            self.mid_ap.value(),
+            self.mid_ml.value(),
+            center_dv,
+        ))
+        path = self._axis_clearance_path(target_axis, target_axis[2])
+        self.event_log.write(
+            "drilling.return_above_centre_requested",
+            centre_bregma=(self.mid_ap.value(), self.mid_ml.value(), center_dv),
+            target_axis=target_axis,
+            clearance_mm=clearance,
+        )
+        completed = self._move_through_axis_positions_with_progress(
+            path,
+            title="Moving Above Craniotomy Centre",
+            message="Returning to a safe position above the craniotomy centre before drilling.",
+        )
+        self.event_log.write(
+            "drilling.return_above_centre_finished" if completed else "drilling.return_above_centre_cancelled",
+            target_axis=target_axis,
+        )
+        return completed
+
     def set_selected_craniotomy_surface(self) -> None:
         if not self._require_idle("Set Craniotomy Surface"):
             return
@@ -8633,6 +8664,8 @@ class CraniotomyWindow(QMainWindow):
                 self.refresh_craniotomy_points_list()
             self.set_status("Seed-surface workflow complete.")
             if self.seeds and all(seed.dv is not None for seed in self.seeds):
+                if not self._move_above_craniotomy_center():
+                    return
                 if self._confirm_start_drilling_after_surfaces():
                     self.start_drilling_round()
         except Exception as exc:
