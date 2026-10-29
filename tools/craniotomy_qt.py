@@ -9788,6 +9788,7 @@ class CraniotomyWindow(QMainWindow):
         stop_button = prompt.addButton("Stop", QMessageBox.RejectRole)
         prompt.setDefaultButton(stop_button)
         prompt.setEscapeButton(stop_button)
+        QApplication.beep()
         prompt.exec()
         if prompt.clickedButton() is increase_button:
             previous_target = self.current_target_depth_mm

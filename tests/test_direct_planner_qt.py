@@ -268,8 +268,10 @@ class PlannerTests(unittest.TestCase):
             next(button for button in dialog.buttons() if button.text()=='Stop').click()
         QTimer.singleShot(0,choose_stop)
 
-        self.window._prompt_increase_drilling_depth_or_stop()
+        with patch.object(QApplication,'beep') as beep:
+            self.window._prompt_increase_drilling_depth_or_stop()
 
+        beep.assert_called_once_with()
         self.assertEqual(observed['buttons'],['Increase Depth','Stop'])
         self.assertEqual(observed['default'],'Stop')
         self.assertIn('stopped',self.window.current_action.lower())
