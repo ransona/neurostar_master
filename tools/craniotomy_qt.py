@@ -1214,6 +1214,9 @@ class CraniotomyWindow(QMainWindow):
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
+        self.drill_round_wait_seconds.valueChanged.connect(
+            lambda _value: self._save_general_settings()
+        )
         self._load_direct_control_settings()
         if not self.controller.live:
             try:
@@ -2312,6 +2315,17 @@ class CraniotomyWindow(QMainWindow):
             positions_layout.addWidget(label, row, 1)
         self._update_persistent_axis_location_labels()
         options_layout.addWidget(positions_box)
+        round_options_box = QGroupBox("Craniotomy sequence")
+        round_options_layout = QGridLayout(round_options_box)
+        self.drill_round_wait_seconds = self._double_spinbox(
+            value=10.0, minimum=0.0, maximum=3600.0
+        )
+        self.drill_round_wait_seconds.setToolTip(
+            "Wait this many seconds after a round completes before automatically starting the next round."
+        )
+        round_options_layout.addWidget(QLabel("Wait before next round (s)"), 0, 0)
+        round_options_layout.addWidget(self.drill_round_wait_seconds, 0, 1)
+        options_layout.addWidget(round_options_box)
         options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
         options_grid.addWidget(QLabel("Assign a single key or key combination. Changes save when the app closes."), 0, 0, 1, 2)
@@ -3399,6 +3413,7 @@ class CraniotomyWindow(QMainWindow):
             "validation_clearance_mm": self.validation_clearance_mm,
             "single_hole_drill_rate_mm_per_s": self.single_hole_rate_mm_per_s.value(),
             "single_hole_delay_at_depth": self.single_hole_delay_at_depth.value(),
+            "drill_round_wait_seconds": self.drill_round_wait_seconds.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
             "named_locations": {
@@ -3463,6 +3478,16 @@ class CraniotomyWindow(QMainWindow):
             self.validation_clearance_edit.blockSignals(True)
             self.validation_clearance_edit.setValue(self.validation_clearance_mm)
             self.validation_clearance_edit.blockSignals(False)
+            wait_seconds = payload.get("drill_round_wait_seconds", 10.0)
+            try:
+                wait_seconds = float(wait_seconds)
+            except (TypeError, ValueError):
+                wait_seconds = 10.0
+            if not math.isfinite(wait_seconds):
+                wait_seconds = 10.0
+            self.drill_round_wait_seconds.blockSignals(True)
+            self.drill_round_wait_seconds.setValue(max(0.0, min(3600.0, wait_seconds)))
+            self.drill_round_wait_seconds.blockSignals(False)
             single_hole_rate = payload.get("single_hole_drill_rate_mm_per_s")
             if single_hole_rate is None:
                 single_hole_rate = self.drill_rate_mm_per_s.value()
@@ -9785,6 +9810,9 @@ class CraniotomyWindow(QMainWindow):
         return 0.0
 
     def show_next_round_countdown(self, target_depth_mm: float) -> bool:
+        duration_s = max(0.0, float(self.drill_round_wait_seconds.value()))
+        if duration_s <= 0.0:
+            return True
         QApplication.beep()
         dialog = QDialog(self)
         dialog.setWindowTitle("Next Drilling Round")
@@ -9802,7 +9830,6 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(change_button)
         layout.addWidget(pause_button)
 
-        duration_s = 10.0
         started_at = time.monotonic()
         paused = {"value": False}
         target_depth = {"value": target_depth_mm}

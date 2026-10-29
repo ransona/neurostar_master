@@ -62,13 +62,23 @@ class PlannerTests(unittest.TestCase):
         self.window.named_locations={
             'Cortex':planner.StoredLocation(ap=1.25,ml=-2.5,dv=0.75),
         }
+        self.window.drill_round_wait_seconds.setValue(23.5)
         self.window._save_general_settings()
         saved=self.window._read_config_file(self.window._general_settings_path())
         self.assertEqual(saved['named_locations']['Cortex'],{'ap':1.25,'ml':-2.5,'dv':0.75})
+        self.assertEqual(saved['drill_round_wait_seconds'],23.5)
 
         self.window.named_locations.clear()
+        self.window.drill_round_wait_seconds.blockSignals(True)
+        self.window.drill_round_wait_seconds.setValue(1.0)
+        self.window.drill_round_wait_seconds.blockSignals(False)
         self.window._load_general_settings()
         self.assertEqual(self.window.named_locations['Cortex'],planner.StoredLocation(1.25,-2.5,0.75))
+        self.assertEqual(self.window.drill_round_wait_seconds.value(),23.5)
+
+    def test_zero_round_wait_skips_auto_start_countdown(self):
+        self.window.drill_round_wait_seconds.setValue(0.0)
+        self.assertTrue(self.window.show_next_round_countdown(0.25))
 
     def test_anchor_requires_bregma_but_relative_coordinates_stays_available(self):
         self.window.bregma_axis=None
