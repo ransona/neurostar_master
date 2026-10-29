@@ -753,6 +753,7 @@ class PlannerTests(unittest.TestCase):
     def test_anchor_setup_dialog_keeps_movement_shortcuts_and_has_saved_location(self):
         self.connect()
         self.window.bregma_axis=(0.0,0.0,0.0)
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
         timer=QTimer();timer.setSingleShot(True)
         observed={"dialog":False,"saved_location":False}
         def finish_dialog():
@@ -774,6 +775,21 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(observed["saved_location"])
         nudge.assert_called_once()
         self.assertIsNotNone(self.window.anchor_axis)
+
+    def test_setting_anchor_confirms_tool_contact_in_axis_dv_and_can_cancel(self):
+        self.connect()
+        self.window.bregma_axis=(0.0,0.0,0.0)
+        self.dialogs.question.return_value=planner.QMessageBox.Cancel
+
+        with patch.object(self.window.controller,'get_current_axis_position') as get_position:
+            self.assertFalse(self.window._record_current_anchor())
+
+        get_position.assert_not_called()
+        title,message,*options=self.dialogs.question.call_args.args[1:]
+        self.assertEqual(title,'Confirm Anchor Position')
+        self.assertIn('dorsal-ventral (DV)',message)
+        self.assertIn('Axis coordinates',message)
+        self.assertEqual(options[-1],planner.QMessageBox.Cancel)
 
     def test_anchor_saved_location_button_opens_goto_dialog(self):
         self.connect()
