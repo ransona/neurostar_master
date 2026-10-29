@@ -197,9 +197,10 @@ class PulseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             c=StereoDriveController();c.connect(CAL,STATES,Path(directory)/'api.json',allow_piston=True)
             try:
-                with self.assertRaises(ValueError):c.validate_piston_steps([-10]*301)
+                with self.assertRaises(ValueError):c.validate_piston_steps([-10]*251)
                 self.assertFalse(any(p[1]==0x0c for p in c.drive._session.transport.packets))
-                c.validate_piston_steps([-10]*300)
+                c.validate_piston_steps([-10]*250) # Stop exactly at the configured 500 nL lower limit.
+                self.assertFalse(any(p[1]==0x0c for p in c.drive._session.transport.packets))
             finally:c.close()
 
     def test_direct_microstep_adapter_honors_steps_and_dwell(self):
