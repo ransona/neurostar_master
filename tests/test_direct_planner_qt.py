@@ -788,7 +788,7 @@ class PlannerTests(unittest.TestCase):
         title,message,*options=self.dialogs.question.call_args.args[1:]
         self.assertEqual(title,'Confirm Anchor Position')
         self.assertIn('dorsal-ventral (DV)',message)
-        self.assertIn('Axis coordinates',message)
+        self.assertNotIn('Axis coordinates',message)
         self.assertEqual(options[-1],planner.QMessageBox.Cancel)
 
     def test_anchor_saved_location_button_opens_goto_dialog(self):

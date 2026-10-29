@@ -5201,8 +5201,8 @@ class CraniotomyWindow(QMainWindow):
             response = QMessageBox.question(
                 self,
                 "Confirm Anchor Position",
-                "Confirm that the tool is touching the intended point in the dorsal-ventral (DV) direction, "
-                "using Axis coordinates. Store this position as the anchor?",
+                "Confirm that the tool is touching the intended point in the dorsal-ventral (DV) direction. "
+                "Store this position as the anchor?",
                 QMessageBox.Yes | QMessageBox.Cancel,
                 QMessageBox.Cancel,
             )
