@@ -40,7 +40,21 @@ class APITests(unittest.TestCase):
     def test_new_reference_requires_all_verified_states(self):
         d=StereoDrive(state_path=self.path)
         with self.assertRaises(ValueError): d.connect()
+        records=[json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+        failure=next(record for record in records if record['event']=='API_CONNECTION_FAILED')
+        self.assertEqual(failure['error_type'],'ValueError')
+        self.assertIn('New reference requires verified',failure['error'])
         with self.assertRaises(ValueError): d.connect(verified_backlash={'AP':0})
+
+    def test_missing_live_calibration_rejection_is_logged(self):
+        d=StereoDrive(simulate=False,state_path=self.path)
+        session=type('SessionState',(),{'absolute_calibration':False})()
+        with self.assertRaisesRegex(ValueError,'Movement disabled'):
+            d._require_zero_calibration(session)
+        records=[json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+        failure=next(record for record in records if record['event']=='MOVEMENT_BLOCKED_INVALID_CALIBRATION')
+        self.assertEqual(failure['mode'],'live')
+        self.assertIn('measured AP/ML/DV zero',failure['error'])
 
     def test_all_axes_return_and_other_channels_stay_fixed(self):
         d=self.drive(allow_dv=True)

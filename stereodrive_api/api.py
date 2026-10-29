@@ -135,6 +135,19 @@ class StereoDrive:
         }
 
     def connect(self, *, verified_backlash=None, new_reference=False):
+        """Connect and persist a diagnostic event for every rejected connection."""
+        try:
+            return self._connect(verified_backlash=verified_backlash, new_reference=new_reference)
+        except Exception as exc:
+            try:
+                self._log('API_CONNECTION_FAILED', mode='simulation' if self.simulate else 'live',
+                          calibration_supplied=self.calibration is not None,
+                          error_type=type(exc).__name__, error=str(exc))
+            except Exception:
+                pass
+            raise
+
+    def _connect(self, *, verified_backlash=None, new_reference=False):
         """Restore valid matching state, or explicitly establish a verified reference.
 
         New references require all four backlash states in motor counts.
@@ -208,7 +221,14 @@ class StereoDrive:
 
     def _require_zero_calibration(self, session):
         if self.require_calibration and not self.simulate and not session.absolute_calibration:
-            raise ValueError('Movement disabled: load and verify measured AP/ML/DV zero and piston anchors before connecting for motion.')
+            message = 'Movement disabled: load and verify measured AP/ML/DV zero and piston anchors before connecting for motion.'
+            try:
+                self._log('MOVEMENT_BLOCKED_INVALID_CALIBRATION', mode='live',
+                          error_type='ValueError', error=message,
+                          absolute_calibration=session.absolute_calibration)
+            except Exception:
+                pass
+            raise ValueError(message)
 
     def position(self):
         """Return calibrated (or relative) axis mm, piston nL estimate, raw counts and backlash."""
