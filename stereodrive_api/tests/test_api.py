@@ -213,6 +213,33 @@ class APITests(unittest.TestCase):
         e=StereoDrive(state_path=self.path)
         with self.assertRaises(RuntimeError):e.connect()
 
+    def test_drill_only_fault_restores_state_when_idle_counts_and_drill_off_match(self):
+        d=self.drive()
+        d._session.invalidate('Drill power state did not match requested OFF',scope='drill_power')
+        d.close()
+        # Existing field sessions may have the older reason-only state format.
+        saved=json.loads(self.path.read_text())
+        self.assertEqual(saved['invalidated_by'],'drill_power')
+        saved.pop('invalidated_by')
+        self.path.write_text(json.dumps(saved))
+        e=StereoDrive(state_path=self.path,require_calibration=False).connect(verified_backlash=INITIAL)
+        self.addCleanup(e.close)
+        self.assertTrue(json.loads(self.path.read_text())['valid'])
+        self.assertTrue(any(json.loads(line)['event']=='DRILL_ONLY_STATE_RESTORED'
+                            for line in self.path.with_suffix('.jsonl').read_text().splitlines()))
+
+    def test_drill_only_fault_does_not_restore_if_axis_counts_changed(self):
+        d=self.drive()
+        d._session.invalidate('Drill power state did not match requested OFF',scope='drill_power')
+        d.close()
+        saved=json.loads(self.path.read_text())
+        saved['raw']['AP'] += 1
+        self.path.write_text(json.dumps(saved))
+        e=StereoDrive(state_path=self.path,require_calibration=False)
+        with self.assertRaisesRegex(RuntimeError,'current motor counts differ'):
+            e.connect(verified_backlash=INITIAL)
+        self.assertFalse(json.loads(self.path.read_text())['valid'])
+
     def test_absolute_calibration_anchors_and_restore(self):
         cal=Calibration(dict(AP=105280,ML=75864,DV=41767), -8572,
                         anchor_backlash=INITIAL)

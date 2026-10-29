@@ -509,17 +509,26 @@ class StereoDrive:
                         self._log('DRILL_POWER_CONFIRMED', enabled=enabled)
                         return enabled
                     time.sleep(.1)
-                raise RuntimeError('Drill power state did not match; no automatic ON retry')
+                raise RuntimeError(
+                    f'Drill power state did not match requested {"ON" if enabled else "OFF"}; no automatic retry'
+                )
             except Exception as exc:
                 try: self._log('DRILL_POWER_FAILED', enabled=enabled,
                                error_type=type(exc).__name__, error=str(exc))
                 except Exception: pass
-                # A lost ON response must always attempt OFF, including faulted sessions.
+                # Always issue OFF and stop; only a later exact idle-state check may
+                # restore axis calibration after this drill-only fault.
                 try:
                     with s.io_lock: s.transport.write(drill_power(False))
-                finally:
-                    try: s.invalidate(exc)
-                    finally: s.emergency_stop()
+                except Exception as off_exc:
+                    try: self._log('DRILL_OFF_FAILSAFE_WRITE_FAILED', error=str(off_exc))
+                    except Exception: pass
+                try:
+                    s.emergency_stop()
+                except Exception as stop_exc:
+                    s.invalidate(stop_exc)
+                    raise
+                s.invalidate(exc, scope='drill_power')
                 raise
         finally: self._lock.release()
 
@@ -532,13 +541,21 @@ class StereoDrive:
     def _stop_locked(self, session):
         try:
             session.stopped()
+        except Exception as exc:
+            try: session.invalidate(exc)
+            except Exception: pass
+            raise
+        try:
             deadline = time.monotonic() + 3
             while self._drill_state_locked(session):
                 if time.monotonic() >= deadline: raise RuntimeError('Drill OFF not confirmed after Stop')
                 time.sleep(.1)
         except Exception as exc:
-            session.fault = str(exc)
-            try: session.invalidate(exc)
+            # Axis Stop writes completed above. If this is a follow-up drill
+            # status failure after an already isolated drill fault, retain that
+            # scope for the guarded next-connection recovery check.
+            scope = 'drill_power' if session.invalidation_scope == 'drill_power' else None
+            try: session.invalidate(exc, scope=scope)
             except Exception: pass
             raise
 

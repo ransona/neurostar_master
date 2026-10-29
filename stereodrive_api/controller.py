@@ -5,7 +5,8 @@ from pathlib import Path
 import threading
 import time
 from datetime import datetime, timezone
-from .protocol import AXES, BACKLASH, SIGNS, STEPS, poll, stop, target, decode_status, validate_ack
+from .protocol import (AXES, BACKLASH, SIGNS, STEPS, poll, stop, target, decode_status,
+                       validate_ack, drill_query, decode_drill)
 from .limits import validate_limits, check_target
 
 class StateStore:
@@ -42,6 +43,7 @@ class Session:
         self.travel_limits = validate_limits(travel_limits)
         self.drill_enabled = drill_enabled
         self.cancel = threading.Event(); self.fault = None; self.busy = False
+        self.invalidation_scope = None
         self.scales = {a: float(scales[a]) for a in AXES}
         if any(not math.isfinite(v) or not 100 <= v <= 100000 for v in self.scales.values()):
             raise ValueError('Invalid counts/mm calibration.')
@@ -56,8 +58,14 @@ class Session:
         saved = self.store.read()
         calibrated = dict(calibration_reference) if calibration_reference is not None else None
         if saved and not new_reference:
+            recovery_failure = None
+            if not saved.get('valid') and self._is_drill_only_invalidation(saved):
+                recovery_failure = self._try_restore_drill_only_state(saved, calibrated)
+                if recovery_failure is None:
+                    saved = self.store.read()
             if not saved.get('valid') or saved['identity'] != transport.identity or saved['raw'] != self.raw or saved['scales'] != self.scales:
-                raise RuntimeError('Saved state does not match this idle controller. Verify direction history and choose New verified reference.')
+                detail = f' Drill-only recovery refused: {recovery_failure}.' if recovery_failure else ''
+                raise RuntimeError('Saved state does not match this idle controller. Verify direction history and choose New verified reference.' + detail)
             if calibrated is not None and saved['reference_normal'] != calibrated:
                 raise RuntimeError('Calibration anchors differ from saved reference')
             if bool(saved.get('absolute_calibration', False)) != (calibrated is not None):
@@ -83,6 +91,60 @@ class Session:
         self.connection_normal = dict(self.command_normal)
         self.save(True)
 
+    @staticmethod
+    def _is_drill_only_invalidation(saved):
+        reason = str(saved.get('reason') or '')
+        # The reason prefix supports state files written before invalidation scopes
+        # were added. Every recovery still requires fresh matching hardware checks.
+        return (saved.get('invalidated_by') == 'drill_power'
+                or reason.startswith('Drill power state did not match'))
+
+    def _try_restore_drill_only_state(self, saved, calibrated):
+        """Revalidate saved position state only after fresh, exact idle checks."""
+        def refuse(reason):
+            self.log('DRILL_ONLY_STATE_RESTORE_REFUSED', reason=reason)
+            return reason
+
+        self.log('DRILL_ONLY_STATE_RESTORE_ATTEMPTED', identity=self.transport.identity)
+        if saved.get('identity') != self.transport.identity:
+            return refuse('controller identity changed')
+        if saved.get('scales') != self.scales:
+            return refuse('motion scales changed')
+        if not isinstance(saved.get('raw'), dict) or saved['raw'] != self.raw:
+            return refuse('current motor counts differ from saved counts')
+        states = saved.get('backlash_state')
+        if (not isinstance(states, dict) or set(states) != set(AXES)
+                or any(type(states[a]) is not int or not 0 <= states[a] <= BACKLASH[a] for a in AXES)):
+            return refuse('saved direction history is invalid')
+        reference = saved.get('reference_normal')
+        if not isinstance(reference, dict) or set(reference) != set(AXES):
+            return refuse('saved calibration reference is incomplete')
+        if any(not isinstance(reference[a], (int, float)) or not math.isfinite(reference[a]) for a in AXES):
+            return refuse('saved calibration reference is not finite')
+        if bool(saved.get('absolute_calibration', False)) != (calibrated is not None):
+            return refuse('calibration mode differs from saved state')
+        if calibrated is not None and reference != calibrated:
+            return refuse('measured calibration anchors differ from saved reference')
+        command_normal = saved.get('command_normal')
+        if not isinstance(command_normal, dict) or set(command_normal) != set(AXES):
+            return refuse('saved commanded position is incomplete')
+        actual_normal = {a: self.raw[a] - states[a] for a in AXES}
+        if any(not isinstance(command_normal[a], (int, float)) or not math.isfinite(command_normal[a])
+               or abs(command_normal[a] - actual_normal[a]) > .500001 for a in AXES):
+            return refuse('saved commanded position does not match current counts')
+        try:
+            if decode_drill(self.transport.exchange(drill_query(), 14)):
+                return refuse('controller reports drill ON')
+        except Exception as exc:
+            return refuse(f'could not verify drill OFF: {exc}')
+
+        restored = dict(saved, valid=True, reason=None)
+        restored.pop('invalidated_by', None)
+        self.store.write(restored)
+        self.log('DRILL_ONLY_STATE_RESTORED', raw=self.raw,
+                 note='Fresh idle counts exactly matched the saved position and drill was reported OFF.')
+        return None
+
     def snapshot(self):
         with self.io_lock:
             return {a: decode_status(a, self.transport.exchange(poll(a), 21 if a == 'AP' else 26)) for a in AXES}
@@ -90,11 +152,15 @@ class Session:
     def positions(self):
         return {a: (self.raw[a] - self.states[a] - self.reference[a]) / (SIGNS[a]*self.scales[a]) for a in AXES}
 
-    def save(self, valid, reason=None):
-        self.store.write(dict(version=1, identity=self.transport.identity, valid=valid,
+    def save(self, valid, reason=None, invalidated_by=None):
+        state = dict(version=1, identity=self.transport.identity, valid=valid,
             utc=datetime.now(timezone.utc).isoformat(), raw=self.raw,
             relative_units=self.positions(), backlash_state=self.states,
-            absolute_calibration=self.absolute_calibration, reference_normal=self.reference, command_normal=self.command_normal, scales=self.scales, reason=reason))
+            absolute_calibration=self.absolute_calibration, reference_normal=self.reference,
+            command_normal=self.command_normal, scales=self.scales, reason=reason)
+        if invalidated_by is not None:
+            state['invalidated_by'] = invalidated_by
+        self.store.write(state)
 
     def refresh(self):
         readings = self.snapshot()
@@ -129,9 +195,10 @@ class Session:
         record('STOP_COMMAND_WRITES_COMPLETED', axes=list(AXES), drill_enabled=self.drill_enabled,
                note='Command writes completed; stationary hardware state is not confirmed by this event.')
 
-    def invalidate(self, reason):
+    def invalidate(self, reason, *, scope=None):
         self.fault = str(reason)
-        self.save(False, self.fault)
+        self.invalidation_scope = scope
+        self.save(False, self.fault, invalidated_by=scope)
 
     def move(self, axis, direction, step, publish=lambda readings: None):
         if self.fault: raise RuntimeError('Faulted session; reconnect with verified state.')

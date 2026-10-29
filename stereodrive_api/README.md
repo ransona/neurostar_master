@@ -23,6 +23,14 @@ reported arrival alone as proof of physical clearance, delivered volume or tissu
 position. This experimental API is for supervised bench validation, not unattended
 surgery.
 
+If a drill power-state confirmation failure invalidates the saved session, the next
+connection makes a non-moving recovery attempt. It restores the saved axis reference
+only when the controller identity, calibration, scales, backlash history, commanded
+position and every fresh idle motor count match the saved state, and a fresh query
+reports the drill OFF. Any mismatch or unreadable status leaves the state invalid and
+requires investigation. This check cannot detect physical movement that the motor
+counts themselves fail to report.
+
 The axis profile is fixed to the captured **2 mm/s** request (field 1306). Pass `speed_mm_s=1`
 for the captured 1 mm/s profile (field 653); higher profiles are rejected. This is a conservative starting setting, not a guarantee
 against missed steps. Validate under your actual load with an external displacement
