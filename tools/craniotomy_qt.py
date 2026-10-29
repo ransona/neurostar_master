@@ -4087,14 +4087,19 @@ class CraniotomyWindow(QMainWindow):
             and modal.property("craniotomy_surface_dialog")
             and self._key_matches_binding(self.movement_key_bindings["drill_toggle"], key, combined_key)
         ):
+            if event.isAutoRepeat():
+                return True
             try:
                 if self.controller.has_active_motion():
-                    self.set_status("Wait for movement to finish before turning the drill off.")
+                    self.set_status("Movement still active.")
                 else:
-                    self.controller.turn_drill_off()
-                    self.set_status("Drill power off.")
+                    currently_on = bool(self.controller.reported_drill_state())
+                    requested_state = not currently_on
+                    self.controller.set_drill_power(requested_state)
+                    self.set_status("Drill ON confirmed." if requested_state else "Drill OFF confirmed.")
             except Exception as exc:
-                self.set_status(f"Drill could not be turned off: {exc}")
+                self.set_status("Drill toggle failed.")
+                QMessageBox.warning(self, "Drill Power", str(exc))
             return True
         if modal is not None and not (self.validation_modal_active and modal.property("allow_motor_shortcuts")):
             return super().eventFilter(watched,event)
@@ -8983,7 +8988,7 @@ class CraniotomyWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Move to surface"))
         drill_off_shortcut = QKeySequence(self.movement_key_bindings["drill_toggle"]).toString()
-        layout.addWidget(QLabel(f"Press {drill_off_shortcut} to turn the drill off."))
+        layout.addWidget(QLabel(f"Press {drill_off_shortcut} to toggle drill power."))
         position_label = QLabel("Current Bregma position: reading…")
         layout.addWidget(position_label)
         button_row = QHBoxLayout()
@@ -9078,6 +9083,37 @@ class CraniotomyWindow(QMainWindow):
         if self._confirm_start_drilling_after_surfaces():
             self.start_drilling_round()
 
+    def _prompt_drill_state_for_surface_workflow(self) -> bool:
+        try:
+            drill_is_on = bool(self.controller.reported_drill_state())
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Drill State Unavailable",
+                f"Could not check the drill state, so surface setting will not start.\n\n{exc}",
+            )
+            return False
+        choice = QMessageBox.question(
+            self,
+            "Drill During Surface Setting",
+            "Would you like the drill on while setting the craniotomy seed surfaces?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        desired_state = choice == QMessageBox.Yes
+        if desired_state == drill_is_on:
+            self.set_status("Drill on for surfaces." if desired_state else "Drill off for surfaces.")
+            return True
+        try:
+            self.controller.set_drill_power(desired_state)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Drill Power Not Confirmed",
+                f"Could not confirm the drill {'ON' if desired_state else 'OFF'}. Surface setting will not start.\n\n{exc}",
+            )
+            return False
+        self.set_status("Drill on for surfaces." if desired_state else "Drill off for surfaces.")
+        return True
+
     def _move_above_craniotomy_center(self) -> bool:
         """Return to the centre at the configured safe clearance before drilling."""
         clearance = (
@@ -9127,6 +9163,8 @@ class CraniotomyWindow(QMainWindow):
             self._require_project_coordinates("craniotomy")
             if all(seed.dv is not None for seed in self.seeds):
                 self._finish_craniotomy_surface_workflow()
+                return
+            if not self._prompt_drill_state_for_surface_workflow():
                 return
             seed_index = index
             while seed_index < len(self.seeds):

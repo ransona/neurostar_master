@@ -597,11 +597,36 @@ class PlannerTests(unittest.TestCase):
         self.app.processEvents()
         event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_D,Qt.KeyboardModifier.NoModifier)
         with patch.object(self.window.controller,'has_active_motion',return_value=False):
-            with patch.object(self.window.controller,'turn_drill_off') as turn_off:
+            with patch.object(self.window.controller,'reported_drill_state',return_value=True), \
+                 patch.object(self.window.controller,'set_drill_power') as set_power:
                 handled=self.window.eventFilter(self.window,event)
-        turn_off.assert_called_once_with()
+        set_power.assert_called_once_with(False)
         self.assertTrue(handled)
         dialog.close()
+
+    def test_drill_shortcut_turns_drill_on_inside_seed_surface_dialog(self):
+        dialog=QDialog(self.window)
+        dialog.setProperty('craniotomy_surface_dialog',True)
+        dialog.setModal(True)
+        dialog.show()
+        self.app.processEvents()
+        event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_D,Qt.KeyboardModifier.NoModifier)
+        with patch.object(self.window.controller,'has_active_motion',return_value=False), \
+             patch.object(self.window.controller,'reported_drill_state',return_value=False), \
+             patch.object(self.window.controller,'set_drill_power') as set_power:
+            handled=self.window.eventFilter(self.window,event)
+        set_power.assert_called_once_with(True)
+        self.assertTrue(handled)
+        dialog.close()
+
+    def test_surface_workflow_prompts_and_applies_requested_drill_state(self):
+        self.connect(allow_drill=True)
+        self.dialogs.question.return_value=planner.QMessageBox.Yes
+        self.assertTrue(self.window._prompt_drill_state_for_surface_workflow())
+        self.assertTrue(self.window.controller.reported_drill_state())
+        self.dialogs.question.return_value=planner.QMessageBox.No
+        self.assertTrue(self.window._prompt_drill_state_for_surface_workflow())
+        self.assertFalse(self.window.controller.reported_drill_state())
 
     def test_craniotomy_surface_dialog_can_return_to_previous_hole(self):
         def inspect_and_choose_previous():
