@@ -21,7 +21,7 @@ class StereoDrive:
                  allow_piston=False, allow_drill=False, speed_mm_s=2, calibration=None,
                  counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True, travel_limits=None,
                  simulation_start_position=None, persist_simulation=None,
-                 drill_state_timeout_seconds=10.0):
+                 drill_state_timeout_seconds=3.0, drill_state_retries=4):
         if not require_calibration and not simulate:
             raise ValueError('Live movement always requires measured zero calibration.')
         self.require_calibration = bool(require_calibration)
@@ -29,7 +29,10 @@ class StereoDrive:
                 or not isinstance(drill_state_timeout_seconds, (int, float))
                 or not 1.0 <= float(drill_state_timeout_seconds) <= 60.0):
             raise ValueError('Drill state confirmation timeout must be between 1 and 60 seconds')
+        if isinstance(drill_state_retries, bool) or not isinstance(drill_state_retries, int) or not 0 <= drill_state_retries <= 10:
+            raise ValueError('Drill state retries must be between 0 and 10')
         self.drill_state_timeout_seconds = float(drill_state_timeout_seconds)
+        self.drill_state_retries = drill_state_retries
         if isinstance(speed_mm_s, bool) or speed_mm_s not in (1, 2): raise ValueError('Axis speed must be 1 or 2 mm/s')
         if calibration is not None and not isinstance(calibration, Calibration):
             raise TypeError('calibration must be a Calibration object')
@@ -507,16 +510,24 @@ class StereoDrive:
                 s.refresh()
                 if self._stopping.is_set(): raise InterruptedError('Stop in progress')
             try:
-                with s.io_lock: s.transport.write(drill_power(enabled))
-                deadline = time.monotonic() + self.drill_state_timeout_seconds
-                while time.monotonic() < deadline:
-                    if self._stopping.is_set() and enabled: raise InterruptedError('Stop requested')
-                    if self._drill_state_locked(s) == enabled:
-                        self._log('DRILL_POWER_CONFIRMED', enabled=enabled)
-                        return enabled
-                    time.sleep(.1)
+                for attempt in range(self.drill_state_retries + 1):
+                    self._log('DRILL_POWER_ATTEMPT', enabled=enabled,
+                              attempt=attempt + 1, max_attempts=self.drill_state_retries + 1)
+                    with s.io_lock: s.transport.write(drill_power(enabled))
+                    deadline = time.monotonic() + self.drill_state_timeout_seconds
+                    while time.monotonic() < deadline:
+                        if self._stopping.is_set() and enabled: raise InterruptedError('Stop requested')
+                        if self._drill_state_locked(s) == enabled:
+                            self._log('DRILL_POWER_CONFIRMED', enabled=enabled,
+                                      attempt=attempt + 1)
+                            return enabled
+                        time.sleep(.1)
+                    if attempt < self.drill_state_retries:
+                        self._log('DRILL_POWER_RETRY', enabled=enabled,
+                                  attempt=attempt + 1, next_attempt=attempt + 2)
                 raise RuntimeError(
-                    f'Drill power state did not match requested {"ON" if enabled else "OFF"}; no automatic retry'
+                    f'Drill power state did not match requested {"ON" if enabled else "OFF"} '
+                    f'after {self.drill_state_retries + 1} attempts'
                 )
             except Exception as exc:
                 try: self._log('DRILL_POWER_FAILED', enabled=enabled,

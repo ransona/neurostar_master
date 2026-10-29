@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from stereodrive_api import StereoDrive, Calibration
 from stereodrive_api.protocol import target, BACKLASH
 
@@ -269,12 +270,50 @@ class APITests(unittest.TestCase):
 
     def test_drill_state_timeout_is_configurable_and_bounded(self):
         drive = self.drive(allow_drill=True)
-        self.assertEqual(drive.drill_state_timeout_seconds, 10.0)
+        self.assertEqual(drive.drill_state_timeout_seconds, 3.0)
+        self.assertEqual(drive.drill_state_retries, 4)
         drive.close()
-        configured = self.drive(allow_drill=True, drill_state_timeout_seconds=18.5)
+        configured = self.drive(allow_drill=True, drill_state_timeout_seconds=18.5, drill_state_retries=2)
         self.assertEqual(configured.drill_state_timeout_seconds, 18.5)
+        self.assertEqual(configured.drill_state_retries, 2)
         with self.assertRaisesRegex(ValueError, 'between 1 and 60 seconds'):
             StereoDrive(drill_state_timeout_seconds=0.5)
+        with self.assertRaisesRegex(ValueError, 'retries must be between 0 and 10'):
+            StereoDrive(drill_state_retries=11)
+
+    def test_drill_command_retries_after_confirmation_timeout(self):
+        d = self.drive(allow_drill=True, drill_state_timeout_seconds=1, drill_state_retries=4)
+        original_write = d._session.transport.write
+        original_state = d._drill_state_locked
+        on_commands = [0]
+
+        def count_on_commands(packet):
+            if packet == bytes.fromhex('af1101'):
+                on_commands[0] += 1
+            return original_write(packet)
+
+        def report_after_third_attempt(session):
+            if on_commands[0] < 3:
+                return False
+            return original_state(session)
+
+        clock = [0.0]
+        def advance_clock(*_args):
+            clock[0] += 0.1
+            return clock[0]
+
+        d._session.transport.write = count_on_commands
+        d._drill_state_locked = report_after_third_attempt
+        try:
+            with patch('stereodrive_api.api.time.monotonic', side_effect=advance_clock), \
+                 patch('stereodrive_api.api.time.sleep'):
+                self.assertTrue(d.drill_on())
+            self.assertEqual(on_commands[0], 3)
+            events = [json.loads(line)['event'] for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+            self.assertEqual(events.count('DRILL_POWER_RETRY'), 2)
+        finally:
+            d._session.transport.write = original_write
+            d._drill_state_locked = original_state
 
     def test_moving_query_during_blocking_move(self):
         d=self.drive();errors=[]
@@ -304,7 +343,7 @@ class APITests(unittest.TestCase):
         finally:e.close()
 
     def test_drill_timeout_attempts_off_without_on_retry(self):
-        d=self.drive(allow_drill=True);original=d._session.transport.exchange
+        d=self.drive(allow_drill=True,drill_state_timeout_seconds=1,drill_state_retries=0);original=d._session.transport.exchange
         def unknown(data,size):
             if data==bytes.fromhex('af12'):return bytes(14)
             return original(data,size)

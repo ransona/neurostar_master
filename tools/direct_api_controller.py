@@ -32,7 +32,8 @@ class StereoDriveController:
         self.error = None
         self.directions = {}
         self.last_rejection = None
-        self.drill_state_timeout_seconds = 10.0
+        self.drill_state_timeout_seconds = 3.0
+        self.drill_state_retries = 4
 
     def connect(self, calibration, states, state_path=None, *, new_reference=False,
                 allow_dv=False, allow_piston=False, allow_drill=False, speed=1,allow_pulsed=False,
@@ -47,7 +48,8 @@ class StereoDriveController:
             allow_drill=allow_drill, speed_mm_s=speed, travel_limits=travel_limits,
             require_calibration=self.live, persist_simulation=persist_simulation,
             simulation_start_position=simulation_start_position,
-            drill_state_timeout_seconds=self.drill_state_timeout_seconds)
+            drill_state_timeout_seconds=self.drill_state_timeout_seconds,
+            drill_state_retries=self.drill_state_retries)
         try:
             drive.connect(verified_backlash=states, new_reference=new_reference)
             position = drive.position()["axes_mm"]

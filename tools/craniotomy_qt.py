@@ -1215,7 +1215,9 @@ class CraniotomyWindow(QMainWindow):
         self._load_last_used_configs()
         self._load_general_settings()
         self.controller.drill_state_timeout_seconds = self.drill_state_timeout_seconds.value()
+        self.controller.drill_state_retries = self.drill_state_retries.value()
         self.drill_state_timeout_seconds.valueChanged.connect(self._apply_drill_state_timeout)
+        self.drill_state_retries.valueChanged.connect(self._apply_drill_state_retries)
         self.drill_round_wait_seconds.valueChanged.connect(
             lambda _value: self._save_general_settings()
         )
@@ -2328,13 +2330,21 @@ class CraniotomyWindow(QMainWindow):
         round_options_layout.addWidget(QLabel("Wait before next round (s)"), 0, 0)
         round_options_layout.addWidget(self.drill_round_wait_seconds, 0, 1)
         self.drill_state_timeout_seconds = self._double_spinbox(
-            value=10.0, minimum=1.0, maximum=60.0
+            value=3.0, minimum=1.0, maximum=60.0
         )
         self.drill_state_timeout_seconds.setToolTip(
             "How long to wait for the controller to confirm a drill ON or OFF command."
         )
         round_options_layout.addWidget(QLabel("Drill state confirmation timeout (s)"), 1, 0)
         round_options_layout.addWidget(self.drill_state_timeout_seconds, 1, 1)
+        self.drill_state_retries = QSpinBox()
+        self.drill_state_retries.setRange(0, 10)
+        self.drill_state_retries.setValue(4)
+        self.drill_state_retries.setToolTip(
+            "Number of times to resend a drill ON or OFF command if its reported state does not match within the timeout."
+        )
+        round_options_layout.addWidget(QLabel("Drill state retries"), 2, 0)
+        round_options_layout.addWidget(self.drill_state_retries, 2, 1)
         options_layout.addWidget(round_options_box)
         options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
@@ -3425,6 +3435,7 @@ class CraniotomyWindow(QMainWindow):
             "single_hole_delay_at_depth": self.single_hole_delay_at_depth.value(),
             "drill_round_wait_seconds": self.drill_round_wait_seconds.value(),
             "drill_state_timeout_seconds": self.drill_state_timeout_seconds.value(),
+            "drill_state_retries": self.drill_state_retries.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
             "named_locations": {
@@ -3445,6 +3456,14 @@ class CraniotomyWindow(QMainWindow):
         drive = getattr(self.controller, "drive", None)
         if drive is not None:
             drive.drill_state_timeout_seconds = timeout
+        self._save_general_settings()
+
+    def _apply_drill_state_retries(self, value: int) -> None:
+        retries = int(value)
+        self.controller.drill_state_retries = retries
+        drive = getattr(self.controller, "drive", None)
+        if drive is not None:
+            drive.drill_state_retries = retries
         self._save_general_settings()
 
     def _load_general_settings(self) -> None:
@@ -3507,16 +3526,23 @@ class CraniotomyWindow(QMainWindow):
             self.drill_round_wait_seconds.blockSignals(True)
             self.drill_round_wait_seconds.setValue(max(0.0, min(3600.0, wait_seconds)))
             self.drill_round_wait_seconds.blockSignals(False)
-            drill_timeout = payload.get("drill_state_timeout_seconds", 10.0)
+            drill_timeout = payload.get("drill_state_timeout_seconds", 3.0)
             try:
                 drill_timeout = float(drill_timeout)
             except (TypeError, ValueError):
-                drill_timeout = 10.0
+                drill_timeout = 3.0
             if not math.isfinite(drill_timeout):
-                drill_timeout = 10.0
+                drill_timeout = 3.0
             self.drill_state_timeout_seconds.blockSignals(True)
             self.drill_state_timeout_seconds.setValue(max(1.0, min(60.0, drill_timeout)))
             self.drill_state_timeout_seconds.blockSignals(False)
+            try:
+                drill_retries = int(payload.get("drill_state_retries", 4))
+            except (TypeError, ValueError):
+                drill_retries = 4
+            self.drill_state_retries.blockSignals(True)
+            self.drill_state_retries.setValue(max(0, min(10, drill_retries)))
+            self.drill_state_retries.blockSignals(False)
             single_hole_rate = payload.get("single_hole_drill_rate_mm_per_s")
             if single_hole_rate is None:
                 single_hole_rate = self.drill_rate_mm_per_s.value()
