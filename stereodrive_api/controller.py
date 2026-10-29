@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from .protocol import (AXES, BACKLASH, SIGNS, STEPS, poll, stop, target, decode_status,
-                       validate_ack, drill_query, decode_drill)
+                       validate_ack, drill_query, decode_drill, drill_power)
 from .limits import validate_limits, check_target
 
 class StateStore:
@@ -35,13 +35,15 @@ class MemoryStateStore:
         return None
 
 class Session:
-    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False, travel_limits=None, simulated_initial_position=None):
+    def __init__(self, transport, store, scales, initial_states, log, new_reference=False, calibration_reference=None, speed_mm_s=2, drill_enabled=False, travel_limits=None, simulated_initial_position=None, drill_state_timeout_seconds=3.0, drill_state_retries=4):
         self.transport, self.store, self.log = transport, store, log
         self.simulated = transport.identity.startswith('SIMULATOR:')
         self.io_lock = threading.RLock()
         self.speed_mm_s = speed_mm_s
         self.travel_limits = validate_limits(travel_limits)
         self.drill_enabled = drill_enabled
+        self.drill_state_timeout_seconds = float(drill_state_timeout_seconds)
+        self.drill_state_retries = int(drill_state_retries)
         self.cancel = threading.Event(); self.fault = None; self.busy = False
         self.invalidation_scope = None
         self.scales = {a: float(scales[a]) for a in AXES}
@@ -133,10 +135,27 @@ class Session:
                or abs(command_normal[a] - actual_normal[a]) > .500001 for a in AXES):
             return refuse('saved commanded position does not match current counts')
         try:
-            if decode_drill(self.transport.exchange(drill_query(), 14)):
-                return refuse('controller reports drill ON')
+            drill_on = decode_drill(self.transport.exchange(drill_query(), 14))
+            if drill_on:
+                confirmed_off = False
+                for attempt in range(self.drill_state_retries + 1):
+                    self.log('DRILL_ONLY_RECOVERY_OFF_ATTEMPT', attempt=attempt + 1,
+                             max_attempts=self.drill_state_retries + 1)
+                    with self.io_lock:
+                        self.transport.write(drill_power(False))
+                    deadline = time.monotonic() + self.drill_state_timeout_seconds
+                    while time.monotonic() < deadline:
+                        if not decode_drill(self.transport.exchange(drill_query(), 14)):
+                            confirmed_off = True
+                            self.log('DRILL_ONLY_RECOVERY_OFF_CONFIRMED', attempt=attempt + 1)
+                            break
+                        time.sleep(.1)
+                    if confirmed_off:
+                        break
+                if not confirmed_off:
+                    return refuse(f'could not confirm drill OFF after {self.drill_state_retries + 1} attempts')
         except Exception as exc:
-            return refuse(f'could not verify drill OFF: {exc}')
+            return refuse(f'could not verify or turn drill OFF: {exc}')
 
         restored = dict(saved, valid=True, reason=None)
         restored.pop('invalidated_by', None)

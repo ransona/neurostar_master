@@ -229,6 +229,17 @@ class APITests(unittest.TestCase):
         self.assertTrue(any(json.loads(line)['event']=='DRILL_ONLY_STATE_RESTORED'
                             for line in self.path.with_suffix('.jsonl').read_text().splitlines()))
 
+    def test_drill_only_recovery_turns_drill_off_before_restoring_state(self):
+        d=self.drive(allow_drill=True)
+        self.assertTrue(d.drill_on())
+        d._session.invalidate('Drill power state did not match requested ON',scope='drill_power')
+        saved=d._session.store.read()
+        self.assertIsNone(d._session._try_restore_drill_only_state(saved,None))
+        self.assertFalse(d.drill_state())
+        self.assertTrue(json.loads(self.path.read_text())['valid'])
+        self.assertTrue(any(json.loads(line)['event']=='DRILL_ONLY_RECOVERY_OFF_CONFIRMED'
+                            for line in self.path.with_suffix('.jsonl').read_text().splitlines()))
+
     def test_drill_only_fault_does_not_restore_if_axis_counts_changed(self):
         d=self.drive()
         d._session.invalidate('Drill power state did not match requested OFF',scope='drill_power')

@@ -190,7 +190,10 @@ missing if the computer loses power or storage access.
 
 Stop/Esc/close cancel movement, stop all four channels and attempt drill OFF even
 without ON permission. Software Stop depends on the connection/process; use physical
-Stop for uncertainty. Faults invalidate state; no automatic retry/recovery reversal.
+Stop for uncertainty. Movement faults invalidate state and never trigger an automatic
+movement reversal. Drill power commands use the configured bounded retry count; a
+drill-only state fault can be restored only after identity and motor counts match and
+the drill is verified OFF. The GUI Recover action asks before attempting this check.
 
 ## Documentation and tests
 

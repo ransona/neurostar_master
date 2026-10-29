@@ -194,7 +194,8 @@ class StereoDrive:
                                         verified_backlash or {}, self._log, new_reference,
                                         self.calibration.reference(self.scales) if self.calibration else None,
                                         self.speed_mm_s, True, self.travel_limits,
-                                        self.simulation_start_position if self.simulate else None)
+                                        self.simulation_start_position if self.simulate else None,
+                                        self.drill_state_timeout_seconds, self.drill_state_retries)
                 try:
                     self._log('API_CONNECTED', mode='simulation' if self.simulate else 'live',
                               identity=transport.identity, speed_mm_s=self.speed_mm_s,

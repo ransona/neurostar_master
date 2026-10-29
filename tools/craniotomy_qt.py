@@ -1062,10 +1062,13 @@ class CraniotomyWindow(QMainWindow):
     single_hole_progress_signal = Signal(float)
     single_hole_status_signal = Signal(str)
     single_hole_finished_signal = Signal(str, float, str)
+    drill_recovery_finished_signal = Signal(bool, str)
 
     def __init__(self, controller=None) -> None:
         super().__init__()
         self.controller = controller or StereoDriveController()
+        self.drill_recovery_thread: threading.Thread | None = None
+        self.drill_recovery_active = False
         global _active_event_log
         self.event_log = _active_event_log or EventLog(_user_app_data_root() / "app-events.jsonl")
         _active_event_log = self.event_log
@@ -1211,6 +1214,7 @@ class CraniotomyWindow(QMainWindow):
         self.beep_signal.connect(self._beep)
         self.validation_move_position_signal.connect(self._set_validation_move_position)
         self.keyboard_move_finished_signal.connect(self._keyboard_move_finished)
+        self.drill_recovery_finished_signal.connect(self._finish_drill_state_recovery)
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
@@ -1263,6 +1267,10 @@ class CraniotomyWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.event_log.write("app.close_requested", operation_active=self._motion_is_active())
+        if self.drill_recovery_active:
+            self.set_status("Drill recovery is running. Close the app after it finishes.")
+            event.ignore()
+            return
         if self._motion_is_active():
             self.stop_motion()
             try:
@@ -1495,6 +1503,10 @@ class CraniotomyWindow(QMainWindow):
         options_btn.clicked.connect(self.open_options_dialog)
         usb_setup_btn = QPushButton("USB setup / zero calibration")
         usb_setup_btn.clicked.connect(self.open_direct_usb_setup)
+        self.recover_drill_btn = QPushButton("Recover")
+        self.recover_drill_btn.setToolTip("Attempt to restore movement state after a drill-only fault.")
+        self.recover_drill_btn.setEnabled(bool(getattr(self.controller, "direct_api", False) and self.controller.live))
+        self.recover_drill_btn.clicked.connect(self.attempt_drill_state_recovery)
         update_btn = QPushButton("Update")
         update_btn.clicked.connect(self.update_from_github)
         self.overlay_combo = QComboBox()
@@ -1507,6 +1519,7 @@ class CraniotomyWindow(QMainWindow):
         position_layout.addWidget(drill_toggle_btn)
         position_layout.addWidget(clear_project_btn)
         position_layout.addWidget(usb_setup_btn)
+        position_layout.addWidget(self.recover_drill_btn)
         position_layout.addWidget(options_btn)
         position_layout.addWidget(update_btn)
         position_layout.addWidget(QLabel("Overlay:"))
@@ -2379,6 +2392,95 @@ class CraniotomyWindow(QMainWindow):
         self.options_dialog.raise_()
         self.options_dialog.activateWindow()
 
+    def attempt_drill_state_recovery(self) -> None:
+        if not getattr(self.controller, "direct_api", False) or not self.controller.live:
+            QMessageBox.information(self, "Recover", "Recovery is available only for a live USB controller.")
+            return
+        if not self._require_idle("Recover movement state"):
+            return
+        state_path = self._app_data_root_dir() / "DirectUSB" / "live" / "api-state.json"
+        try:
+            from stereodrive_api.controller import Session, StateStore
+            saved = StateStore(state_path).read()
+            if not saved or saved.get("valid") or not Session._is_drill_only_invalidation(saved):
+                QMessageBox.information(
+                    self, "Recover movement state",
+                    "There is no recoverable drill-only fault in the saved movement state.",
+                )
+                return
+        except Exception as exc:
+            QMessageBox.warning(self, "Recover movement state", f"Could not inspect the saved movement state: {exc}")
+            return
+
+        prompt = QMessageBox(self)
+        prompt.setIcon(QMessageBox.Icon.Warning)
+        prompt.setWindowTitle("Recover movement state?")
+        prompt.setText(
+            "Recovery will issue Stop commands and turn the drill OFF. It will restore movement state only "
+            "if the same controller is connected and fresh motor counts match the saved position. "
+            "No axis movement will be commanded. Keep the physical Stop accessible. Continue?"
+        )
+        cancel_button = prompt.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        recover_button = prompt.addButton("Recover", QMessageBox.ButtonRole.AcceptRole)
+        prompt.setDefaultButton(cancel_button)
+        prompt.exec()
+        if prompt.clickedButton() is not recover_button:
+            return
+
+        self.recover_drill_btn.setEnabled(False)
+        self.drill_recovery_active = True
+        self.set_status("Checking drill and movement state for recovery.")
+        self.event_log.write("drill.recovery_requested", state_path=str(state_path))
+
+        def recover() -> None:
+            try:
+                from stereodrive_api import Calibration
+                calibration_data = self.direct_control_settings.get("calibration")
+                if not isinstance(calibration_data, dict):
+                    raise RuntimeError("Saved measured USB calibration is unavailable.")
+                try:
+                    self.controller.close()
+                except Exception as close_error:
+                    # close() releases the serial handle even when its best-effort
+                    # Stop or drill-OFF verification fails. Reconnect performs a
+                    # fresh identity/count check and its own verified OFF attempt.
+                    if self.controller.drive is not None:
+                        raise RuntimeError(f"Could not release the existing USB session: {close_error}") from close_error
+                    self.event_log.write("drill.recovery_close_warning", error=str(close_error))
+                self.controller.connect(
+                    Calibration(**calibration_data), None, state_path,
+                    allow_dv=True, allow_piston=True, allow_drill=True,
+                    speed=int(self.direct_control_settings.get("speed_mm_s", 1)),
+                    allow_pulsed=True,
+                    travel_limits=self.direct_control_settings.get("travel_limits"),
+                )
+                self.event_log.write("drill.recovery_succeeded")
+            except Exception as exc:
+                self.event_log.write(
+                    "drill.recovery_failed", error_type=type(exc).__name__, error=str(exc)
+                )
+                self.drill_recovery_finished_signal.emit(False, str(exc))
+            else:
+                self.drill_recovery_finished_signal.emit(
+                    True, "Movement state restored. Verify the displayed position before resuming work."
+                )
+
+        self.drill_recovery_thread = threading.Thread(target=recover, daemon=True)
+        self.drill_recovery_thread.start()
+
+    def _finish_drill_state_recovery(self, succeeded: bool, message: str) -> None:
+        self.drill_recovery_active = False
+        self.recover_drill_btn.setEnabled(bool(self.controller.live))
+        self.set_status(message if succeeded else f"Recovery failed: {message}")
+        if succeeded:
+            self.refresh_live_position()
+            QMessageBox.information(self, "Recovery complete", message)
+        else:
+            QMessageBox.warning(
+                self, "Recovery not completed",
+                f"Movement state was not restored. Do not move until the hardware position and calibration have been checked.\n\n{message}",
+            )
+
     def open_direct_usb_setup(self) -> None:
         """Open one live USB calibration surface, independent of planner simulation."""
         if not self._require_idle("USB setup / calibration"):
@@ -2836,6 +2938,8 @@ class CraniotomyWindow(QMainWindow):
 
     def _motion_is_active(self, *, include_validation_modal: bool = True) -> bool:
         return bool(
+            self.drill_recovery_active
+            or
             (self.drill_thread is not None and self.drill_thread.is_alive())
             or (self.single_hole_thread is not None and self.single_hole_thread.is_alive())
             or self.single_hole_paused
