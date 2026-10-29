@@ -267,6 +267,15 @@ class APITests(unittest.TestCase):
         with self.assertRaises(ValueError):Calibration({'AP':0},0).reference({})
         with self.assertRaises(ValueError):StereoDrive(speed_mm_s=3)
 
+    def test_drill_state_timeout_is_configurable_and_bounded(self):
+        drive = self.drive(allow_drill=True)
+        self.assertEqual(drive.drill_state_timeout_seconds, 10.0)
+        drive.close()
+        configured = self.drive(allow_drill=True, drill_state_timeout_seconds=18.5)
+        self.assertEqual(configured.drill_state_timeout_seconds, 18.5)
+        with self.assertRaisesRegex(ValueError, 'between 1 and 60 seconds'):
+            StereoDrive(drill_state_timeout_seconds=0.5)
+
     def test_moving_query_during_blocking_move(self):
         d=self.drive();errors=[]
         def move():

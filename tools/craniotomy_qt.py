@@ -1214,6 +1214,8 @@ class CraniotomyWindow(QMainWindow):
         self._build_ui()
         self._load_last_used_configs()
         self._load_general_settings()
+        self.controller.drill_state_timeout_seconds = self.drill_state_timeout_seconds.value()
+        self.drill_state_timeout_seconds.valueChanged.connect(self._apply_drill_state_timeout)
         self.drill_round_wait_seconds.valueChanged.connect(
             lambda _value: self._save_general_settings()
         )
@@ -2325,6 +2327,14 @@ class CraniotomyWindow(QMainWindow):
         )
         round_options_layout.addWidget(QLabel("Wait before next round (s)"), 0, 0)
         round_options_layout.addWidget(self.drill_round_wait_seconds, 0, 1)
+        self.drill_state_timeout_seconds = self._double_spinbox(
+            value=10.0, minimum=1.0, maximum=60.0
+        )
+        self.drill_state_timeout_seconds.setToolTip(
+            "How long to wait for the controller to confirm a drill ON or OFF command."
+        )
+        round_options_layout.addWidget(QLabel("Drill state confirmation timeout (s)"), 1, 0)
+        round_options_layout.addWidget(self.drill_state_timeout_seconds, 1, 1)
         options_layout.addWidget(round_options_box)
         options_box = QGroupBox("Keyboard Controls")
         options_grid = QGridLayout(options_box)
@@ -3414,6 +3424,7 @@ class CraniotomyWindow(QMainWindow):
             "single_hole_drill_rate_mm_per_s": self.single_hole_rate_mm_per_s.value(),
             "single_hole_delay_at_depth": self.single_hole_delay_at_depth.value(),
             "drill_round_wait_seconds": self.drill_round_wait_seconds.value(),
+            "drill_state_timeout_seconds": self.drill_state_timeout_seconds.value(),
             "home_axis": self.home_axis,
             "work_axis": self.work_axis,
             "named_locations": {
@@ -3427,6 +3438,14 @@ class CraniotomyWindow(QMainWindow):
             for name in ("home_axis","work_axis","axis_zero_reference"):payload.pop(name,None)
             self._save_direct_control_settings()
         self._write_config_file(self._general_settings_path(), payload)
+
+    def _apply_drill_state_timeout(self, value: float) -> None:
+        timeout = float(value)
+        self.controller.drill_state_timeout_seconds = timeout
+        drive = getattr(self.controller, "drive", None)
+        if drive is not None:
+            drive.drill_state_timeout_seconds = timeout
+        self._save_general_settings()
 
     def _load_general_settings(self) -> None:
         path = self._general_settings_path()
@@ -3488,6 +3507,16 @@ class CraniotomyWindow(QMainWindow):
             self.drill_round_wait_seconds.blockSignals(True)
             self.drill_round_wait_seconds.setValue(max(0.0, min(3600.0, wait_seconds)))
             self.drill_round_wait_seconds.blockSignals(False)
+            drill_timeout = payload.get("drill_state_timeout_seconds", 10.0)
+            try:
+                drill_timeout = float(drill_timeout)
+            except (TypeError, ValueError):
+                drill_timeout = 10.0
+            if not math.isfinite(drill_timeout):
+                drill_timeout = 10.0
+            self.drill_state_timeout_seconds.blockSignals(True)
+            self.drill_state_timeout_seconds.setValue(max(1.0, min(60.0, drill_timeout)))
+            self.drill_state_timeout_seconds.blockSignals(False)
             single_hole_rate = payload.get("single_hole_drill_rate_mm_per_s")
             if single_hole_rate is None:
                 single_hole_rate = self.drill_rate_mm_per_s.value()

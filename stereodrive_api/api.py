@@ -20,10 +20,16 @@ class StereoDrive:
     def __init__(self, *, simulate=True, state_path=None, allow_dv=False,
                  allow_piston=False, allow_drill=False, speed_mm_s=2, calibration=None,
                  counts_per_mm=5225., piston_counts_per_nl=161.36, require_calibration=True, travel_limits=None,
-                 simulation_start_position=None, persist_simulation=None):
+                 simulation_start_position=None, persist_simulation=None,
+                 drill_state_timeout_seconds=10.0):
         if not require_calibration and not simulate:
             raise ValueError('Live movement always requires measured zero calibration.')
         self.require_calibration = bool(require_calibration)
+        if (isinstance(drill_state_timeout_seconds, bool)
+                or not isinstance(drill_state_timeout_seconds, (int, float))
+                or not 1.0 <= float(drill_state_timeout_seconds) <= 60.0):
+            raise ValueError('Drill state confirmation timeout must be between 1 and 60 seconds')
+        self.drill_state_timeout_seconds = float(drill_state_timeout_seconds)
         if isinstance(speed_mm_s, bool) or speed_mm_s not in (1, 2): raise ValueError('Axis speed must be 1 or 2 mm/s')
         if calibration is not None and not isinstance(calibration, Calibration):
             raise TypeError('calibration must be a Calibration object')
@@ -502,7 +508,7 @@ class StereoDrive:
                 if self._stopping.is_set(): raise InterruptedError('Stop in progress')
             try:
                 with s.io_lock: s.transport.write(drill_power(enabled))
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + self.drill_state_timeout_seconds
                 while time.monotonic() < deadline:
                     if self._stopping.is_set() and enabled: raise InterruptedError('Stop requested')
                     if self._drill_state_locked(s) == enabled:
