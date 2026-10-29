@@ -116,9 +116,24 @@ class PulseTests(unittest.TestCase):
         surface=(0.0,0.0,10.0)
         current=(0.0,0.0,8.0)
         events=pulse.single_hole_drilling_plan(current,surface,0.01,0.02,0.01)
-        self.assertAlmostEqual(events[0].target[2],8.005)
+        self.assertEqual(events[0].phase,'single_hole_reentry')
+        self.assertEqual(events[0].due_s,0.0)
+        self.assertEqual(events[0].target,(0.0,0.0,10.01))
+        self.assertEqual(events[1].phase,'single_hole_drill')
         self.assertAlmostEqual(events[-1].target[2],10.02)
         self.assertAlmostEqual(events[-1].depth_mm,0.02)
+
+    def test_single_hole_drilling_skips_overdue_pulses_to_catch_up_to_rate(self):
+        now=[0.0];targets=[]
+        class Controller:
+            def goto_axis_position(self,ap,ml,dv,**kwargs):
+                targets.append(dv)
+                now[0]+=.2
+        events=[pulse.Pulse(i*.1,'single_hole_drill',target=(0,0,i*.005),
+                            point_index=0,depth_mm=i*.005) for i in range(1,7)]
+        pulse.execute(Controller(),events,catch_up_phases={'single_hole_drill'},
+            clock=lambda:now[0],sleep=lambda s:now.__setitem__(0,now[0]+s))
+        self.assertEqual(targets,[.005,.015,.025,.03])
 
     def test_single_hole_plan_rejects_shallower_resume_target(self):
         with self.assertRaises(ValueError):

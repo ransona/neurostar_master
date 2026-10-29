@@ -9187,7 +9187,6 @@ class CraniotomyWindow(QMainWindow):
                 start_depth,
                 target_depth,
                 depth_rate,
-                reentry_step_mm=clearance if self.single_hole_paused else None,
             )
             target_position = (origin[0], origin[1], origin[2] + target_depth)
             retract_path = pulsed_protocol.line(target_position, safe_retract, 0.005)
@@ -9261,38 +9260,31 @@ class CraniotomyWindow(QMainWindow):
         outcome = "completed"
         detail = "Hole depth reached; drill is off and tool is retracted."
         try:
-            started = time.monotonic()
-            previous_due = 0.0
-            previous_command_started = None
-            for event in plan:
-                interval = event.due_s - previous_due
-                due_at = (
-                    started + event.due_s
-                    if previous_command_started is None
-                    else previous_command_started + interval
-                )
-                while True:
-                    if self.single_hole_cancel_requested.is_set():
-                        raise pulsed_protocol.PulseCancelled("Single-hole operation cancelled.")
-                    if self.single_hole_pause_requested.is_set():
-                        raise pulsed_protocol.PulsePaused("Single-hole operation paused.")
-                    remaining = due_at - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    time.sleep(min(0.03, remaining))
+            def on_event(event):
                 if event.target is None:
-                    previous_due = event.due_s
-                    continue
-                # Finish and verify this small pulse before honoring pause/cancel.
-                previous_command_started = time.monotonic()
-                previous_due = event.due_s
-                self.controller.goto_axis_position(*event.target)
+                    return
                 actual = tuple(self.controller.get_current_axis_position())
                 depth = max(0.0, min(target_depth, actual[2] - origin[2]))
                 self.single_hole_current_depth_mm = depth
                 self.single_hole_progress_signal.emit(depth)
-                self.single_hole_status_signal.emit(f"Drilling at {depth:.2f} mm.")
-                self.status_signal.emit(f"Single hole drilling at {depth:.2f} mm.")
+                if event.phase == "single_hole_reentry":
+                    self.single_hole_status_signal.emit(
+                        f"Returned to saved depth {depth:.2f} mm; drilling deeper."
+                    )
+                    self.status_signal.emit(f"Returned to the saved hole depth {depth:.2f} mm.")
+                else:
+                    self.single_hole_status_signal.emit(f"Drilling at {depth:.2f} mm.")
+                    self.status_signal.emit(f"Single hole drilling at {depth:.2f} mm.")
+
+            pulsed_protocol.execute(
+                self.controller,
+                plan,
+                stop_requested=self.single_hole_cancel_requested.is_set,
+                pause_requested=self.single_hole_pause_requested.is_set,
+                retract_on_pause=True,
+                on_event=on_event,
+                catch_up_phases={"single_hole_drill"},
+            )
             if self._single_hole_target_update_pending:
                 requested_depth = float(self.single_hole_depth_mm.value())
                 if requested_depth > target_depth + 0.0005:

@@ -253,9 +253,8 @@ def borehole_drilling_plan(start, holes, current_depths, target_depths, clearanc
 
 
 def single_hole_drilling_plan(current_position, surface_position, current_depth_mm,
-                              target_depth_mm, depth_rate_mm_s, step_mm=.005,
-                              reentry_step_mm=None):
-    """Plan serial DV pulses at one fixed AP/ML point, resuming from saved depth."""
+                              target_depth_mm, depth_rate_mm_s, step_mm=.005):
+    """Rapidly re-enter a saved depth, then rate-timed DV drilling pulses."""
     current_position = tuple(finite(value, 'Axis coordinate', -math.inf) for value in current_position)
     surface_position = tuple(finite(value, 'surface Axis coordinate', -math.inf) for value in surface_position)
     if len(current_position) != 3 or len(surface_position) != 3:
@@ -267,26 +266,22 @@ def single_hole_drilling_plan(current_position, surface_position, current_depth_
     if target_depth < current_depth - 1e-9:
         raise ValueError('Target hole depth cannot be shallower than the saved depth.')
 
-    if reentry_step_mm is None:
-        reentry_step_mm = step
-    reentry_step_mm = finite(reentry_step_mm, 're-entry step', 1e-9)
     saved_depth_position = (surface_position[0], surface_position[1], surface_position[2] + current_depth)
     events = []
     elapsed = 0.0
     previous = current_position
     if math.dist(previous, saved_depth_position) > 1e-9:
-        for target in line(previous, saved_depth_position, reentry_step_mm):
-            elapsed += math.dist(previous, target) / rate
-            events.append(Pulse(elapsed, 'single_hole_reentry', target=target,
-                                depth_mm=current_depth))
-            previous = target
+        events.append(Pulse(elapsed, 'single_hole_reentry', target=saved_depth_position,
+                            point_index=0, depth_mm=current_depth))
+        previous = saved_depth_position
 
     target_position = (surface_position[0], surface_position[1], surface_position[2] + target_depth)
     if math.dist(previous, target_position) > 1e-9:
         for target in line(previous, target_position, step):
             elapsed += math.dist(previous, target) / rate
             depth = max(0.0, target[2] - surface_position[2])
-            events.append(Pulse(elapsed, 'single_hole_drill', target=target, depth_mm=depth))
+            events.append(Pulse(elapsed, 'single_hole_drill', target=target,
+                                point_index=0, depth_mm=depth))
             previous = target
     return events
 

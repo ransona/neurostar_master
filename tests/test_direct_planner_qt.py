@@ -429,7 +429,7 @@ class PlannerTests(unittest.TestCase):
         self.assertGreaterEqual(time.monotonic()-started,0.045)
         self.window.controller.turn_drill_off.assert_called_once_with()
         self.window._retract_single_hole_to_clearance.assert_called_once_with(
-            (0.0,0.0,0.0), 2.0, stop_first=False
+            (0.0,0.0,0.0), 2.0, stop_first=False, fast=True
         )
 
     def test_freeze_modes_lock_craniotomy_edits_and_can_switch_or_exit(self):
