@@ -2380,9 +2380,9 @@ class CraniotomyWindow(QMainWindow):
         benchmark_box = QGroupBox("Axis Movement Benchmark")
         benchmark_layout = QVBoxLayout(benchmark_box)
         benchmark_layout.addWidget(QLabel(
-            "Supervised bench-only movement timing. This does not measure physical displacement."
+            "Supervised out-and-back fault test. Configure step sizes in the popup; this does not measure physical displacement."
         ))
-        benchmark_btn = QPushButton("Benchmark Axis Moves")
+        benchmark_btn = QPushButton("Run Movement Fault Test")
         benchmark_btn.clicked.connect(self.start_axis_benchmark)
         benchmark_layout.addWidget(benchmark_btn)
         options_layout.addWidget(benchmark_box)
@@ -5782,7 +5782,7 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Benchmark"):return
         dialog=QDialog(self);dialog.setWindowTitle("Supervised Axis Benchmark")
         layout=QVBoxLayout(dialog)
-        warning=QLabel("Bench only: drill OFF, pipette clear of specimen, complete out-and-back path clear, physical Stop accessible. DV is opt-in. Fault/Cancel stops without automatic return. Results measure motor counts and command time, not physical displacement.")
+        warning=QLabel("Movement fault-test mode: drill OFF, pipette clear of specimen, complete out-and-back path clear, physical Stop accessible. Select AP/ML/DV and comma-separated step sizes; every selected size is moved forward and then reversed through the normal USB movement path. DV is opt-in. Fault/Cancel stops without automatic return. Results measure verified motor counts and command time, not physical displacement.")
         warning.setWordWrap(True);layout.addWidget(warning)
         checks={}
         for axis in ('AP','ML','DV'):
