@@ -5787,8 +5787,12 @@ class CraniotomyWindow(QMainWindow):
         checks={}
         for axis in ('AP','ML','DV'):
             check=QCheckBox(axis);check.setChecked(True);checks[axis]=check;layout.addWidget(check)
-        layout.addWidget(QLabel("Distances in mm, comma-separated (each >0, <=1)"))
-        distances=QLineEdit('0.01, 0.02, 0.05');layout.addWidget(distances)
+        layout.addWidget(QLabel("Random amplitude range in mm (0 < min <= max <= 1)"))
+        range_row=QHBoxLayout()
+        minimum=QLineEdit('0.01');maximum=QLineEdit('0.01')
+        range_row.addWidget(QLabel("Min"));range_row.addWidget(minimum);range_row.addWidget(QLabel("Max"));range_row.addWidget(maximum)
+        layout.addLayout(range_row)
+        layout.addWidget(QLabel("Random movements per selected axis"));moves=QSpinBox();moves.setRange(1,10000);moves.setValue(1);layout.addWidget(moves)
         layout.addWidget(QLabel("Sequence repetitions (max 10,000 total forward/reverse moves)"));repeats=QSpinBox();repeats.setRange(1,10000);repeats.setValue(1);layout.addWidget(repeats)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Run Benchmark")
@@ -5796,10 +5800,12 @@ class CraniotomyWindow(QMainWindow):
         if dialog.exec()!=QDialog.Accepted:return
         try:
             axes=[axis for axis,check in checks.items() if check.isChecked()]
-            values=[float(v.strip()) for v in distances.text().split(',')]
+            amplitude_range=(float(minimum.text()),float(maximum.text()))
+            move_count=moves.value()
             count=repeats.value()
             def operation(cancel,progress):
-                return self.controller.benchmark_axis_moves(axes,values,count,stop_requested=cancel,
+                return self.controller.benchmark_axis_moves(axes,repeats=count,stop_requested=cancel,
+                    distance_range_mm=amplitude_range,moves_per_axis=move_count,
                     progress_callback=lambda i,total,axis,target:progress(int(i/total*100),f"{i}/{total}: verified {axis} {target:.4f} mm"))
             rows=self._run_direct_operation_with_progress("Axis Benchmark","Preflighting complete out-and-back path…",operation)
             if rows is not None:

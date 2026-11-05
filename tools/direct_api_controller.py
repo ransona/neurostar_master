@@ -1,6 +1,7 @@
 """Planner adapter: every physical command uses stereodrive_api, never native UI."""
 import json
 import math
+import random
 from pathlib import Path
 import sys
 import threading
@@ -360,23 +361,43 @@ class StereoDriveController:
         return self.syringe_to_limit(fill=True,**kwargs)
 
     def benchmark_axis_moves(self, axes=None, distances_mm=None, repeats=3, tolerance=.003,
-                             stop_requested=None, progress_callback=None):
+                             stop_requested=None, progress_callback=None,
+                             distance_range_mm=None, moves_per_axis=None, random_seed=None):
         max_legs = 10000
         axes=['AP','ML'] if axes is None else axes
         distances_mm=[.01,.02,.05] if distances_mm is None else distances_mm
+        if distance_range_mm is not None:
+            if (not isinstance(distance_range_mm, (list, tuple)) or len(distance_range_mm) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           or not math.isfinite(v) for v in distance_range_mm)):
+                raise StereoDriveError('Invalid benchmark amplitude range')
+            low, high = map(float, distance_range_mm)
+            if not 0 < low <= high <= 1:
+                raise StereoDriveError('Benchmark amplitude range must be 0 < min <= max <= 1 mm')
+            if moves_per_axis is None:
+                moves_per_axis = 1
+        else:
+            low = high = None
         if (not axes or len(set(axes))!=len(axes) or any(a not in ('AP','ML','DV') for a in axes)
                 or type(repeats) is not int or not 1<=repeats<=10000 or not distances_mm or len(distances_mm)>20
                 or any(isinstance(d,bool) or not isinstance(d,(int,float)) or not math.isfinite(d) or not 0<d<=1 for d in distances_mm)
                 or isinstance(tolerance,bool) or not math.isfinite(tolerance) or tolerance<=0):
             raise StereoDriveError('Invalid benchmark: select axes, 1–10000 repeats and distances >0, <=1 mm')
-        leg_count = 2 * len(axes) * len(distances_mm) * repeats
+        if distance_range_mm is not None and (
+                type(moves_per_axis) is not int or not 1 <= moves_per_axis <= 10000):
+            raise StereoDriveError('Invalid benchmark movement count')
+        sequence_moves = moves_per_axis if distance_range_mm is not None else len(distances_mm)
+        leg_count = 2 * len(axes) * sequence_moves * repeats
         if leg_count > max_legs:
             raise StereoDriveError(f'Benchmark sequence has {leg_count} moves; maximum is {max_legs}')
         start=self.get_current_axis_position();legs=[]
+        rng = random.Random(random_seed)
         for repeat in range(1,repeats+1):
             for axis in axes:
                 index=('AP','ML','DV').index(axis)
-                for distance in distances_mm:
+                amplitudes = ([rng.uniform(low, high) for _ in range(moves_per_axis)]
+                              if distance_range_mm is not None else distances_mm)
+                for distance in amplitudes:
                     target=list(start);target[index]+=distance
                     legs.extend([(axis,distance,repeat,'+',tuple(target)),(axis,distance,repeat,'-',start)])
         self.validate_axis_path([leg[-1] for leg in legs])
