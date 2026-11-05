@@ -361,13 +361,17 @@ class StereoDriveController:
 
     def benchmark_axis_moves(self, axes=None, distances_mm=None, repeats=3, tolerance=.003,
                              stop_requested=None, progress_callback=None):
+        max_legs = 10000
         axes=['AP','ML'] if axes is None else axes
         distances_mm=[.01,.02,.05] if distances_mm is None else distances_mm
         if (not axes or len(set(axes))!=len(axes) or any(a not in ('AP','ML','DV') for a in axes)
-                or type(repeats) is not int or not 1<=repeats<=10 or not distances_mm or len(distances_mm)>20
+                or type(repeats) is not int or not 1<=repeats<=10000 or not distances_mm or len(distances_mm)>20
                 or any(isinstance(d,bool) or not isinstance(d,(int,float)) or not math.isfinite(d) or not 0<d<=1 for d in distances_mm)
                 or isinstance(tolerance,bool) or not math.isfinite(tolerance) or tolerance<=0):
-            raise StereoDriveError('Invalid benchmark: select axes, 1–10 repeats and distances >0, <=1 mm')
+            raise StereoDriveError('Invalid benchmark: select axes, 1–10000 repeats and distances >0, <=1 mm')
+        leg_count = 2 * len(axes) * len(distances_mm) * repeats
+        if leg_count > max_legs:
+            raise StereoDriveError(f'Benchmark sequence has {leg_count} moves; maximum is {max_legs}')
         start=self.get_current_axis_position();legs=[]
         for axis in axes:
             index=('AP','ML','DV').index(axis)
