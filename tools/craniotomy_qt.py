@@ -5789,7 +5789,7 @@ class CraniotomyWindow(QMainWindow):
             check=QCheckBox(axis);check.setChecked(True);checks[axis]=check;layout.addWidget(check)
         layout.addWidget(QLabel("Distances in mm, comma-separated (each >0, <=1)"))
         distances=QLineEdit('0.01, 0.02, 0.05');layout.addWidget(distances)
-        layout.addWidget(QLabel("Repeats (max 10,000 total forward/reverse moves)"));repeats=QSpinBox();repeats.setRange(1,10000);repeats.setValue(1);layout.addWidget(repeats)
+        layout.addWidget(QLabel("Sequence repetitions (max 10,000 total forward/reverse moves)"));repeats=QSpinBox();repeats.setRange(1,10000);repeats.setValue(1);layout.addWidget(repeats)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Run Benchmark")
         buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)

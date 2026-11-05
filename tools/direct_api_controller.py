@@ -373,11 +373,11 @@ class StereoDriveController:
         if leg_count > max_legs:
             raise StereoDriveError(f'Benchmark sequence has {leg_count} moves; maximum is {max_legs}')
         start=self.get_current_axis_position();legs=[]
-        for axis in axes:
-            index=('AP','ML','DV').index(axis)
-            for distance in distances_mm:
-                target=list(start);target[index]+=distance
-                for repeat in range(1,repeats+1):
+        for repeat in range(1,repeats+1):
+            for axis in axes:
+                index=('AP','ML','DV').index(axis)
+                for distance in distances_mm:
+                    target=list(start);target[index]+=distance
                     legs.extend([(axis,distance,repeat,'+',tuple(target)),(axis,distance,repeat,'-',start)])
         self.validate_axis_path([leg[-1] for leg in legs])
         def run(drive):
