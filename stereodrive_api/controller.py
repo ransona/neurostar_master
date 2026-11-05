@@ -257,6 +257,8 @@ class Session:
         self.busy = True
         self.active_axis, self.active_backlash = axis,new_state
         move_started = time.monotonic()
+        last_readings = None
+        last_sample_time = None
         try:
             if self.cancel.is_set(): raise InterruptedError('Stopped before movement.')
             with self.io_lock:
@@ -266,6 +268,8 @@ class Session:
             while time.monotonic() < deadline:
                 if self.cancel.is_set(): raise InterruptedError('Stop requested.')
                 readings = self.snapshot()
+                last_readings = readings
+                last_sample_time = time.monotonic()
                 if any(readings[a].moving or readings[a].raw != old[a] for a in AXES if a != axis):
                     raise RuntimeError('An uncommanded axis changed.')
                 actual = readings[axis]
@@ -281,7 +285,10 @@ class Session:
                         return
                 else: settled = None
                 time.sleep(.05)
-            raise RuntimeError('Movement timed out; no automatic reverse or retry.')
+            timeout = RuntimeError('Movement timed out; no automatic reverse or retry.')
+            timeout.failure_details = self._movement_failure_details(
+                axis, old, requested, last_readings, last_sample_time)
+            raise timeout
         except InterruptedError as exc:
             try:
                 self.emergency_stop()
@@ -328,9 +335,15 @@ class Session:
         except Exception as exc:
             self.fault = str(exc)
             try:
+                details = getattr(exc, 'failure_details', None)
+                if details is None:
+                    details = self._movement_failure_details(
+                        axis, old, requested, last_readings, last_sample_time,
+                        error=str(exc))
                 self.log('MOVE_FAILED', axis=axis, direction=direction, step=step,
                          start_raw=old[axis], target_raw=requested, error_type=type(exc).__name__,
-                         error=str(exc), elapsed_seconds=time.monotonic() - move_started)
+                         error=str(exc), elapsed_seconds=time.monotonic() - move_started,
+                         **details)
             except Exception: pass
             try: self.invalidate(exc)
             except Exception: pass  # A disk error must never prevent Stop.
@@ -342,6 +355,48 @@ class Session:
         finally:
             self.busy = False
             self.active_axis = None
+
+    @staticmethod
+    def _movement_failure_details(axis, old, requested, readings, sample_time,
+                                  error=None):
+        """Return structured completion-predicate diagnostics for MOVE_FAILED."""
+        details = {
+            'failure_subcriteria': [],
+            'last_observed_raw': None,
+            'last_observed_moving': None,
+            'last_sample_monotonic': sample_time,
+            'target_count_match': None,
+            'channel_idle': None,
+            'other_channels_unchanged': None,
+            'within_commanded_range': None,
+        }
+        if readings is None:
+            details['failure_subcriteria'].append('no_telemetry_sample_after_command')
+            if error and 'ack' in error.lower():
+                details['failure_subcriteria'] = ['command_acknowledgement_failed']
+            return details
+        actual = readings[axis]
+        details['last_observed_raw'] = actual.raw
+        details['last_observed_moving'] = actual.moving
+        details['target_count_match'] = actual.raw == requested
+        details['channel_idle'] = not actual.moving
+        details['within_commanded_range'] = (
+            min(old[axis], requested) - 2 <= actual.raw <= max(old[axis], requested) + 2)
+        if actual.raw != requested:
+            details['failure_subcriteria'].append('target_count_not_reached')
+        if actual.moving:
+            details['failure_subcriteria'].append('channel_still_moving')
+        if not details['failure_subcriteria']:
+            # This covers failures after the target/idle sample, such as a
+            # stability or reconciliation failure.
+            details['failure_subcriteria'].append('stable_completion_window_not_confirmed')
+        changed = [name for name, reading in readings.items()
+                   if name != axis and reading.raw != old[name]]
+        details['other_channels_unchanged'] = not changed
+        if changed:
+            details['uncommanded_channels_changed'] = changed
+            details['failure_subcriteria'].append('uncommanded_channel_changed')
+        return details
 
     def _read_stable_stopped_position(self, old, requested, active_axis,
                                       *, timeout_seconds=3.0, stable_samples=3):

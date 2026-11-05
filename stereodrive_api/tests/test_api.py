@@ -196,6 +196,7 @@ class APITests(unittest.TestCase):
         records=[json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
         failed=next(record for record in records if record['event']=='MOVE_FAILED')
         self.assertTrue(failed['error'])
+        self.assertEqual(failed['failure_subcriteria'], ['command_acknowledgement_failed'])
         self.assertTrue(any(record['event']=='STOP_COMMAND_WRITE_COMPLETED' for record in records))
 
     def test_stop_failure_invalidates_saved_state(self):
@@ -364,6 +365,11 @@ class APITests(unittest.TestCase):
             self.assertEqual(d._session.transport.packets.count(bytes.fromhex('af1101')),1)
             self.assertIn(bytes.fromhex('af1100'),d._session.transport.packets)
             self.assertFalse(json.loads(self.path.read_text())['valid'])
+            records = [json.loads(line) for line in self.path.with_suffix('.jsonl').read_text().splitlines()]
+            failed = next(record for record in records if record['event'] == 'DRILL_POWER_FAILED')
+            self.assertIn('reported_power_state_did_not_match_request', failed['failure_subcriteria'])
+            self.assertFalse(failed['last_reported_state'])
+            self.assertEqual(failed['requested_state'], True)
         finally:d._session.transport.exchange=original
 
 if __name__=='__main__': unittest.main()

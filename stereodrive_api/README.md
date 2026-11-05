@@ -292,3 +292,15 @@ via `CalibrationJog`: verified direction history, relative +/-1 mm / +/-100 nL
 bounds, 1 mm/s profile, separate validity journal, exact raw/idle completion and
 Stop. This is a relative setup mode, never an absolute-position or capacity claim.
 See `docs/DIRECT_API_CONTROL.md` in the repository for the complete GUI workflow.
+
+### Failure diagnostics
+
+`MOVE_FAILED` JSONL events include `failure_subcriteria` plus the last observed
+raw count and `moving` flag. They also include booleans for `target_count_match`,
+`channel_idle`, `other_channels_unchanged`, and `within_commanded_range`. A
+timeout therefore distinguishes an unreached target from a channel that never
+reported idle (or an uncommanded channel change), instead of only reporting a
+generic timeout. `DRILL_POWER_FAILED` similarly records the requested state,
+last reported state, query errors, retry count, and its failed confirmation
+criterion. These fields describe the last telemetry observed; they do not make
+an interrupted movement safe to resume without stop and reconciliation.

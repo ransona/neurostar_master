@@ -511,14 +511,25 @@ class StereoDrive:
                 s.refresh()
                 if self._stopping.is_set(): raise InterruptedError('Stop in progress')
             try:
+                last_reported_state = None
+                last_query_error = None
+                attempts_completed = 0
                 for attempt in range(self.drill_state_retries + 1):
+                    attempts_completed = attempt + 1
                     self._log('DRILL_POWER_ATTEMPT', enabled=enabled,
                               attempt=attempt + 1, max_attempts=self.drill_state_retries + 1)
                     with s.io_lock: s.transport.write(drill_power(enabled))
                     deadline = time.monotonic() + self.drill_state_timeout_seconds
                     while time.monotonic() < deadline:
                         if self._stopping.is_set() and enabled: raise InterruptedError('Stop requested')
-                        if self._drill_state_locked(s) == enabled:
+                        try:
+                            last_reported_state = self._drill_state_locked(s)
+                            last_query_error = None
+                        except Exception as query_exc:
+                            last_query_error = str(query_exc)
+                            last_reported_state = None
+                            raise
+                        if last_reported_state == enabled:
                             self._log('DRILL_POWER_CONFIRMED', enabled=enabled,
                                       attempt=attempt + 1)
                             return enabled
@@ -531,8 +542,21 @@ class StereoDrive:
                     f'after {self.drill_state_retries + 1} attempts'
                 )
             except Exception as exc:
+                if last_query_error is not None:
+                    failure_subcriteria = ['drill_state_query_failed']
+                elif last_reported_state is None:
+                    failure_subcriteria = ['drill_state_not_observed']
+                elif last_reported_state != enabled:
+                    failure_subcriteria = ['reported_power_state_did_not_match_request']
+                else:
+                    failure_subcriteria = ['drill_state_confirmation_window_not_completed']
                 try: self._log('DRILL_POWER_FAILED', enabled=enabled,
-                               error_type=type(exc).__name__, error=str(exc))
+                               error_type=type(exc).__name__, error=str(exc),
+                               failure_subcriteria=failure_subcriteria,
+                               requested_state=enabled,
+                               last_reported_state=last_reported_state,
+                               last_query_error=last_query_error,
+                               attempts_completed=attempts_completed)
                 except Exception: pass
                 # Always issue OFF and stop; only a later exact idle-state check may
                 # restore axis calibration after this drill-only fault.
