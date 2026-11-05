@@ -5782,11 +5782,11 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Benchmark"):return
         dialog=QDialog(self);dialog.setWindowTitle("Supervised Axis Benchmark")
         layout=QVBoxLayout(dialog)
-        warning=QLabel("Movement fault-test mode: drill OFF, pipette clear of specimen, complete out-and-back path clear, physical Stop accessible. Select AP/ML/DV and comma-separated step sizes; every selected size is moved forward and then reversed through the normal USB movement path. DV is opt-in. Fault/Cancel stops without automatic return. Results measure verified motor counts and command time, not physical displacement.")
+        warning=QLabel("Movement fault-test mode: drill OFF, pipette clear of specimen, complete out-and-back path clear, physical Stop accessible. AP, ML, and DV are enabled by default; deselect any axis or enter comma-separated step sizes. Every selected size is moved forward and then reversed through the normal USB movement path. Fault/Cancel stops without automatic return. Results measure verified motor counts and command time, not physical displacement.")
         warning.setWordWrap(True);layout.addWidget(warning)
         checks={}
         for axis in ('AP','ML','DV'):
-            check=QCheckBox(axis);check.setChecked(axis!='DV');checks[axis]=check;layout.addWidget(check)
+            check=QCheckBox(axis);check.setChecked(True);checks[axis]=check;layout.addWidget(check)
         layout.addWidget(QLabel("Distances in mm, comma-separated (each >0, <=1)"))
         distances=QLineEdit('0.01, 0.02, 0.05');layout.addWidget(distances)
         layout.addWidget(QLabel("Repeats"));repeats=QSpinBox();repeats.setRange(1,10);repeats.setValue(1);layout.addWidget(repeats)
