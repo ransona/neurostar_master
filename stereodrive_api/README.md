@@ -296,7 +296,8 @@ See `docs/DIRECT_API_CONTROL.md` in the repository for the complete GUI workflow
 ### Failure diagnostics
 
 `MOVE_FAILED` JSONL events include `failure_subcriteria` plus the last observed
-raw count and `moving` flag. They also include booleans for `target_count_match`,
+raw count, calibrated `last_observed_value`, and `moving` flag, alongside the
+requested `target_value`. They also include booleans for `target_count_match`,
 `channel_idle`, `other_channels_unchanged`, and `within_commanded_range`. A
 timeout therefore distinguishes an unreached target from a channel that never
 reported idle (or an uncommanded channel change), instead of only reporting a

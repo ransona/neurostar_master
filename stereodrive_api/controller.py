@@ -343,6 +343,8 @@ class Session:
                 self.log('MOVE_FAILED', axis=axis, direction=direction, step=step,
                          start_raw=old[axis], target_raw=requested, error_type=type(exc).__name__,
                          error=str(exc), elapsed_seconds=time.monotonic() - move_started,
+                         target_value=estimate,
+                         last_observed_value=(details.get('last_observed_relative_units') or {}).get(axis),
                          **details)
             except Exception: pass
             try: self.invalidate(exc)
@@ -356,13 +358,13 @@ class Session:
             self.busy = False
             self.active_axis = None
 
-    @staticmethod
-    def _movement_failure_details(axis, old, requested, readings, sample_time,
+    def _movement_failure_details(self, axis, old, requested, readings, sample_time,
                                   error=None):
         """Return structured completion-predicate diagnostics for MOVE_FAILED."""
         details = {
             'failure_subcriteria': [],
             'last_observed_raw': None,
+            'last_observed_relative_units': None,
             'last_observed_moving': None,
             'last_sample_monotonic': sample_time,
             'target_count_match': None,
@@ -377,6 +379,11 @@ class Session:
             return details
         actual = readings[axis]
         details['last_observed_raw'] = actual.raw
+        details['last_observed_relative_units'] = {
+            name: (readings[name].raw - self.states[name] - self.reference[name]) /
+                   (SIGNS[name] * self.scales[name])
+            for name in AXES
+        }
         details['last_observed_moving'] = actual.moving
         details['target_count_match'] = actual.raw == requested
         details['channel_idle'] = not actual.moving
