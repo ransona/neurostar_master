@@ -5506,6 +5506,10 @@ class CraniotomyWindow(QMainWindow):
             if preserved_anchor_bregma is None and self.anchor_axis is not None and self.bregma_axis is not None:
                 preserved_anchor_bregma = self._axis_to_bregma(self.anchor_axis)
             self.bregma_axis = tuple(current_axis[index] - requested[index] for index in range(3))
+            # Lambda is defined relative to this GUI origin; a new Bregma
+            # makes the prior Lambda measurement invalid until re-recorded.
+            self.lambda_axis = None
+            self.lambda_bregma = None
             if preserved_anchor_bregma is not None:
                 self.anchor_bregma = tuple(preserved_anchor_bregma)
             self._sync_anchor_axis_from_bregma()
