@@ -1163,6 +1163,14 @@ class CraniotomyWindow(QMainWindow):
         self.validation_clearance_mm = 0.5
         self.home_axis: tuple[float, float, float] | None = None
         self.work_axis: tuple[float, float, float] | None = None
+        # GUI reference landmarks are planner coordinates layered on top of
+        # the mechanical Axis frame.  They are deliberately separate from
+        # USB calibration and API motion state.
+        self.lambda_axis: tuple[float, float, float] | None = None
+        self.lambda_bregma: tuple[float, float, float] | None = None
+        self.animal_number: str | None = None
+        self.craniotomy_center_dv: float | None = None
+        self._session_log_dirty = False
         self.axis_zero_reference = None
         self.direct_control_settings = {}
         self._direct_control_settings_loaded = False
@@ -1288,6 +1296,24 @@ class CraniotomyWindow(QMainWindow):
                     worker.join(timeout=0.5)
             if any(worker is not None and worker.is_alive() for worker in workers):
                 self.set_status("Stopping operations. Close again once they have finished.")
+                event.ignore()
+                return
+        if self._session_log_dirty or self._session_log_path().exists():
+            prompt = QMessageBox(self)
+            prompt.setWindowTitle("Surgery session")
+            prompt.setText(
+                "Do you want to export the current surgery reference before closing?\n\n"
+                "Choose Keep session to preserve the crash-recovery journal for the next launch."
+            )
+            export_button = prompt.addButton("Export and finish", QMessageBox.AcceptRole)
+            keep_button = prompt.addButton("Keep session", QMessageBox.DestructiveRole)
+            cancel_button = prompt.addButton("Cancel close", QMessageBox.RejectRole)
+            prompt.setDefaultButton(keep_button)
+            prompt.exec()
+            if prompt.clickedButton() is cancel_button:
+                event.ignore()
+                return
+            if prompt.clickedButton() is export_button and not self._export_session_log():
                 event.ignore()
                 return
         try:
@@ -1472,8 +1498,12 @@ class CraniotomyWindow(QMainWindow):
         clear_project_btn.clicked.connect(self.clear_project)
         set_bregma_local_btn = QPushButton("Set Bregma")
         set_bregma_local_btn.clicked.connect(self.set_local_bregma)
+        set_lambda_btn = QPushButton("Set Lambda")
+        set_lambda_btn.clicked.connect(self.set_lambda)
         self.set_anchor_btn = QPushButton("Set Anchor")
         self.set_anchor_btn.clicked.connect(self.set_anchor)
+        set_work_btn = QPushButton("Set Work")
+        set_work_btn.clicked.connect(lambda: self.set_persistent_axis_location("work"))
         self.set_relative_coordinates_btn = QPushButton("Set Relative Coordinates")
         self.set_relative_coordinates_btn.clicked.connect(self.set_relative_coordinates)
         self.at_anchor_btn = QPushButton("At Anchor")
@@ -1539,7 +1569,9 @@ class CraniotomyWindow(QMainWindow):
             position_layout.addWidget(readout)
         position_layout.addWidget(self.move_speed_label)
         header_layout.addWidget(set_bregma_local_btn)
+        header_layout.addWidget(set_lambda_btn)
         header_layout.addWidget(self.set_anchor_btn)
+        header_layout.addWidget(set_work_btn)
         header_layout.addWidget(self.at_anchor_btn)
         header_layout.addWidget(QLabel("Go to:"))
         header_layout.addWidget(bregma_btn)
@@ -1582,6 +1614,7 @@ class CraniotomyWindow(QMainWindow):
 
         self.mid_ap = self._double_spinbox()
         self.mid_ml = self._double_spinbox()
+        self.mid_dv = self._double_spinbox()
         self.diameter = self._double_spinbox(value=3.2, minimum=0.1, maximum=20.0)
         self.seed_count = self._spinbox(value=6, minimum=3, maximum=24)
         self.trajectory_points = self._spinbox(value=60, minimum=12, maximum=360)
@@ -1619,7 +1652,7 @@ class CraniotomyWindow(QMainWindow):
         # must not remain resumable against a changed plan.
         for control in (
             self.mid_ap, self.mid_ml, self.diameter, self.trajectory_points,
-            self.cut_offset, self.depth_per_round, self.skull_thickness_mm,
+            self.cut_offset, self.depth_per_round, self.skull_thickness_mm, self.mid_dv,
         ):
             control.valueChanged.connect(self._on_drilling_geometry_changed)
         self.auto_start_rounds = QCheckBox("Auto start next round")
@@ -1691,6 +1724,8 @@ class CraniotomyWindow(QMainWindow):
         setup_layout.addWidget(self.current_seed_spin, 4, 1)
         setup_layout.addWidget(QLabel("Depth increment / round (mm)"), 4, 2)
         setup_layout.addWidget(self.depth_per_round, 4, 3)
+        setup_layout.addWidget(QLabel("Centre DV (mm)"), 4, 4)
+        setup_layout.addWidget(self.mid_dv, 4, 5)
 
         self.generate_seeds_btn = QPushButton("Generate Seeds")
         self.generate_seeds_btn.clicked.connect(self.generate_seeds)
@@ -2320,11 +2355,12 @@ class CraniotomyWindow(QMainWindow):
         motion_grid.addWidget(apply_motion, 6, 0, 1, 3)
         options_layout.addWidget(motion_box)
         self._sync_direct_motion_options()
-        positions_box = QGroupBox("Home / Work — mechanical Axis coordinates")
+        positions_box = QGroupBox("Work — mechanical Axis coordinates (Home is fixed at the rail limit)")
         positions_layout = QGridLayout(positions_box)
         self.home_axis_label = QLabel()
         self.work_axis_label = QLabel()
-        for row, (name, label) in enumerate((("home", self.home_axis_label), ("work", self.work_axis_label))):
+        self.home_axis_label.setText("Fixed mechanical Axis Home: AP 65, ML 5, DV 5 (clamped to rails)")
+        for row, (name, label) in enumerate((("work", self.work_axis_label),)):
             button = QPushButton(f"Set {name.title()}")
             button.setToolTip(f"Save the current mechanical Axis position as {name.title()} permanently.")
             button.clicked.connect(lambda _checked=False, kind=name: self.set_persistent_axis_location(kind))
@@ -3229,6 +3265,87 @@ class CraniotomyWindow(QMainWindow):
     def _project_session_path(self) -> Path:
         return self._config_root_dir() / "project_session.json"
 
+    def _session_log_path(self) -> Path:
+        """Return the crash-safe human-readable surgery session journal."""
+        return self._app_data_root_dir() / "sessions" / "current-session.txt"
+
+    def _bregma_lambda_metrics(self) -> dict[str, float] | None:
+        if self.bregma_axis is None or self.lambda_axis is None:
+            return None
+        dx, dy, dz = (
+            self.lambda_axis[index] - self.bregma_axis[index] for index in range(3)
+        )
+        horizontal = math.hypot(dx, dy)
+        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        return {
+            "distance_mm": distance,
+            "yaw_deg": math.degrees(math.atan2(dy, dx)) if horizontal or dx else 0.0,
+            "pitch_deg": math.degrees(math.atan2(dz, horizontal)) if distance else 0.0,
+        }
+
+    def _write_session_log(self) -> None:
+        """Persist current landmarks and geometry without touching export state."""
+        path = self._session_log_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            metrics = self._bregma_lambda_metrics()
+            lines = [
+                "Neurostar surgery session (crash-recovery journal)",
+                f"Animal number: {self.animal_number or '(not assigned)'}",
+                "",
+                f"Bregma Axis AP,ML,DV (mm): {self.bregma_axis or '(not set)'}",
+                f"Lambda Bregma-relative AP,ML,DV (mm): {self.lambda_bregma or '(not set)' }",
+                f"Lambda Axis AP,ML,DV (mm): {self.lambda_axis or '(not set)' }",
+                f"Anchor Bregma-relative AP,ML,DV (mm): {self.anchor_bregma or '(not set)' }",
+                f"Craniotomy centre Bregma AP,ML,DV (mm): ({self.mid_ap.value():.4f}, {self.mid_ml.value():.4f}, {self.craniotomy_center_dv if self.craniotomy_center_dv is not None else '(not set)'})",
+            ]
+            if metrics:
+                lines.extend([
+                    "",
+                    f"Bregma-Lambda distance (mm): {metrics['distance_mm']:.6f}",
+                    f"Cranium yaw/orientation (deg): {metrics['yaw_deg']:.6f}",
+                    f"Cranium pitch/tilt (deg): {metrics['pitch_deg']:.6f}",
+                ])
+            lines.extend([
+                "",
+                "This journal is retained until the operator explicitly exports it.",
+            ])
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            temporary.replace(path)
+            self._session_log_dirty = True
+        except OSError as exc:
+            self.event_log.write("session_log.write_failed", error=str(exc))
+
+    def _export_session_log(self) -> bool:
+        path = self._session_log_path()
+        if not path.exists():
+            self._write_session_log()
+        default_name = f"neurostar-animal-{self.animal_number or 'unknown'}-session.txt"
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "Export surgery session", str(Path.home() / default_name), "Text files (*.txt)"
+        )
+        if not destination:
+            return False
+        try:
+            shutil.copy2(path, destination)
+            path.write_text("", encoding="utf-8")
+            self._session_log_dirty = False
+            self.event_log.write("session_log.exported", destination=destination)
+            return True
+        except OSError as exc:
+            QMessageBox.warning(self, "Export session", f"Could not export the session journal.\n\n{exc}")
+            return False
+
+    def _prompt_animal_number(self) -> None:
+        value, accepted = QInputDialog.getText(
+            self, "New animal", "Animal number (used in the exported session filename):", text=self.animal_number or ""
+        )
+        if accepted and value.strip():
+            self.animal_number = value.strip()
+            self._save_general_settings()
+            self._write_session_log()
+
     def _has_recoverable_project_state(self) -> bool:
         return bool(self.seeds or self.trajectory or self.injection_sites or self.quick_locations or self.named_locations)
 
@@ -3240,6 +3357,9 @@ class CraniotomyWindow(QMainWindow):
             "coordinate_mode": self.coordinate_mode,
             "bregma_axis": self.bregma_axis,
             "anchor_bregma": self.anchor_bregma,
+            "lambda_axis": self.lambda_axis,
+            "lambda_bregma": self.lambda_bregma,
+            "animal_number": self.animal_number,
             "craniotomy_config": {
                 "diameter_mm": self._craniotomy_config().diameter_mm,
                 "seed_count": self._craniotomy_config().seed_count,
@@ -3255,7 +3375,7 @@ class CraniotomyWindow(QMainWindow):
                 "hole_spacing_mm": self._craniotomy_config().hole_spacing_mm,
                 "delayAtDepth": self._craniotomy_config().delay_at_depth_seconds,
             },
-            "craniotomy_center": {"ap": self.mid_ap.value(), "ml": self.mid_ml.value()},
+            "craniotomy_center": {"ap": self.mid_ap.value(), "ml": self.mid_ml.value(), "dv": self.craniotomy_center_dv},
             "seeds": [
                 {
                     "index": seed.index, "angle_deg": seed.angle_deg, "ap": seed.ap, "ml": seed.ml,
@@ -3377,15 +3497,34 @@ class CraniotomyWindow(QMainWindow):
         if prompt.clickedButton() is not clear_button:
             self.update_coordinate_mode_buttons()
             return
+        had_session_journal = self._session_log_dirty or self._session_log_path().exists()
+        if had_session_journal:
+            export_response = QMessageBox.question(
+                self,
+                "Export previous animal session?",
+                "You are starting a new animal. Export the current Bregma/Lambda/Anchor session before clearing it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if export_response == QMessageBox.Yes and not self._export_session_log():
+                self.update_coordinate_mode_buttons()
+                return
         self.bregma_axis = None
         self.anchor_axis = None
         self.anchor_bregma = None
+        self.lambda_axis = None
+        self.lambda_bregma = None
+        self.animal_number = None
         self.coordinate_mode = "axis"
         self.update_coordinate_mode_buttons()
         self.top_view.set_coordinate_mode_bregma(False)
         self.injection_sites_view.set_coordinate_mode_bregma(False)
         self._save_general_settings()
         self._autosave_project_session()
+        if had_session_journal:
+            self._prompt_animal_number()
+            if self.animal_number:
+                self._write_session_log()
         self.refresh_live_position()
         self.redraw_views()
         self.set_status("Saved Bregma cleared; set a new reference before using Bregma coordinates.")
@@ -3414,6 +3553,11 @@ class CraniotomyWindow(QMainWindow):
         if isinstance(injection_config, dict):
             self._apply_injection_config_dict(injection_config)
         self.bregma_axis = self._session_axis(payload.get("bregma_axis"))
+        self.lambda_axis = self._session_axis(payload.get("lambda_axis"))
+        self.lambda_bregma = self._session_axis(payload.get("lambda_bregma"))
+        animal_number = payload.get("animal_number")
+        if animal_number and self.animal_number is None:
+            self.animal_number = str(animal_number).strip()
         self.craniotomy_coordinate_system = str(payload.get("craniotomy_coordinate_system", "unknown" if payload.get("seeds") or payload.get("trajectory") else "bregma"))
         self.injection_sites_coordinate_system = str(payload.get("injection_sites_coordinate_system", "unknown" if payload.get("injection_sites") else "bregma"))
         project_anchor_bregma = self._session_axis(payload.get("anchor_bregma"))
@@ -3428,6 +3572,10 @@ class CraniotomyWindow(QMainWindow):
         if isinstance(center, dict):
             self.mid_ap.setValue(float(center.get("ap", self.mid_ap.value())))
             self.mid_ml.setValue(float(center.get("ml", self.mid_ml.value())))
+            raw_dv = center.get("dv")
+            self.craniotomy_center_dv = None if raw_dv is None else float(raw_dv)
+            if self.craniotomy_center_dv is not None:
+                self.mid_dv.setValue(self.craniotomy_center_dv)
         self.seeds = []
         for raw_seed in payload.get("seeds", []):
             if not isinstance(raw_seed, dict):
@@ -3533,6 +3681,9 @@ class CraniotomyWindow(QMainWindow):
             "coordinate_mode": self.coordinate_mode,
             "bregma_axis": self.bregma_axis,
             "anchor_bregma": self.anchor_bregma,
+            "lambda_axis": self.lambda_axis,
+            "lambda_bregma": self.lambda_bregma,
+            "animal_number": self.animal_number,
             "recent_injection_grid_configs": self.recent_injection_grid_configs,
             "validation_clearance_mm": self.validation_clearance_mm,
             "single_hole_drill_rate_mm_per_s": self.single_hole_rate_mm_per_s.value(),
@@ -3614,6 +3765,10 @@ class CraniotomyWindow(QMainWindow):
             self.axis_zero_reference = payload.get("axis_zero_reference")
             self.home_axis = self._session_axis(payload.get("home_axis"))
             self.work_axis = self._session_axis(payload.get("work_axis"))
+            self.lambda_axis = self._session_axis(payload.get("lambda_axis"))
+            self.lambda_bregma = self._session_axis(payload.get("lambda_bregma"))
+            animal_number = payload.get("animal_number")
+            self.animal_number = str(animal_number).strip() if animal_number else None
             self._update_persistent_axis_location_labels()
             clearance = float(payload.get("validation_clearance_mm", 0.5))
             self.validation_clearance_mm = max(0.0, min(20.0, clearance)) if math.isfinite(clearance) else 0.5
@@ -5360,6 +5515,7 @@ class CraniotomyWindow(QMainWindow):
             self.injection_sites_view.set_coordinate_mode_bregma(True)
             self._save_general_settings()
             self._autosave_project_session()
+            self._write_session_log()
             self.refresh_live_position()
             self.refresh_injection_sites_list()
             self.refresh_craniotomy_points_list()
@@ -5383,6 +5539,36 @@ class CraniotomyWindow(QMainWindow):
             return
         self._record_current_anchor()
 
+    def set_lambda(self) -> None:
+        if not self._require_idle("Set Lambda"):
+            return
+        if self.bregma_axis is None:
+            QMessageBox.information(self, "Set Lambda", "Set GUI Bregma before recording Lambda.")
+            return
+        response = QMessageBox.warning(
+            self,
+            "Confirm Set Lambda",
+            "Store the current physical position as Lambda relative to the current GUI Bregma?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if response != QMessageBox.Yes:
+            return
+        try:
+            self.lambda_axis = tuple(self.controller.get_current_axis_position())
+            self.lambda_bregma = self._axis_to_bregma(self.lambda_axis)
+            metrics = self._bregma_lambda_metrics()
+            self._save_general_settings()
+            self._autosave_project_session()
+            self._write_session_log()
+            if metrics:
+                self.set_status(
+                    f"Lambda set: distance {metrics['distance_mm']:.3f} mm, "
+                    f"yaw {metrics['yaw_deg']:.2f}°, pitch {metrics['pitch_deg']:.2f}°."
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "Set Lambda", str(exc))
+
     def _record_current_anchor(self) -> bool:
         try:
             if self.bregma_axis is None:
@@ -5402,6 +5588,8 @@ class CraniotomyWindow(QMainWindow):
             self._sync_anchor_axis_from_bregma()
             self.update_coordinate_mode_buttons()
             self._save_general_settings()
+            self._autosave_project_session()
+            self._write_session_log()
             self._zoom_craniotomy_to_mid_range()
             self.set_status(
                 f"Anchor set at Bregma [{self.anchor_bregma[0]:.2f}, {self.anchor_bregma[1]:.2f}, {self.anchor_bregma[2]:.2f}]."
@@ -5501,7 +5689,27 @@ class CraniotomyWindow(QMainWindow):
             return False
 
     def goto_home(self) -> None:
-        self._goto_persistent_axis_location("home")
+        # Home is a mechanical Axis safety position, not GUI Bregma and not
+        # a user-editable saved landmark.  Clamp the requested AP=65 target
+        # to the configured rail limit when a particular setup is shorter.
+        requested = (65.0, 5.0, 5.0)
+        from stereodrive_api.limits import DEFAULT_LIMITS
+        limits = self.direct_control_settings.get("travel_limits", DEFAULT_LIMITS)
+        target = tuple(
+            max(float(limits.get(axis, (float("-inf"), float("inf")))[0]),
+                min(float(limits.get(axis, (float("-inf"), float("inf")))[1]), requested[index]))
+            for index, axis in enumerate(("AP", "ML", "DV"))
+        )
+        try:
+            if self._move_to_axis_position_with_progress(
+                target, title="Moving to Home",
+                message="Moving to the mechanical Axis Home position. Waiting for confirmed arrival…",
+            ):
+                self.set_status(
+                    f"Reached Home: Axis AP {target[0]:.2f}, ML {target[1]:.2f}, DV {target[2]:.2f} mm."
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "StereoDrive", str(exc))
 
     def goto_work(self) -> None:
         self._goto_persistent_axis_location("work")
@@ -5529,6 +5737,7 @@ class CraniotomyWindow(QMainWindow):
             position = self.controller.get_current_axis_position()
             setattr(self, f"{name}_axis", position)
             self._save_general_settings()
+            self._write_session_log()
             self._update_persistent_axis_location_labels()
             self.set_status(f"Saved {name.title()} permanently: Axis AP {position[0]:.2f}, ML {position[1]:.2f}, DV {position[2]:.2f} mm.")
         except Exception as exc:
@@ -5536,7 +5745,9 @@ class CraniotomyWindow(QMainWindow):
             QMessageBox.warning(self, f"Set {name.title()}", str(exc))
 
     def _update_persistent_axis_location_labels(self) -> None:
-        for name in ("home", "work"):
+        if hasattr(self, "home_axis_label"):
+            self.home_axis_label.setText("Fixed mechanical Axis Home: AP 65, ML 5, DV 5 (clamped to rails)")
+        for name in ("work",):
             if not hasattr(self, f"{name}_axis_label"):
                 continue
             position = getattr(self, f"{name}_axis")
@@ -5581,6 +5792,24 @@ class CraniotomyWindow(QMainWindow):
         ap_box = self._position_spinbox(current_ap)
         ml_box = self._position_spinbox(current_ml)
         dv_box = self._position_spinbox(current_dv)
+        lambda_metrics = self._bregma_lambda_metrics()
+        scale_label = QLabel()
+        scale_btn = QPushButton("Apply AP/ML cranial-scale suggestion")
+        scale_btn.setEnabled(bool(lambda_metrics))
+        if lambda_metrics:
+            # 4.5 mm is the planner's nominal adult Bregma–Lambda reference;
+            # the measured distance is shown so the operator can review the
+            # scale before applying it to an entered Bregma target.
+            scale_factor = lambda_metrics["distance_mm"] / 4.5 if lambda_metrics["distance_mm"] else 1.0
+            scale_label.setText(
+                f"Bregma–Lambda {lambda_metrics['distance_mm']:.3f} mm; "
+                f"yaw {lambda_metrics['yaw_deg']:.2f}°, pitch {lambda_metrics['pitch_deg']:.2f}°. "
+                f"Suggested AP/ML scale ×{scale_factor:.4f} (nominal 4.5 mm)."
+            )
+            scale_btn.clicked.connect(lambda: (ap_box.setValue(ap_box.value() * scale_factor), ml_box.setValue(ml_box.value() * scale_factor)))
+        else:
+            scale_label.setText("Set Lambda to calculate cranial distance and AP/ML scaling suggestions.")
+        scale_label.setWordWrap(True)
 
         saved_combo = QComboBox()
         name_edit = QLineEdit()
@@ -5684,6 +5913,8 @@ class CraniotomyWindow(QMainWindow):
         layout.addWidget(ml_box, 4, 1)
         layout.addWidget(QLabel(f"{coordinate_label} DV"), 5, 0)
         layout.addWidget(dv_box, 5, 1)
+        layout.addWidget(scale_label, 6, 0, 1, 2)
+        layout.addWidget(scale_btn, 7, 0, 1, 2)
         if not using_bregma:
             save_location_btn.setEnabled(False)
             delete_location_btn.setEnabled(False)
@@ -5693,7 +5924,7 @@ class CraniotomyWindow(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons, 6, 0, 1, 2)
+        layout.addWidget(buttons, 8, 0, 1, 2)
 
         previous_validation_modal_active = self.validation_modal_active
         self.validation_modal_active = True
@@ -8198,9 +8429,12 @@ class CraniotomyWindow(QMainWindow):
         if not self._require_idle("Craniotomy"):
             return
         try:
-            ap, ml, _dv = self.get_bregma_position()
+            ap, ml, current_dv = self.get_bregma_position()
             self.mid_ap.setValue(ap)
             self.mid_ml.setValue(ml)
+            if self.craniotomy_center_dv is None:
+                self.craniotomy_center_dv = current_dv
+                self.mid_dv.setValue(current_dv)
             diameter = self.diameter.value()
             seed_count = self.seed_count.value()
             if diameter <= 0:
@@ -8272,8 +8506,11 @@ class CraniotomyWindow(QMainWindow):
             position = self.get_bregma_position()
             self.mid_ap.setValue(position[0])
             self.mid_ml.setValue(position[1])
+            self.craniotomy_center_dv = float(position[2])
+            self.mid_dv.setValue(position[2])
+            self._write_session_log()
             self._zoom_craniotomy_to_mid_range()
-            self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}.")
+            self.set_status(f"Craniotomy center set to AP {position[0]:.2f}, ML {position[1]:.2f}, DV {position[2]:.2f}.")
         except Exception as exc:
             QMessageBox.critical(self, "Craniotomy", str(exc))
 
@@ -8523,15 +8760,16 @@ class CraniotomyWindow(QMainWindow):
         try:
             self._require_project_coordinates("craniotomy")
             seed = self.seeds[self.current_seed_index]
+            seed_dv = self._craniotomy_center_surface_dv() - 0.5
             if not self._move_to_axis_position_with_progress(
-                self._bregma_to_axis((seed.ap, seed.ml, -1.0)),
+                self._bregma_to_axis((seed.ap, seed.ml, seed_dv)),
                 delay_seconds=1.0,
                 title=f"Moving to Seed {seed.index + 1}",
                 message="Moving to the seed position. Waiting for StereoDrive to report arrival…",
             ):
                 return
             self.set_status(
-                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, -1.00]. Search for the skull surface, then use 'Set Seed Surfaces'."
+                f"Moved to seed {seed.index + 1} target [{seed.ap:.2f}, {seed.ml:.2f}, {seed_dv:.2f}]. Search for the skull surface, then use 'Set Seed Surfaces'."
             )
         except Exception as exc:
             QMessageBox.critical(self, "StereoDrive", str(exc))
@@ -9998,6 +10236,8 @@ class CraniotomyWindow(QMainWindow):
             self.set_status("Craniotomy stopped at the current target depth.")
 
     def _craniotomy_center_surface_dv(self) -> float:
+        if self.craniotomy_center_dv is not None:
+            return self.craniotomy_center_dv
         captured_dvs = [seed.dv for seed in self.seeds if seed.dv is not None]
         if captured_dvs:
             return (sum(captured_dvs) / len(captured_dvs)) + self.cut_offset.value()

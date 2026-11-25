@@ -74,6 +74,20 @@ Update does not reset this branch to `main`; close the app and use `git pull --f
 GUI Bregma is a separate tool reference: Set Bregma, then Set Anchor if needed.
 After tool exchange touch the anchor and confirm At Anchor. Requested Bregma
 positions are converted to calibrated Axis targets; no native Bregma action occurs.
+Set Lambda records the current mechanical Axis position and its Bregma-relative
+coordinates. The planner records Bregma–Lambda distance, yaw and pitch in the
+session journal and exposes a reviewed AP/ML scaling suggestion in Go To (based
+on the nominal 4.5 mm cranial reference). Set Work stores an Axis position;
+Work returns to it. Home is not user-settable: it requests Axis AP 65, ML 5,
+DV 5 and clamps AP/ML/DV to the configured rail limits.
+
+The crash-recovery journal is `%APPDATA%\Neurostar_Master\sessions\current-session.txt`.
+It retains Bregma, Lambda, Anchor and craniotomy-centre references until the
+operator explicitly exports it. Clearing Bregma starts a new animal session and
+asks for an animal number for the export filename. Closing with a live journal
+offers **Export and finish**, **Keep session**, or **Cancel close**. Craniotomy
+Set Center now records DV as well; generated seed positioning uses the recorded
+centre and approaches 0.5 mm above it rather than relying on a stale Anchor.
 
 ## Features and limits
 

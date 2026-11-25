@@ -190,6 +190,14 @@ preflight and motion. Setting or recalibrating GUI Bregma must refresh both
 planner views so maps and overlays use the same frame. A GUI coordinate change
 must never rewrite API zero anchors or native device coordinates.
 
+GUI landmark additions follow the same layering: Lambda is stored as both its
+mechanical Axis position and Bregma-relative coordinates; Work is an Axis
+location; Home is a fixed Axis safety target (65, 5, 5) clamped to configured
+rails. The crash-recovery session journal is a human-readable AppData file,
+separate from API state and calibration, and is only emptied after explicit
+export. Bregma–Lambda distance/yaw/pitch are derived geometry, not USB
+calibration; any AP/ML scaling suggestion in Go To is operator-reviewed.
+
 ### Timed pulses are not continuous rate control
 
 The injector and drill workflows sequence captured, bounded serial movements
