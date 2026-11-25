@@ -3482,6 +3482,26 @@ class CraniotomyWindow(QMainWindow):
             self.top_view.set_coordinate_mode_bregma(False)
             self.injection_sites_view.set_coordinate_mode_bregma(False)
             self.update_coordinate_mode_buttons()
+            # A cleared Bregma is how the planner starts a new animal.  Older
+            # versions did not persist an explicit session marker, so named
+            # locations or a prior journal are useful evidence that this is
+            # not a first-ever launch.  Do not interrupt a pristine install.
+            prior_session = bool(
+                self.animal_number
+                or self.named_locations
+                or self._session_log_path().exists()
+                or self._project_session_path().exists()
+            )
+            if prior_session:
+                response = QMessageBox.question(
+                    self,
+                    "Start new animal?",
+                    "No saved Bregma calibration is active. Start a new animal session and enter its animal number?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if response == QMessageBox.Yes:
+                    self._prompt_animal_number()
             return
         prompt = QMessageBox(self)
         prompt.setWindowTitle("Saved Bregma")
